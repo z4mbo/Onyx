@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - ".github/workflows/build-macos.yml"
+      - "macos-overrides/**"
       - "onyx-source.parts/**"
   push:
     branches:
@@ -21,6 +22,7 @@ on:
       - "rust-toolchain.toml"
       - "tsconfig.json"
       - "vite.config.ts"
+      - "macos-overrides/**"
       - "onyx-source.parts/**"
 
 permissions:
@@ -49,6 +51,13 @@ jobs:
           rm -rf onyx-source.parts
           tar -xzf onyx-source.tar.gz
           rm onyx-source.tar.gz
+
+      - name: Apply macOS source overrides
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp macos-overrides/tts.rs src-tauri/src/tts.rs
+          rm -rf macos-overrides
 
       - name: Install pnpm
         uses: pnpm/action-setup@v6
