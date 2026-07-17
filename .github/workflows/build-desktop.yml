@@ -1,0 +1,86 @@
+name: Build desktop
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS universal
+            os: macos-latest
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            tauri_args: --target universal-apple-darwin --bundles app,dmg
+            artifact_name: Onyx-0.10.1-macOS-universal
+            artifact_paths: |
+              src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          - label: Windows x64
+            os: windows-latest
+            rust_targets: x86_64-pc-windows-msvc
+            tauri_args: --target x86_64-pc-windows-msvc --bundles nsis,msi
+            artifact_name: Onyx-0.10.1-Windows-x64
+            artifact_paths: |
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          targets: ${{ matrix.rust_targets }}
+          components: rustfmt
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          key: ${{ matrix.os }}-${{ matrix.rust_targets }}
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test frontend
+        run: pnpm test
+
+      - name: Build native Tauri bundles
+        uses: tauri-apps/tauri-action@v1
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
+        with:
+          args: ${{ matrix.tauri_args }}
+
+      - name: Upload native installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_paths }}
+          if-no-files-found: error
+          retention-days: 14

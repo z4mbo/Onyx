@@ -1,0 +1,1 @@
+{"desktop-default":{"identifier":"desktop-default","description":"Core access for the Onyx app, dictation HUD and research overlay.","local":true,"windows":["main","hud","agent"],"permissions":["core:default"]}}

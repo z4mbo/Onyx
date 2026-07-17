@@ -1,0 +1,15 @@
+node_modules/
+.pnpm-store/
+dist/
+src-tauri/target/
+*.log
+.env
+.env.local
+.env.*.local
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+coverage/
+.tooling/
+artifacts/

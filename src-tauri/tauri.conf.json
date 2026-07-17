@@ -1,0 +1,88 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Onyx",
+  "version": "0.10.1",
+  "identifier": "com.onyx.assistant",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self' customprotocol: asset:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://challenges.cloudflare.com; connect-src 'self' ipc: http://ipc.localhost https://*.clerk.accounts.dev https://*.clerk.com https://clerk-telemetry.com https://*.clerk-telemetry.com; img-src 'self' data: blob: https://img.clerk.com; worker-src 'self' blob:; frame-src 'self' https://challenges.cloudflare.com; form-action 'self'"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Onyx",
+        "url": "index.html",
+        "width": 1120,
+        "height": 740,
+        "minWidth": 900,
+        "minHeight": 620,
+        "center": true,
+        "decorations": false,
+        "alwaysOnTop": false,
+        "resizable": true,
+        "shadow": true,
+        "skipTaskbar": false,
+        "transparent": false,
+        "visible": true
+      },
+      {
+        "label": "hud",
+        "title": "Onyx HUD",
+        "url": "index.html?view=hud",
+        "width": 206,
+        "height": 64,
+        "minWidth": 206,
+        "minHeight": 64,
+        "maxWidth": 206,
+        "maxHeight": 64,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "focus": false,
+        "focusable": false,
+        "resizable": false,
+        "shadow": false,
+        "skipTaskbar": true,
+        "transparent": true,
+        "visible": false
+      },
+      {
+        "label": "agent",
+        "title": "Onyx Agent",
+        "url": "index.html?view=agent",
+        "width": 268,
+        "height": 66,
+        "minWidth": 268,
+        "minHeight": 66,
+        "maxWidth": 420,
+        "maxHeight": 620,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "focus": false,
+        "focusable": false,
+        "resizable": false,
+        "shadow": false,
+        "skipTaskbar": true,
+        "transparent": true,
+        "visible": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Productivity",
+    "shortDescription": "Voice dictation and web research",
+    "longDescription": "Onyx turns speech into text and answers voice research questions with visible web sources.",
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "entitlements": "Entitlements.plist",
+      "infoPlist": "Info.plist"
+    }
+  }
+}

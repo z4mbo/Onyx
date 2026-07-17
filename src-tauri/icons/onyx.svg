@@ -1,0 +1,36 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="background" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(358 248) rotate(52) scale(920)">
+      <stop stop-color="#17252A"/>
+      <stop offset="0.52" stop-color="#0C1018"/>
+      <stop offset="1" stop-color="#05070B"/>
+    </radialGradient>
+    <linearGradient id="stone" x1="292" y1="252" x2="738" y2="779" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E4FFF9"/>
+      <stop offset="0.14" stop-color="#76E8D4"/>
+      <stop offset="0.48" stop-color="#347B81"/>
+      <stop offset="0.72" stop-color="#39385E"/>
+      <stop offset="1" stop-color="#A184FF"/>
+    </linearGradient>
+    <linearGradient id="facet" x1="391" y1="349" x2="668" y2="687" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white" stop-opacity="0.58"/>
+      <stop offset="1" stop-color="white" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="154" y="148" width="716" height="732" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="45"/>
+    </filter>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="232" fill="url(#background)"/>
+  <rect x="33" y="33" width="958" height="958" rx="231" stroke="white" stroke-opacity="0.08" stroke-width="2"/>
+  <ellipse cx="512" cy="514" rx="268" ry="274" fill="#63DFCA" fill-opacity="0.18" filter="url(#glow)"/>
+  <path d="M514 238C634 238 754 349 756 500C758 651 638 786 500 786C362 786 266 653 270 510C274 367 394 238 514 238Z" fill="url(#stone)"/>
+  <path d="M514 238C634 238 754 349 756 500C758 651 638 786 500 786C362 786 266 653 270 510C274 367 394 238 514 238Z" stroke="#C6FFF4" stroke-opacity="0.36" stroke-width="6"/>
+  <path d="M514 246L470 507L287 451C321 337 421 246 514 246Z" fill="url(#facet)"/>
+  <path d="M514 246L630 389L470 507L514 246Z" fill="#E8FFF9" fill-opacity="0.21"/>
+  <path d="M630 389L742 486L470 507L630 389Z" fill="#5DD2C3" fill-opacity="0.24"/>
+  <path d="M470 507L742 486L649 681L470 507Z" fill="#263C59" fill-opacity="0.52"/>
+  <path d="M470 507L649 681L497 774L470 507Z" fill="#7D65CE" fill-opacity="0.3"/>
+  <path d="M287 451L470 507L497 774L326 663C281 597 263 521 287 451Z" fill="#173D47" fill-opacity="0.36"/>
+  <path d="M470 507L630 389M470 507L649 681M470 507L287 451M470 507L497 774" stroke="white" stroke-opacity="0.14" stroke-width="4"/>
+  <ellipse cx="414" cy="341" rx="53" ry="24" transform="rotate(-37 414 341)" fill="white" fill-opacity="0.62"/>
+</svg>
