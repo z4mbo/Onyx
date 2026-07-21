@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { resolve } from 'node:path'
 import test from 'node:test'
 
 import { getCommand } from '../src/main/ai-engines/command-dictionary.ts'
@@ -116,14 +117,17 @@ test('renderer settings policy exposes only validated non-secret settings', () =
 
 test('managed project paths cannot escape their root', () => {
   assert.equal(validateProjectName(' My Project '), 'My Project')
-  assert.equal(resolveManagedProjectPath('/safe/projects', 'zAI'), '/safe/projects/zAI')
+  assert.equal(resolveManagedProjectPath('/safe/projects', 'zAI'), resolve('/safe/projects', 'zAI'))
   for (const invalid of ['..', '../outside', 'nested/project', 'CON', 'trailing.']) {
     assert.throws(() => resolveManagedProjectPath('/safe/projects', invalid))
   }
 })
 
 test('Canvas paths are relative and contained within the active project', () => {
-  assert.equal(resolvePathWithinRoot('/safe/project', 'src/index.ts'), '/safe/project/src/index.ts')
+  assert.equal(
+    resolvePathWithinRoot('/safe/project', 'src/index.ts'),
+    resolve('/safe/project', 'src/index.ts')
+  )
   for (const invalid of ['../secret', '/etc/passwd', 'C:\\Users\\secret.txt', 'nested/../../secret']) {
     assert.throws(() => resolvePathWithinRoot('/safe/project', invalid))
   }
