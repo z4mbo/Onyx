@@ -1,210 +1,122 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file is repository guidance for AI coding assistants working on zAI.
 
-## Project Overview
+## Project overview
 
-Your Friendly Terminal is an Electron-based desktop application that provides a friendly interface for AI coding assistants (Claude Code and Gemini CLI). It bridges chat-style interaction with terminal commands, allowing users to interact with AI assistants through both a chat interface and raw terminal output.
+zAI is an Electron desktop workspace for local AI coding CLIs. It supports Claude Code, Gemini CLI, Codex CLI, and Kimi Code. OpenRouter is a provider-backed engine that launches through Kimi Code with the user's selected OpenRouter model; it is not a separately detected CLI.
 
-## Build & Development Commands
+The application combines chat and raw terminal views with project management, file browsing, Git, skills, agents, MCP connections, and a project canvas. It targets Windows 11 x64 and macOS x64/arm64.
 
-### Development
+zAI is GPL-3.0 and is based on Bruno Pigat's `friendly-terminal`; preserve `LICENSE` and `ATTRIBUTION.md` when redistributing changes.
+
+## Commands
+
 ```bash
-npm run dev              # Start electron-vite dev server with hot reload
+npm run dev                 # electron-vite development mode
+npm run typecheck           # TypeScript checks for Node and web projects
+npm test                    # Node test runner
+npm run build               # compile application into out/
+npm run rebuild             # rebuild native modules for Electron
+npm run build:win           # Windows x64 NSIS installer
+npm run build:mac:x64       # Intel macOS DMG + ZIP
+npm run build:mac:arm64     # Apple-silicon macOS DMG + ZIP
+npm run build:mac           # both macOS architectures
 ```
 
-### Building
-```bash
-npm run build            # Build the application (compiles to out/)
-npm run build:win        # Build + create Windows installer (outputs to dist/)
-npm run rebuild          # Rebuild native dependencies (node-pty)
-```
+`node-pty` is native. Rebuild it after installing dependencies and package it on the target OS/architecture. Do not treat a successful renderer-only build as proof that a packaged terminal works.
 
-### Testing
-```bash
-npm test                 # Run unit tests with vitest
-npm run test:e2e         # Run end-to-end tests with Playwright
-npm run lint             # Run ESLint
-```
+## Electron architecture
 
-## Architecture
+1. `src/main/` owns Electron lifecycle, OS integration, native processes, storage, and IPC handlers.
+2. `src/preload/` exposes a narrow typed API through `contextBridge`; do not expose raw `ipcRenderer` or Node primitives.
+3. `src/renderer/` is the React UI. It communicates with privileged code only through the preload API.
 
-### Three-Process Electron Architecture
+For a new IPC operation, update the main handler, preload implementation, preload types, and renderer wrapper together. Validate renderer-supplied filesystem paths and command arguments in the main process.
 
-1. **Main Process** (`src/main/`): Node.js process managing the app lifecycle, native modules, and IPC
-2. **Preload Script** (`src/preload/`): Secure bridge exposing specific IPC APIs to renderer via `contextBridge`
-3. **Renderer Process** (`src/renderer/`): React UI running in Chromium, communicating via the preload-exposed API
+## Key subsystems
 
-### Key Subsystems
+### AI engines and terminals
 
-#### PTY Management (`src/main/pty/`)
-- `pty-manager.ts`: Manages pseudo-terminal instances using `node-pty`
-- `pty-ipc.ts`: IPC handlers for PTY operations (spawn, write, resize, kill)
-- Each terminal gets a unique ID and spawns either PowerShell (Windows) or bash/zsh (Unix)
-- PTY data flows: Main (node-pty) → IPC events → Renderer (xterm.js or chat parser)
+- `src/main/ai-engines/` detects CLI executables and maps engine intents to commands.
+- `src/main/pty/` owns `node-pty` processes and their BrowserWindow ownership.
+- `src/renderer/hooks/useTerminal.ts` owns xterm lifecycle, PTY I/O, engine startup, and paste handling.
+- `src/renderer/lib/constants.ts` is the renderer source of truth for engine labels, instruction files, colors, and config directories.
 
-#### AI Engine Integration (`src/main/ai-engines/`)
-- `engine-registry.ts`: Detects available AI CLI tools (claude, gemini) via PATH lookup
-- `command-dictionary.ts`: Maps high-level intents (start-session, add-file, add-mcp) to engine-specific commands
-- `claude-engine.ts` / `gemini-engine.ts`: Engine-specific configuration
-- Commands are either **shell-level** (spawn new process) or **in-session** (slash commands typed into REPL)
+Supported engine IDs are `claude`, `gemini`, `codex`, `kimi`, and `openrouter`. Keep the registry, command dictionary, preload types, renderer constants, settings store, setup UI, and terminal/chat parsing exhaustive when adding or changing an ID.
 
-#### Project & MCP Management (`src/main/project/`)
-- `project-manager.ts`: Creates/lists/deletes project directories under `<userData>/projects`
-- `mcp-config.ts`: Manages `.mcp.json` files (MCP server configurations)
-  - Also syncs to `.gemini/settings.json` for Gemini CLI compatibility
-- Each project is a directory that can contain MCP server definitions
+OpenRouter is a selectable zAI engine profile but depends on Kimi Code 0.6.0 or newer for execution. The Electron main process encrypts its API key with `safeStorage`; the renderer and settings APIs must never receive plaintext after the key is saved. Main fetches tool-capable models from OpenRouter's authenticated `/api/v1/models/user` endpoint. At launch it injects temporary `KIMI_MODEL_*` environment variables only into that OpenRouter terminal's local process tree and terminates active OpenRouter PTYs when credentials are replaced or cleared. Never place provider keys in project instruction files, MCP files, logs, renderer URLs, terminal metadata, or committed fixtures. Error messages may name a missing field but must not include credential values.
 
-#### Chat-PTY Bridge (`src/renderer/hooks/useChatPtyBridge.ts`)
-- **Critical component**: Parses PTY output in real-time to extract AI assistant messages
-- Detects ready prompts (`>` or `❯`) to know when Claude/Gemini is waiting for input
-- Filters out terminal echo and ANSI codes to create clean chat messages
-- Auto-starts Claude Code when a new chat terminal is created
-- Message roles: `user` (input), `assistant` (AI response), `tool` (approval prompts), `system` (startup/exit)
+### Project storage
 
-#### State Management (Zustand stores)
-- `terminal-store.ts`: Terminal tabs, active terminal, view mode (chat vs raw terminal)
-- `chat-store.ts`: Chat messages per terminal, streaming state, output buffers
-- `project-store.ts`: Active project, project list
-- `settings-store.ts`: User preferences (default engine, sidebar width)
+- `src/main/util/paths.ts` chooses the managed-project root.
+- Development uses `<repo>/projects`.
+- Packaged builds use the user's `Documents/zAI Projects` directory.
+- The first packaged access performs a copy-only migration from legacy install-adjacent and old app-data locations. It never deletes the source or overwrites a same-named destination; a userData migration-state file prevents a deliberately deleted migrated project from reappearing.
+- `src/main/project/project-manager.ts` creates, imports, lists, and removes managed project entries.
 
-### File Browser & Filesystem (`src/main/filesystem/`)
-- `disk-service.ts`: Lists available drives (Windows-specific logic using `fsutil fsinfo drives`)
-- `tree-service.ts`: Recursively reads directory structures
-- `fs-ipc.ts`: IPC handlers + file watching with debounced change events
+Imported folders are represented by directory links/junctions. Be especially careful with recursive deletion and migration code: deleting a managed link must never delete the external target.
 
-## Important Implementation Details
+### Project instructions, skills, and agents
 
-### Node-pty as External Dependency
-- `node-pty` is externalized in `electron.vite.config.ts` and must be included in `electron-builder.config.ts`
-- After installing/updating node-pty, run `npm run rebuild` to compile native bindings for Electron
+- Claude reads `CLAUDE.md`.
+- Gemini reads `GEMINI.md`.
+- Codex and Kimi Code use `AGENTS.md`.
+- Shared default skills are copied into engine-specific directories and `.agents/skills` without overwriting existing user files.
 
-### Terminal View Modes
-Each terminal has a `viewMode`:
-- `chat`: Parsed chat UI (useChatPtyBridge processes output)
-- `terminal`: Raw xterm.js terminal with full ANSI rendering
+Default assets live in `resources/default-projects/` and are copied from `process.resourcesPath` in packaged builds. Existing project content always wins over bundled defaults.
 
-### IPC Communication Pattern
-Main ↔ Renderer communication follows this flow:
-1. Renderer calls `window.api.methodName()` (from preload-exposed API)
-2. Preload forwards to `ipcRenderer.invoke('channel:method', ...args)`
-3. Main handles via `ipcMain.handle('channel:method', async (event, ...args) => { ... })`
-4. For events (PTY data, FS changes), Main sends via `mainWindow.webContents.send('channel:event', ...args)`
-5. Preload exposes listeners as `onEventName(callback)` that return unsubscribe functions
+### MCP
 
-### AI Engine Command Execution
-When starting a chat session:
-1. Renderer requests command via `api.getCommand(engineId, 'start-session')`
-2. Main consults `command-dictionary.ts` to get the shell command
-3. Terminal spawns PTY with that command (e.g., `claude --dangerously-skip-permissions`)
-4. Chat bridge auto-detects ready state and manages message flow
+The shared project configuration is `.mcp.json` with a top-level `mcpServers` object. `src/main/project/mcp-config.ts` preserves unrelated engine settings while synchronizing servers to:
 
-### MCP Server Configuration
-- Stored in project root as `.mcp.json` with format: `{ "mcpServers": { "name": { "command": "...", "args": [...], "env": {...} } } }`
-- Also synced to `.gemini/settings.json` for Gemini CLI
-- Can be edited via UI (MCPServerForm component) or manually
+- `.gemini/settings.json`; and
+- `.kimi-code/mcp.json`.
 
-### Default Permissions
-On project creation, `createDefaultPermissions()` auto-allows GUI MCP tools per engine:
-- **Claude**: `.claude/settings.local.json` → `permissions.allow: ["mcp__gui-control__*"]`
-- **Gemini**: `.gemini/settings.json` → `trust: true` on the gui-control server entry
+Kimi Code's current project-level shape is the well-known `{ "mcpServers": { ... } }` JSON format. Do not sync to the legacy `~/.kimi` layout.
 
-### File Browser Context Integration
-- Files show an `@` button on hover → writes `@<project-relative-path> ` into the active terminal (no newline, user continues composing)
-- Directories show `+ ctx` button → writes `/add-dir <path>\n` (executes immediately)
-- Both Claude and Gemini use the `@filePath` syntax for file context references
-- Paths are relative to the project root with forward slashes (e.g., `@src/index.ts`)
+The bundled `gui-control` server lives under `resources/default-projects/mcp-servers/`. Its project entry launches `process.execPath` with `ELECTRON_RUN_AS_NODE=1`, allowing the packaged Electron runtime to execute it on Windows and macOS without relying on a separate `node` binary. Its `ZAI_*` environment names supersede `YFT_*`; the server accepts old names only for existing-project compatibility.
 
-### Live Panel Reloading
-- Skills and Agents tabs auto-reload when files change in their respective directories (`.claude/skills/`, `.claude/agents/`, etc.)
-- Uses the existing recursive `fs:watch` on the project root + `fs:changed` event filtering
+MCP stdio entries execute local commands. Keep approvals enabled by default and never silently add broad wildcard permissions for third-party servers.
 
-## Project Structure
+### Files and disks
 
-```
-src/
-├── main/           # Main process (Node.js)
-│   ├── ai-engines/    # AI CLI detection & command mapping
-│   ├── filesystem/    # File browser & disk listing
-│   ├── project/       # Project & MCP management
-│   ├── pty/          # PTY process management
-│   ├── updater/      # Auto-updater (electron-updater)
-│   ├── util/         # Path utilities
-│   └── index.ts      # App entry point
-├── preload/        # Preload script (secure IPC bridge)
-│   ├── index.ts
-│   └── types.ts      # TypeScript API definitions
-└── renderer/       # Renderer process (React UI)
-    ├── components/    # React components
-    │   ├── chat/       # Chat view & input
-    │   ├── layout/     # App shell, sidebar, title bar
-    │   ├── project/    # Project & MCP UI
-    │   ├── sidebar/    # File browser, folder tree
-    │   └── terminal/   # Terminal tabs & xterm.js instance
-    ├── hooks/         # Custom React hooks
-    ├── lib/           # Utilities (ANSI parsing, API wrapper)
-    ├── stores/        # Zustand state management
-    ├── App.tsx
-    └── main.tsx
-```
+- `src/main/filesystem/disk-service.ts` returns `DiskInfo { name, mount, free, size }`.
+- Windows mounts use absolute roots such as `C:\\`.
+- macOS exposes Home, `/`, and entries mounted under `/Volumes`.
+- `tree-service.ts` and `fs-ipc.ts` implement browsing and watched-file updates.
 
-## Common Development Patterns
+Keep the `DiskInfo` contract identical in main, preload, renderer API, and hooks.
 
-### Adding a New IPC Handler
-1. Add method signature to `IElectronAPI` interface in `src/preload/types.ts`
-2. Implement preload wrapper in `src/preload/index.ts`
-3. Add main handler in appropriate `-ipc.ts` file (or `src/main/index.ts` for globals)
-4. Use typed wrapper in `src/renderer/lib/api.ts` if needed
+### State and UI
 
-### Creating a New Terminal
-```typescript
-const id = generateTerminalId()
-addTerminal({
-  id,
-  ptyId: null,  // Will be assigned when PTY spawns
-  name: 'Terminal Name',
-  engine: 'claude',
-  isActive: true,
-  cwd: '/path/to/working/directory',
-  viewMode: 'chat'  // or 'terminal'
-})
-initSession(id)  // Initialize chat session for chat view mode
-```
+Zustand stores in `src/renderer/stores/` own projects, terminals, chat sessions, and settings. Each terminal retains the engine/provider configuration with which it was created. Avoid changing an already running PTY when the user changes a default setting.
 
-### Working with Chat Messages
-- Always initialize session before sending messages: `useChatStore.getState().initSession(terminalId)`
-- Chat bridge (`useChatPtyBridge`) must be mounted for PTY→chat parsing to work
-- User input is sent via `api.ptyWrite(terminalId, text + '\n')`
-- Bridge automatically detects when AI is ready and flushes messages
+The canvas iframe communicates through the deliberately narrow `window.yft` bridge. That internal bridge name is retained for project compatibility and is not a product label. Canvas file requests must remain within the real path of the active project. Canvas cannot write to OpenRouter PTYs; for other engines it can only prefill printable text, leaving submission to the user.
 
-## Configuration Files
+### Window and PTY shutdown
 
-- `electron.vite.config.ts`: Vite configuration for main, preload, renderer processes
-- `electron-builder.config.ts`: Build configuration for Windows installer (NSIS)
-- `tsconfig.json`, `tsconfig.node.json`, `tsconfig.web.json`: TypeScript configurations
-- `package.json`: Dependencies and npm scripts
+On Windows, destroying a BrowserWindow while its ConPTY processes are alive can terminate Electron. Secondary-window close handling must kill owned PTYs before destruction and allow native cleanup time. The last window may detach callbacks and let the application-level quit path perform final cleanup. Do not replace this ordering with an unconditional `window.destroy()`.
 
-## Native Dependencies
+## Packaging and releases
 
-This project uses `node-pty` which requires native compilation. When working with this dependency:
-1. Always run `npm run rebuild` after installing or updating it
-2. Ensure the correct Node.js version is used (match Electron's Node version)
-3. On Windows, may require Visual Studio Build Tools
+`electron-builder.config.ts` defines:
 
-### ConPTY Window Close Crash (Windows)
-On Windows, ConPTY crashes the entire Electron process (`0xC000041D` / `STATUS_FATAL_APP_EXIT`) if a PTY process is alive during native `BrowserWindow` destruction. This affects multi-window scenarios (pop-out projects).
+- app ID `io.github.z4mbo.zai` and product name `zAI`;
+- Windows x64 NSIS packaging;
+- macOS DMG and ZIP packaging with hardened-runtime entitlements;
+- native `node-pty` unpacking; and
+- Windows/macOS installer artifact naming.
 
-**Solution** (in `setupWindow`, `src/main/index.ts`):
-- Secondary window close is intercepted with `e.preventDefault()`
-- PTYs owned by the window are **killed first** while the window is still alive
-- After a 300ms delay (for ConPTY native cleanup), `win.destroy()` is called
-- The last window closing only **detaches** PTY callbacks (actual kill happens in `window-all-closed` / `before-quit`)
+`.github/workflows/release.yml` verifies Windows and macOS, then uses native Windows x64, macOS arm64, and macOS Intel runners for tag artifacts. A `v*` tag publishes all artifacts to one GitHub release. Updates are manual because private GitHub Releases require authentication that must not be embedded in a desktop client.
 
-**Key rule**: Never let a window with live ConPTY processes be destroyed directly. Always kill PTYs before destroying the window, or detach and defer kill.
+macOS signing/notarization requires repository secrets. Hardened-runtime configuration alone does not make an unsigned artifact notarized; keep the README's Gatekeeper warning until signed releases are verified.
 
-## Auto-Updates
+## Working rules
 
-- Uses `electron-updater` with GitHub releases as the provider
-- Configured in `electron-builder.config.ts` under `publish` field
-- Update flow: Check → Download → Prompt user → Quit and install
-- Main process code in `src/main/updater/auto-updater.ts`
+- Preserve user files and unrelated worktree changes.
+- Prefer additive migration with explicit conflict handling over destructive moves.
+- Keep secrets in main-process/local configuration and redact them from errors.
+- Run typecheck, tests, and the production build before release work.
+- For native or packaging changes, also smoke-test an installed artifact on each target architecture.
+- Update README and this file when engine setup, storage, packaging, or security behavior changes.

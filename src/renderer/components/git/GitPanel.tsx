@@ -13,7 +13,7 @@ export default function GitPanel() {
   const [commitMsg, setCommitMsg] = useState('')
   const [showCommitInput, setShowCommitInput] = useState(false)
   const commitInputRef = useRef<HTMLInputElement>(null)
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const cwd = activeProject?.path ?? ''
 
@@ -92,7 +92,6 @@ export default function GitPanel() {
         <p className="text-sm text-win-text-secondary">Git is not installed</p>
         <a
           href="https://git-scm.com/downloads"
-          target="_blank"
           rel="noopener noreferrer"
           className="text-xs text-win-accent hover:underline"
         >

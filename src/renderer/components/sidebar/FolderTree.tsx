@@ -66,7 +66,7 @@ export default function FolderTree({ rootPath, filter }: FolderTreeProps) {
         rowHeight={36}
         onToggle={(id) => handleToggle(id as unknown as string)}
         childrenAccessor={(node: FileNode) =>
-          node.children === null ? [] : node.children ?? undefined
+          node.children === null ? [] : node.children ?? null
         }
       >
         {(props: NodeRendererProps<FileNode>) => <FolderNode {...props} rootPath={rootPath} />}

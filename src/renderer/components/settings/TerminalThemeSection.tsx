@@ -48,7 +48,7 @@ export default function TerminalThemeSection() {
     return resolveTerminalTheme(terminalTheme)
   })
 
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   // Sync local state when the custom theme is loaded from persisted settings
   useEffect(() => {

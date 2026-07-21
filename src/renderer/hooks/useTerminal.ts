@@ -33,7 +33,6 @@ export function useTerminal({ terminalId, cwd }: UseTerminalOptions) {
   const fitAddonRef = useRef<FitAddon | null>(null)
   const disposeDataRef = useRef<(() => void) | null>(null)
   const disposeExitRef = useRef<(() => void) | null>(null)
-  const disposePasteRef = useRef<(() => void) | null>(null)
   const ptyReadyRef = useRef(false)
   const engineCommandSentRef = useRef(false)
   const engineReadyRef = useRef(false)
@@ -62,24 +61,38 @@ export function useTerminal({ terminalId, cwd }: UseTerminalOptions) {
 
     // Capture the engine type for auto-starting (captured once at effect start)
     const terminalEntry = useTerminalStore.getState().terminals.get(terminalId)
-    const engineCommand = terminalEntry?.engine ?? 'claude'
+    const engineId = terminalEntry?.engine ?? 'claude'
+    const launchIntent = terminalEntry?.launchIntent ?? 'start-session'
+    const isMac = navigator.userAgent.includes('Mac')
 
     const terminal = new Terminal({
       ...DEFAULT_TERMINAL_OPTIONS,
-      theme: useSettingsStore.getState().getResolvedTheme(),
-      customKeyEventHandler: (event: KeyboardEvent) => {
-        // Ctrl+C: copy selection to clipboard (like VS Code), otherwise send SIGINT
-        if (event.ctrlKey && event.key === 'c' && terminal.hasSelection()) {
-          navigator.clipboard.writeText(terminal.getSelection())
-          terminal.clearSelection()
-          return false
-        }
-        // Ctrl+Shift+C / Ctrl+Shift+V: let browser handle
-        if (event.ctrlKey && event.shiftKey && (event.key === 'C' || event.key === 'V')) {
-          return false
-        }
-        return true
+      theme: useSettingsStore.getState().getResolvedTheme()
+    })
+    terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+      if (event.type !== 'keydown') return true
+      const key = event.key.toLowerCase()
+      const primaryModifier = isMac ? event.metaKey : event.ctrlKey
+      const hasConflictingModifier =
+        event.altKey ||
+        event.shiftKey ||
+        event.getModifierState('AltGraph') ||
+        (isMac ? event.ctrlKey : event.metaKey)
+
+      // Cmd+C on macOS and Ctrl+C on Windows/Linux copy a selection. Without
+      // a selection, let xterm forward the key so the PTY can send SIGINT.
+      if (primaryModifier && !hasConflictingModifier && key === 'c' && terminal.hasSelection()) {
+        void navigator.clipboard.writeText(terminal.getSelection())
+        terminal.clearSelection()
+        return false
       }
+      if (primaryModifier && !hasConflictingModifier && key === 'v') {
+        event.preventDefault()
+        const text = api.clipboardReadText()
+        if (text && ptyReadyRef.current) terminal.paste(text)
+        return false
+      }
+      return true
     })
     terminalRef.current = terminal
 
@@ -109,9 +122,9 @@ export function useTerminal({ terminalId, cwd }: UseTerminalOptions) {
           navigator.clipboard.writeText(terminal.getSelection())
           terminal.clearSelection()
         } else if (action === 'paste') {
-          const text = window.api.clipboardReadText()
+          const text = api.clipboardReadText()
           if (text && ptyReadyRef.current) {
-            api.ptyWrite(terminalId, text)
+            terminal.paste(text)
           }
         }
       })
@@ -149,13 +162,22 @@ export function useTerminal({ terminalId, cwd }: UseTerminalOptions) {
       const alreadySpawned = spawnedPtys.has(terminalId)
 
       try {
+        const [startCommand, platform] = await Promise.all([
+          api.getCommand(engineId, launchIntent),
+          api.getPlatform()
+        ])
+
         if (!alreadySpawned) {
           spawnedPtys.add(terminalId)
-          await api.ptySpawn(terminalId, {
+          const result = await api.ptySpawn(terminalId, {
             cols: terminal.cols,
             rows: terminal.rows,
-            cwd: cwd ?? undefined
+            cwd: cwd ?? undefined,
+            engineId
           })
+          if (!result.success) {
+            throw new Error(result.error || 'The terminal process could not be started.')
+          }
         }
 
         if (disposed) {
@@ -168,15 +190,14 @@ export function useTerminal({ terminalId, cwd }: UseTerminalOptions) {
         updateTerminal(terminalId, { ptyId: terminalId })
 
         // Sends clear + engine command as soon as the shell is ready
-        const isWindows = navigator.userAgent.includes('Windows')
-        const clearCmd = isWindows ? 'cls' : 'clear'
+        const clearCmd = platform === 'win32' ? 'cls' : 'clear'
         let awaitingShellPrompt = false
 
         const sendEngineCommand = () => {
           if (!ptyReadyRef.current || engineCommandSentRef.current) return
-          console.log('[useTerminal] 📤 Sending engine command:', engineCommand, 'to terminal:', terminalId)
+          console.log('[useTerminal] 📤 Sending engine command:', startCommand, 'to terminal:', terminalId)
           api.ptyWrite(terminalId, `${clearCmd}\r`)
-          api.ptyWrite(terminalId, `${engineCommand}\r`)
+          api.ptyWrite(terminalId, `${startCommand}\r`)
           engineCommandSentRef.current = true
 
           // Fallback timeout — if engine doesn't show a prompt within 15s, clear loading anyway
@@ -238,16 +259,6 @@ export function useTerminal({ terminalId, cwd }: UseTerminalOptions) {
           }
         })
 
-        // Clipboard paste from main process (Ctrl+V intercepted via before-input-event)
-        disposePasteRef.current = window.api.onClipboardPaste((text) => {
-          // Use focusedTerminalId from split-view store for cross-panel paste routing
-          const focusedId = useSplitViewStore.getState().focusedTerminalId
-            ?? useTerminalStore.getState().activeTerminalId
-          if (ptyReadyRef.current && terminalId === focusedId) {
-            api.ptyWrite(terminalId, text)
-          }
-        })
-
         // Terminal → PTY (only after spawn is done)
         terminal.onData((data) => {
           if (ptyReadyRef.current) {
@@ -262,7 +273,7 @@ export function useTerminal({ terminalId, cwd }: UseTerminalOptions) {
         // Auto-start the AI engine command (separate from PTY spawn guard)
         if (!engineStartedPtys.has(terminalId) && terminalEntry) {
           engineStartedPtys.add(terminalId)
-          console.log('[useTerminal] 🚀 Will auto-start engine:', engineCommand, 'for terminal:', terminalId)
+          console.log('[useTerminal] 🚀 Will auto-start engine:', engineId, 'for terminal:', terminalId)
           // Watch PTY output for the shell prompt instead of a blind delay.
           // The PTY already starts in the correct directory via the cwd spawn option.
           awaitingShellPrompt = true
@@ -284,7 +295,14 @@ export function useTerminal({ terminalId, cwd }: UseTerminalOptions) {
       } catch (err) {
         console.error('[useTerminal] Failed to create PTY:', err)
         spawnedPtys.delete(terminalId)
-        terminal.write('\r\n[Failed to start terminal process]\r\n')
+        updateTerminal(terminalId, { ptyId: null, isLoading: false })
+        const message = err instanceof Error ? err.message : String(err)
+        if (engineId === 'openrouter') {
+          terminal.write(`\r\n[OpenRouter is not ready: ${message}]\r\n`)
+          terminal.write('[Open Settings → Providers, connect your API key, and choose a model before starting a new OpenRouter chat.]\r\n')
+        } else {
+          terminal.write(`\r\n[Failed to start terminal process: ${message}]\r\n`)
+        }
       }
     }
 
@@ -314,7 +332,6 @@ export function useTerminal({ terminalId, cwd }: UseTerminalOptions) {
       unsubTheme()
       disposeDataRef.current?.()
       disposeExitRef.current?.()
-      disposePasteRef.current?.()
       if (loadingTimeoutRef.current) {
         clearTimeout(loadingTimeoutRef.current)
         loadingTimeoutRef.current = null

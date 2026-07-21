@@ -1,28 +1,28 @@
-import { app, BrowserWindow, screen, shell, ipcMain, Menu, clipboard } from 'electron'
+import { app, BrowserWindow, screen, shell, ipcMain, Menu } from 'electron'
 import { join } from 'path'
-import Store from 'electron-store'
 import { registerPtyIpc, killAllPty, killPtysForWindow, collectPtyIdsForWindow, killPtyById } from './pty/pty-ipc'
 import { registerFsIpc, closeAllWatchers, closeWatchersForWindow } from './filesystem/fs-ipc'
 import { registerProjectIpc } from './project/project-ipc'
 import { detectEngines, getAvailableEngines } from './ai-engines/engine-registry'
 import { getCommand, isInSessionCommand } from './ai-engines/command-dictionary'
 import { registerConfigIpc } from './ai-engines/config-ipc'
-import { initAutoUpdater, checkForUpdates, downloadUpdate, quitAndInstall } from './updater/auto-updater'
 import { startGuiServer, stopGuiServer } from './gui-control/gui-server'
 import { registerGitIpc } from './git/git-ipc'
 import { getProjectsDir } from './util/paths'
+import { settingsStore } from './settings/settings-store'
+import { registerOpenRouterIpc } from './openrouter/openrouter-ipc'
+import { hydrateProcessExecutablePath } from './ai-engines/executable-resolver'
+import {
+  isRendererSettingKey,
+  isValidRendererSettingValue
+} from './settings/settings-policy'
+import {
+  isOwnedCanvasDocumentUrl,
+  registerCanvasProtocol,
+  registerCanvasScheme
+} from './canvas/canvas-protocol'
 
-const settingsStore = new Store({
-  name: 'settings',
-  defaults: {
-    defaultEngine: 'claude',
-    sidebarWidth: 280,
-    sidebarCollapsed: false,
-    rightPanelWidth: 400,
-    terminalTheme: 'vscode-dark',
-    terminalThemeCustom: null
-  }
-})
+registerCanvasScheme()
 
 // Log uncaught exceptions to console instead of showing a dialog
 process.on('uncaughtException', (error) => {
@@ -39,23 +39,20 @@ let mainWindow: BrowserWindow | null = null
 const preFocusBounds = new Map<BrowserWindow, Electron.Rectangle>()
 
 function setupWindow(win: BrowserWindow, { maximize = true } = {}): void {
-  // Intercept Ctrl+V before Chromium handles it — send clipboard text to renderer
+  // Keep developer shortcuts platform-native. Paste is intentionally not
+  // intercepted here: form fields must retain normal clipboard behavior.
   win.webContents.on('before-input-event', (event, input) => {
     if (win.isDestroyed()) return
     if (input.type === 'keyDown') {
       // DevTools: F12 or Ctrl+Shift+I
-      if (input.key === 'F12' || (input.control && input.shift && input.key.toLowerCase() === 'i')) {
+      const devToolsShortcut =
+        input.key === 'F12' ||
+        (input.control && input.shift && input.key.toLowerCase() === 'i') ||
+        (input.meta && input.alt && input.key.toLowerCase() === 'i')
+      if (devToolsShortcut) {
         win.webContents.toggleDevTools()
         event.preventDefault()
         return
-      }
-      // Paste: Ctrl+V
-      if (input.control && input.key.toLowerCase() === 'v') {
-        const text = clipboard.readText()
-        if (text) {
-          win.webContents.send('clipboard:paste', text)
-          event.preventDefault()
-        }
       }
     }
   })
@@ -70,16 +67,28 @@ function setupWindow(win: BrowserWindow, { maximize = true } = {}): void {
     console.error(`[window] render-process-gone: reason=${details.reason}, exitCode=${details.exitCode}`)
   })
 
-  win.webContents.on('crashed', () => {
-    console.error('[window] webContents crashed')
-  })
+  // Never let renderer or Canvas content create a child browsing context.
+  // Trusted app links use same-frame anchors and are handled below.
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
-  // Open external links in the system browser
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https:') || url.startsWith('http:')) {
-      shell.openExternal(url)
+  win.webContents.on('will-frame-navigate', (event) => {
+    if (event.isMainFrame) {
+      event.preventDefault()
+      try {
+        const url = new URL(event.url)
+        if (url.protocol === 'https:' || url.protocol === 'http:') {
+          void shell.openExternal(url.toString())
+        }
+      } catch {
+        // Invalid and non-web URLs remain blocked.
+      }
+      return
     }
-    return { action: 'deny' }
+
+    // A sandboxed Canvas may load/reload only a token issued to this renderer.
+    if (!isOwnedCanvasDocumentUrl(event.url, win.webContents.id)) {
+      event.preventDefault()
+    }
   })
 
   // On Windows, ConPTY crashes (0xC000041D) if a PTY is alive during native
@@ -134,17 +143,26 @@ function setupWindow(win: BrowserWindow, { maximize = true } = {}): void {
 }
 
 function createBrowserWindow(): BrowserWindow {
+  const isMac = process.platform === 'darwin'
+  const iconFile = isMac ? 'logo.png' : 'icon.ico'
+
   return new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 800,
     minHeight: 500,
     show: false,
-    frame: false,
+    frame: isMac,
+    ...(isMac
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 14, y: 14 }
+        }
+      : {}),
     icon: app.isPackaged
-      ? join(process.resourcesPath, 'icon.ico')
-      : join(__dirname, '../../resources/icon.ico'),
-    title: 'Your Friendly Terminal',
+      ? join(process.resourcesPath, iconFile)
+      : join(__dirname, `../../resources/${iconFile}`),
+    title: 'zAI',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       nodeIntegration: false,
@@ -220,26 +238,21 @@ function registerGlobalIpc(): void {
 
   // App info
   ipcMain.handle('app:version', () => app.getVersion())
-
-  // Updater controls
-  ipcMain.handle('updater:check', async () => {
-    await checkForUpdates()
-  })
-
-  ipcMain.handle('updater:download', async () => {
-    await downloadUpdate()
-  })
-
-  ipcMain.handle('updater:install', async () => {
-    quitAndInstall()
+  ipcMain.handle('app:get-platform', () => {
+    if (process.platform === 'win32' || process.platform === 'darwin') return process.platform
+    return 'linux'
   })
 
   // Settings
-  ipcMain.handle('settings:get', async (_event, key: string) => {
+  ipcMain.handle('settings:get', async (_event, key: unknown) => {
+    if (!isRendererSettingKey(key)) throw new Error('Unknown setting.')
     return settingsStore.get(key)
   })
 
-  ipcMain.handle('settings:set', async (_event, key: string, value: unknown) => {
+  ipcMain.handle('settings:set', async (_event, key: unknown, value: unknown) => {
+    if (!isRendererSettingKey(key) || !isValidRendererSettingValue(key, value)) {
+      throw new Error('Invalid setting value.')
+    }
     settingsStore.set(key, value)
   })
 
@@ -321,17 +334,61 @@ function registerGlobalIpc(): void {
 
 }
 
+function configureApplicationMenu(): void {
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null)
+    return
+  }
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      role: 'appMenu',
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' }
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' }
+      ]
+    }
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
 // --- App lifecycle ---
 
-app.whenReady().then(() => {
-  // Remove default menu so its accelerators (Ctrl+V, etc.) don't intercept terminal input
-  Menu.setApplicationMenu(null)
+app.whenReady().then(async () => {
+  // Finder/Dock launches omit the login-shell PATH. Hydrate before any terminals start.
+  await hydrateProcessExecutablePath()
+
+  // Keep normal macOS application behavior; other platforms use custom window chrome.
+  configureApplicationMenu()
+
+  // Canvas documents use their own sandboxed origin and restrictive CSP.
+  registerCanvasProtocol()
 
   // Register IPC handlers that don't need the window
   registerGlobalIpc()
   registerProjectIpc()
   registerConfigIpc()
   registerGitIpc()
+  registerOpenRouterIpc()
 
   // Create the main window
   createWindow()
@@ -340,15 +397,9 @@ app.whenReady().then(() => {
   if (mainWindow) {
     registerFsIpc(mainWindow)
     registerPtyIpc(mainWindow)
-    initAutoUpdater(mainWindow)
     startGuiServer(mainWindow).catch((err) => {
       console.error('[main] Failed to start GUI control server:', err)
     })
-
-    // Check for updates after a short delay to not block startup
-    setTimeout(() => {
-      checkForUpdates()
-    }, 3000)
   }
 
   // macOS: re-create window when dock icon is clicked and no windows exist
@@ -357,20 +408,23 @@ app.whenReady().then(() => {
       createWindow()
       if (mainWindow) {
         registerPtyIpc(mainWindow)
-        initAutoUpdater(mainWindow)
+        startGuiServer(mainWindow).catch((err) => {
+          console.error('[main] Failed to restart GUI control server:', err)
+        })
       }
     }
   })
 })
 
 app.on('window-all-closed', () => {
-  // Kill all PTY processes, close watchers, and stop GUI server before quitting
+  // Kill all PTY processes and close watchers. macOS keeps the local GUI
+  // server alive while the app remains resident so Dock reactivation works.
   killAllPty()
   closeAllWatchers()
-  stopGuiServer()
 
   // On macOS, apps typically stay active until Cmd+Q
   if (process.platform !== 'darwin') {
+    stopGuiServer()
     app.quit()
   }
 })

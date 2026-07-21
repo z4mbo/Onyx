@@ -7,7 +7,7 @@ export default defineConfig({
   main: {
     plugins: [
       externalizeDepsPlugin({
-        exclude: ['electron-store', 'electron-updater', 'ajv', 'ajv-formats']
+        exclude: ['electron-store', 'ajv', 'ajv-formats']
       })
     ],
     resolve: {

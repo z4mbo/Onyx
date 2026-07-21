@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
 /**
- * MCP Server for Your Friendly Terminal GUI control.
+ * MCP Server for zAI GUI control.
  *
- * Provides tools for AI assistants (Claude Code, Gemini CLI) to control
+ * Provides tools for supported AI coding assistants to control
  * the app's right panel: switch tabs, open/close the panel.
  *
  * Communication: reads the GUI server port from a file specified by
- * the YFT_GUI_PORT_FILE environment variable, then connects via WebSocket.
+ * the ZAI_GUI_PORT_FILE environment variable, then connects via WebSocket.
  */
 
 const { Server } = require('@modelcontextprotocol/sdk/server/index.js')
@@ -29,7 +29,7 @@ const MAX_HTML_SIZE = 1024 * 1024 // 1MB
  * Returns the project path from env var or falls back to cwd.
  */
 function getProjectPath() {
-  return process.env.YFT_PROJECT_PATH || process.cwd()
+  return process.env.ZAI_PROJECT_PATH || process.env.YFT_PROJECT_PATH || process.cwd()
 }
 
 /**
@@ -77,9 +77,9 @@ function sendAction(port, action) {
  * Reads the GUI server port from the port file.
  */
 function readPort() {
-  const portFile = process.env.YFT_GUI_PORT_FILE
+  const portFile = process.env.ZAI_GUI_PORT_FILE || process.env.YFT_GUI_PORT_FILE
   if (!portFile) {
-    throw new Error('YFT_GUI_PORT_FILE environment variable is not set')
+    throw new Error('ZAI_GUI_PORT_FILE environment variable is not set')
   }
 
   try {
@@ -92,7 +92,7 @@ function readPort() {
   } catch (err) {
     if (err.code === 'ENOENT') {
       throw new Error(
-        `Port file not found at "${portFile}". Is Your Friendly Terminal running?`
+        `Port file not found at "${portFile}". Is zAI running?`
       )
     }
     throw err
@@ -118,7 +118,7 @@ async function main() {
         {
           name: 'switch_tab',
           description:
-            'Switch the right panel of Your Friendly Terminal to a specific tab. Available tabs: tips (shows tips.md content), agents (lists AI agents), skills (lists available skills), mcps (shows MCP server configurations).',
+            'Switch the right panel of zAI to a specific tab. Available tabs: tips (shows tips.md content), agents (lists AI agents), skills (lists available skills), mcps (shows MCP server configurations).',
           inputSchema: {
             type: 'object',
             properties: {
@@ -134,7 +134,7 @@ async function main() {
         {
           name: 'open_panel',
           description:
-            'Open (expand) the right panel of Your Friendly Terminal if it is currently collapsed.',
+            'Open (expand) the right panel of zAI if it is currently collapsed.',
           inputSchema: {
             type: 'object',
             properties: {}
@@ -143,7 +143,7 @@ async function main() {
         {
           name: 'close_panel',
           description:
-            'Close (collapse) the right panel of Your Friendly Terminal.',
+            'Close (collapse) the right panel of zAI.',
           inputSchema: {
             type: 'object',
             properties: {}
@@ -152,7 +152,7 @@ async function main() {
         {
           name: 'render_ui',
           description:
-            'Build a project insight interface beside the terminal. Write a self-contained HTML document (inline CSS/JS) following Windows 11 light-theme design (light backgrounds, Segoe UI, subtle borders). The UI can read project files at runtime via window.yft.readFile(path) and yft.readDir(path). Use mode "full" (replaces sidebar + right panel, primary), "bottom" (below terminal), or "panel" (right sidebar tab). Do NOT call this on every response — only when the user asks or an important insight warrants it. Max 1MB.',
+            'Build a project insight interface beside the terminal. Write a self-contained HTML document (inline CSS/JS) following Windows 11 light-theme design (light backgrounds, Segoe UI, subtle borders). The UI can read contained project files at runtime using relative paths with window.yft.readFile(path) and yft.readDir(path). Use mode "full" (replaces sidebar + right panel, primary), "bottom" (below terminal), or "panel" (right sidebar tab). Do NOT call this on every response — only when the user asks or an important insight warrants it. Max 1MB.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -181,7 +181,7 @@ async function main() {
         {
           name: 'add_connection',
           description:
-            'Add a new MCP connection to the current project in Your Friendly Terminal. Supports SSE/remote (proxied via mcp-remote) and stdio/local connections. After adding, the Connections tab is auto-selected and the list refreshes.',
+            'Add a new MCP connection to the current project in zAI. Supports SSE/remote (proxied via mcp-remote) and stdio/local connections. After adding, the Connections tab is auto-selected and the list refreshes.',
           inputSchema: {
             type: 'object',
             properties: {

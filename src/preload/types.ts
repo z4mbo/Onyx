@@ -7,8 +7,8 @@ export interface DirEntry {
 }
 
 export interface DiskInfo {
-  letter: string
-  label: string
+  name: string
+  mount: string
   free: number
   size: number
 }
@@ -35,6 +35,8 @@ export interface AIEngineInfo {
   name: string
   command: string
   isAvailable: boolean
+  version?: string
+  availabilityReason?: string
 }
 
 export interface AgentEntry {
@@ -70,6 +72,7 @@ export interface GitFileChange {
 }
 
 export interface PtySpawnOptions {
+  engineId?: 'claude' | 'gemini' | 'codex' | 'kimi' | 'openrouter'
   shell?: string
   cwd?: string
   env?: Record<string, string>
@@ -77,9 +80,43 @@ export interface PtySpawnOptions {
   rows?: number
 }
 
+export interface PtySpawnResult {
+  success: boolean
+  error?: string
+}
+
+export interface OpenRouterModelInfo {
+  id: string
+  name: string
+  description: string
+  contextLength: number
+  inputModalities: string[]
+  supportsThinking: boolean
+  supportsImages: boolean
+}
+
+export interface OpenRouterOperationResult {
+  success: boolean
+  error?: string
+}
+
+export interface OpenRouterModelsResult extends OpenRouterOperationResult {
+  models: OpenRouterModelInfo[]
+}
+
+export interface OpenRouterStatus {
+  hasApiKey: boolean
+  selectedModelId: string | null
+}
+
+export interface CanvasDocumentInfo {
+  token: string
+  url: string
+}
+
 export interface IElectronAPI {
   // PTY
-  ptySpawn: (id: string, options?: PtySpawnOptions) => Promise<void>
+  ptySpawn: (id: string, options?: PtySpawnOptions) => Promise<PtySpawnResult>
   ptyWrite: (id: string, data: string) => void
   ptyResize: (id: string, cols: number, rows: number) => void
   ptyKill: (id: string) => Promise<void>
@@ -90,6 +127,10 @@ export interface IElectronAPI {
   listDisks: () => Promise<DiskInfo[]>
   readDir: (dirPath: string) => Promise<DirEntry[]>
   readFile: (filePath: string) => Promise<string | null>
+  canvasReadFile: (projectRoot: string, relativePath: string) => Promise<string>
+  canvasReadDir: (projectRoot: string, relativePath: string) => Promise<DirEntry[]>
+  canvasCreateDocument: (content: string) => Promise<CanvasDocumentInfo>
+  canvasDisposeDocument: (token: string) => Promise<void>
   writeFile: (filePath: string, content: string) => Promise<void>
   stat: (filePath: string) => Promise<DirEntry>
   fsWatch: (dirPath: string) => Promise<void>
@@ -107,7 +148,7 @@ export interface IElectronAPI {
   showOpenDirectory: () => Promise<string | null>
 
   // MCP
-  listMcpServers: (projectName: string) => Promise<McpConfig>
+  listMcpServers: (projectName: string) => Promise<Record<string, McpServer>>
   addMcpServer: (projectName: string, name: string, server: McpServer) => Promise<void>
   updateMcpServer: (projectName: string, name: string, server: McpServer) => Promise<void>
   removeMcpServer: (projectName: string, name: string) => Promise<void>
@@ -136,6 +177,15 @@ export interface IElectronAPI {
 
   // App
   getAppVersion: () => Promise<string>
+  getPlatform: () => Promise<'win32' | 'darwin' | 'linux'>
+
+  // OpenRouter
+  openRouterSaveApiKey: (apiKey: string) => Promise<OpenRouterOperationResult>
+  openRouterClearApiKey: () => Promise<OpenRouterOperationResult>
+  openRouterGetStatus: () => Promise<OpenRouterStatus>
+  openRouterListModels: (forceRefresh?: boolean) => Promise<OpenRouterModelsResult>
+  openRouterGetSelectedModel: () => Promise<string | null>
+  openRouterSetSelectedModel: (modelId: string) => Promise<OpenRouterOperationResult>
 
   // Settings
   getSetting: (key: string) => Promise<unknown>
@@ -146,17 +196,7 @@ export interface IElectronAPI {
 
   // Clipboard
   clipboardReadText: () => string
-  onClipboardPaste: (callback: (text: string) => void) => () => void
   showTerminalContextMenu: (hasSelection: boolean) => Promise<string | null>
-
-  // Updater
-  updaterCheck: () => Promise<void>
-  updaterDownload: () => Promise<void>
-  updaterInstall: () => void
-  onUpdateAvailable: (callback: (info: { version: string; releaseDate: string; releaseNotes: string }) => void) => () => void
-  onUpdateDownloaded: (callback: (info: { version: string }) => void) => () => void
-  onUpdateProgress: (callback: (progress: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => void) => () => void
-  onUpdateError: (callback: (error: { message: string }) => void) => () => void
 
   // Window controls
   windowMinimize: () => void

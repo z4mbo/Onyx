@@ -1,6 +1,10 @@
 import * as pty from 'node-pty'
+import { delimiter } from 'path'
+import type { AIEngineId } from '../ai-engines/engine-registry'
+import { getAugmentedExecutablePathSync } from '../ai-engines/executable-resolver'
 
 export interface PtySpawnOptions {
+  engineId?: AIEngineId
   shell?: string
   cwd?: string
   env?: Record<string, string>
@@ -35,9 +39,16 @@ export class PtyManager {
     const cols = options.cols || 120
     const rows = options.rows || 30
 
-    const env = options.env
-      ? { ...process.env, ...options.env }
-      : { ...process.env }
+    const env = { ...process.env, ...(options.env ?? {}) }
+    const requestedPathEntry = Object.entries(options.env ?? {}).find(
+      ([key]) => key.toLowerCase() === 'path'
+    )?.[1]
+    for (const key of Object.keys(env)) {
+      if (key.toLowerCase() === 'path') delete env[key]
+    }
+    env.PATH = [requestedPathEntry, getAugmentedExecutablePathSync()]
+      .filter(Boolean)
+      .join(delimiter)
 
     const ptyProcess = pty.spawn(shell, [], {
       name: 'xterm-256color',
@@ -45,7 +56,7 @@ export class PtyManager {
       rows,
       cwd: options.cwd || process.env.USERPROFILE || process.env.HOME || 'C:\\',
       env: env as Record<string, string>,
-      useConpty: true
+      useConpty: process.platform === 'win32'
     })
 
     const instance: PtyInstance = {

@@ -1,19 +1,21 @@
-import { Configuration } from 'electron-builder'
+import type { Configuration } from 'electron-builder'
 
 const config: Configuration = {
-  appId: 'com.yourfriendlyterminal.app',
-  productName: 'Your Friendly Terminal',
+  appId: 'io.github.z4mbo.zai',
+  productName: 'zAI',
+  executableName: 'zAI',
+  artifactName: '${productName}-${version}-${os}-${arch}.${ext}',
   directories: {
     buildResources: 'resources',
     output: 'dist'
   },
   files: [
     'out/**/*',
-    '!node_modules/**/*',
-    'node_modules/node-pty/**/*',
-    'node_modules/ws/**/*',
-    'node_modules/@modelcontextprotocol/**/*'
+    'package.json'
   ],
+  asar: true,
+  asarUnpack: ['node_modules/node-pty/**/*'],
+  npmRebuild: true,
   extraResources: [
     {
       from: 'resources/default-projects',
@@ -27,6 +29,14 @@ const config: Configuration = {
     {
       from: 'resources/logo.png',
       to: 'logo.png'
+    },
+    {
+      from: 'LICENSE',
+      to: 'LICENSE'
+    },
+    {
+      from: 'ATTRIBUTION.md',
+      to: 'ATTRIBUTION.md'
     }
   ],
   win: {
@@ -36,25 +46,35 @@ const config: Configuration = {
         arch: ['x64']
       }
     ],
-    icon: 'resources/icon.ico'
+    icon: 'resources/icon.ico',
+    legalTrademarks: 'zAI'
   },
   nsis: {
     oneClick: false,
     allowToChangeInstallationDirectory: true,
     createDesktopShortcut: true,
     createStartMenuShortcut: true,
-    shortcutName: 'Your Friendly Terminal',
+    shortcutName: 'zAI',
     installerIcon: 'resources/icon.ico',
     uninstallerIcon: 'resources/icon.ico',
     installerHeader: 'resources/installer/header.bmp',
     installerSidebar: 'resources/installer/sidebar.bmp',
     uninstallerSidebar: 'resources/installer/sidebar.bmp',
+    license: 'LICENSE',
     include: 'resources/installer/installer.nsh'
   },
-  publish: {
-    provider: 'github',
-    owner: 'BrunoPigat',
-    repo: 'friendly-terminal'
+  mac: {
+    target: ['dmg', 'zip'],
+    icon: 'resources/logo.png',
+    category: 'public.app-category.developer-tools',
+    hardenedRuntime: true,
+    gatekeeperAssess: false,
+    entitlements: 'build/entitlements.mac.plist',
+    entitlementsInherit: 'build/entitlements.mac.plist'
+  },
+  dmg: {
+    title: 'zAI ${version}',
+    artifactName: '${productName}-${version}-mac-${arch}.${ext}'
   }
 }
 

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useProjectStore } from '@/stores/project-store'
 import { useSettingsStore } from '@/stores/settings-store'
 import { APP_NAME } from '@/lib/constants'
-import { showOpenDirectory, getProjectsDir, shellOpenPath } from '@/lib/api'
+import { showOpenDirectory, getProjectsDir, shellOpenPath, type Project } from '@/lib/api'
 import DeleteProjectDialog from '@/components/project/DeleteProjectDialog'
 import SetupBanner from '@/components/SetupBanner'
 import HelpDialog from '@/components/HelpDialog'
@@ -57,7 +57,7 @@ export default function WelcomeScreen() {
   }
 
   const handleSelectProject = useCallback(
-    (project: { name: string; path: string; createdAt: string }) => {
+    (project: Project) => {
       selectProject(project, defaultEngine)
     },
     [selectProject, defaultEngine]

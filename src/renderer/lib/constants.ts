@@ -1,6 +1,6 @@
 import type { ITerminalOptions } from '@xterm/xterm'
 
-export const APP_NAME = 'Your Friendly Terminal'
+export const APP_NAME = 'zAI'
 
 /**
  * Supported AI coding assistants.
@@ -8,7 +8,9 @@ export const APP_NAME = 'Your Friendly Terminal'
 export const ENGINE_NAMES = {
   claude: 'Claude',
   gemini: 'Gemini',
-  codex: 'Codex'
+  codex: 'Codex',
+  kimi: 'Kimi Code',
+  openrouter: 'OpenRouter'
 } as const
 
 export type EngineId = keyof typeof ENGINE_NAMES
@@ -17,35 +19,45 @@ export type EngineId = keyof typeof ENGINE_NAMES
 export const ENGINE_COLORS: Record<EngineId, string> = {
   claude: 'bg-orange-400',
   gemini: 'bg-blue-400',
-  codex: 'bg-green-400'
+  codex: 'bg-green-400',
+  kimi: 'bg-violet-400',
+  openrouter: 'bg-fuchsia-400'
 }
 
 /** Text color class for engine-tinted icons. */
 export const ENGINE_TEXT_COLORS: Record<EngineId, string> = {
   claude: 'text-orange-500',
   gemini: 'text-blue-500',
-  codex: 'text-green-500'
+  codex: 'text-green-500',
+  kimi: 'text-violet-500',
+  openrouter: 'text-fuchsia-500'
 }
 
 /** Engine instruction / memory file names. */
 export const ENGINE_MD_FILES: Record<EngineId, string> = {
   claude: 'CLAUDE.md',
   gemini: 'GEMINI.md',
-  codex: 'CODEX.md'
+  codex: 'AGENTS.md',
+  kimi: 'AGENTS.md',
+  openrouter: 'AGENTS.md'
 }
 
 /** Compact / compress slash-command per engine. */
 export const ENGINE_COMPACT_CMD: Record<EngineId, string> = {
   claude: '/compact',
   gemini: '/compress',
-  codex: '/compact'
+  codex: '/compact',
+  kimi: '/compact',
+  openrouter: '/compact'
 }
 
 /** Engine config directory name (relative to project root). */
 export const ENGINE_DIRS: Record<EngineId, string> = {
   claude: '.claude',
   gemini: '.gemini',
-  codex: '.agents'
+  codex: '.agents',
+  kimi: '.kimi-code',
+  openrouter: '.kimi-code'
 }
 
 /**

@@ -128,6 +128,7 @@ export default function TipsPanel() {
 
     return () => {
       unsub()
+      void api.fsUnwatch(projectPath)
     }
   }, [activeProject])
 

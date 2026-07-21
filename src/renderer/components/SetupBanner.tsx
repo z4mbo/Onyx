@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { detectEngines } from '@/lib/api'
+import { useState, useEffect, useCallback, type ReactNode } from 'react'
+import * as api from '@/lib/api'
 import InstallEngineDialog from './InstallEngineDialog'
 
 interface EngineInfo {
@@ -8,17 +8,28 @@ interface EngineInfo {
   isAvailable: boolean
 }
 
-const isWindows = navigator.userAgent.includes('Windows')
+type Platform = 'win32' | 'darwin' | 'linux'
 
-const INSTALL_COMMANDS: Record<string, string> = {
-  claude: isWindows
-    ? 'irm https://claude.ai/install.ps1 | iex'
-    : 'curl -fsSL https://claude.ai/install.sh | bash',
-  gemini: 'npm install -g @google/gemini-cli',
-  codex: 'npm install -g @openai/codex'
+const INSTALL_COMMANDS: Record<string, { win32: string; unix: string }> = {
+  claude: {
+    win32: 'irm https://claude.ai/install.ps1 | iex',
+    unix: 'curl -fsSL https://claude.ai/install.sh | bash'
+  },
+  gemini: {
+    win32: 'npm install -g @google/gemini-cli',
+    unix: 'npm install -g @google/gemini-cli'
+  },
+  codex: {
+    win32: 'npm install -g @openai/codex',
+    unix: 'npm install -g @openai/codex'
+  },
+  kimi: {
+    win32: 'irm https://code.kimi.com/kimi-code/install.ps1 | iex',
+    unix: 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash'
+  }
 }
 
-const ENGINE_ICONS: Record<string, JSX.Element> = {
+const ENGINE_ICONS: Record<string, ReactNode> = {
   claude: (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 2L2 7l10 5 10-5-10-5z" />
@@ -36,6 +47,12 @@ const ENGINE_ICONS: Record<string, JSX.Element> = {
       <polyline points="16 18 22 12 16 6" />
       <polyline points="8 6 2 12 8 18" />
     </svg>
+  ),
+  kimi: (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 4v16" />
+      <path d="M19 4 9 12l10 8" />
+    </svg>
   )
 }
 
@@ -44,12 +61,17 @@ export default function SetupBanner() {
   const [loading, setLoading] = useState(true)
   const [installing, setInstalling] = useState<{ id: string; name: string } | null>(null)
   const [showExplainer, setShowExplainer] = useState(false)
+  const [platform, setPlatform] = useState<Platform>(() => navigator.userAgent.includes('Windows') ? 'win32' : navigator.userAgent.includes('Mac') ? 'darwin' : 'linux')
 
   const detect = useCallback(async () => {
     setLoading(true)
     try {
-      const result = await detectEngines()
+      const [result, currentPlatform] = await Promise.all([
+        api.detectEngines(),
+        api.getPlatform().catch((): Platform => navigator.userAgent.includes('Windows') ? 'win32' : navigator.userAgent.includes('Mac') ? 'darwin' : 'linux')
+      ])
       setEngines(result as EngineInfo[])
+      setPlatform(currentPlatform)
     } catch (err) {
       console.error('[SetupBanner] Failed to detect engines:', err)
     }
@@ -60,13 +82,14 @@ export default function SetupBanner() {
     detect()
   }, [detect])
 
-  const missingEngines = engines.filter((e) => !e.isAvailable)
-  const noneFound = missingEngines.length === engines.length && engines.length > 0
+  // OpenRouter is a provider used through Kimi Code, not a standalone CLI.
+  const cliEngines = engines.filter((e) => e.id !== 'openrouter')
+  const missingEngines = cliEngines.filter((e) => !e.isAvailable)
+  const noneFound = missingEngines.length === cliEngines.length && cliEngines.length > 0
 
-  // When none are found, only suggest installing one engine (Claude as default)
-  const displayedEngines = noneFound
-    ? missingEngines.filter((e) => e.id === 'claude')
-    : missingEngines
+  // Keep every installable assistant discoverable on first run. OpenRouter is
+  // intentionally excluded above because it is configured as a provider.
+  const displayedEngines = missingEngines
 
   if (loading || missingEngines.length === 0) return null
 
@@ -110,10 +133,10 @@ export default function SetupBanner() {
         {(showExplainer || noneFound) && (
           <div className="mt-3 border-t border-win-border pt-3 text-xs text-win-text-secondary leading-relaxed space-y-2">
             <p>
-              Your Friendly Terminal needs at least one AI coding assistant installed on your system to work. These are command-line tools that run locally on your machine.
+              zAI needs at least one AI coding assistant installed on your system. These command-line tools run locally on your machine.
             </p>
             <p>
-              <strong className="text-win-text">Claude Code</strong> is Anthropic's CLI assistant, <strong className="text-win-text">Gemini CLI</strong> is Google's, and <strong className="text-win-text">Codex CLI</strong> is OpenAI's. You only need one, but you can install multiple to switch between them.
+              Choose from <strong className="text-win-text">Claude Code</strong>, <strong className="text-win-text">Gemini CLI</strong>, <strong className="text-win-text">Codex CLI</strong>, and <strong className="text-win-text">Kimi Code</strong>. OpenRouter is configured separately in Settings and runs through Kimi Code.
             </p>
             <p>
               Click "Install" above for step-by-step instructions. After installing, restart the app and this message will go away.
@@ -124,8 +147,11 @@ export default function SetupBanner() {
 
       {installing && (
         <InstallEngineDialog
+          engineId={installing.id}
           engineName={installing.name}
-          installCommand={INSTALL_COMMANDS[installing.id]}
+          installCommand={platform === 'win32'
+            ? INSTALL_COMMANDS[installing.id].win32
+            : INSTALL_COMMANDS[installing.id].unix}
           onClose={() => {
             setInstalling(null)
             detect()

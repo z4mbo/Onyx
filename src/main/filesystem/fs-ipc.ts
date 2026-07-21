@@ -1,14 +1,36 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { stat, readFile, writeFile, mkdir } from 'fs/promises'
 import { watch, type FSWatcher } from 'fs'
-import { dirname } from 'path'
+import { dirname, join, resolve } from 'path'
 import { listDisks } from './disk-service'
 import { readDirectory } from './tree-service'
+import { resolveExistingPathWithinRoot } from './path-containment'
 
-const watchers = new Map<string, FSWatcher>()
+interface WatchSubscriber {
+  window: BrowserWindow
+  rootPath: string
+  count: number
+}
 
-/** Map watched dirPath → the BrowserWindow that requested the watch */
-const watchOwners = new Map<string, BrowserWindow>()
+interface WatchRecord {
+  watcher: FSWatcher
+  directory: string
+  subscribers: Map<number, WatchSubscriber>
+  debounceTimer: ReturnType<typeof setTimeout> | null
+}
+
+const watchRecords = new Map<string, WatchRecord>()
+
+function watchKey(dirPath: string): string {
+  const absolutePath = resolve(dirPath)
+  return process.platform === 'win32' ? absolutePath.toLowerCase() : absolutePath
+}
+
+function closeWatchRecord(key: string, record: WatchRecord): void {
+  if (record.debounceTimer) clearTimeout(record.debounceTimer)
+  record.watcher.close()
+  watchRecords.delete(key)
+}
 
 /**
  * Registers all filesystem-related IPC handlers.
@@ -60,6 +82,29 @@ export function registerFsIpc(_mainWindow: BrowserWindow): void {
     }
   })
 
+  // Canvas HTML is project-controlled script. Its bridge may only read existing
+  // files beneath the active project, including after symlinks are resolved.
+  ipcMain.handle(
+    'fs:canvas-read-file',
+    async (_event, projectRoot: string, relativePath: string) => {
+      const filePath = await resolveExistingPathWithinRoot(projectRoot, relativePath)
+      const info = await stat(filePath)
+      if (!info.isFile()) throw new Error('Canvas requested a path that is not a file.')
+      if (info.size > 2 * 1024 * 1024) throw new Error('Canvas files are limited to 2 MB.')
+      return readFile(filePath, 'utf-8')
+    }
+  )
+
+  ipcMain.handle(
+    'fs:canvas-read-dir',
+    async (_event, projectRoot: string, relativePath: string) => {
+      const dirPath = await resolveExistingPathWithinRoot(projectRoot, relativePath)
+      const info = await stat(dirPath)
+      if (!info.isDirectory()) throw new Error('Canvas requested a path that is not a directory.')
+      return (await readDirectory(dirPath)).slice(0, 2_000)
+    }
+  )
+
   ipcMain.handle('fs:write-file', async (_event, filePath: string, content: string) => {
     try {
       await mkdir(dirname(filePath), { recursive: true })
@@ -73,53 +118,81 @@ export function registerFsIpc(_mainWindow: BrowserWindow): void {
   // ---- Filesystem watcher ---------------------------------------------------
 
   ipcMain.handle('fs:watch', async (event, dirPath: string) => {
-    // Already watching this path
-    if (watchers.has(dirPath)) return
-
-    // Track which window requested this watch
     const senderWindow = BrowserWindow.fromWebContents(event.sender)
-    if (senderWindow) watchOwners.set(dirPath, senderWindow)
+    if (!senderWindow || senderWindow.isDestroyed()) return
+    const directory = resolve(dirPath)
+    const key = watchKey(directory)
+    const existingRecord = watchRecords.get(key)
+    if (existingRecord) {
+      const existingSubscriber = existingRecord.subscribers.get(senderWindow.id)
+      if (existingSubscriber) existingSubscriber.count += 1
+      else {
+        existingRecord.subscribers.set(senderWindow.id, {
+          window: senderWindow,
+          rootPath: dirPath,
+          count: 1
+        })
+      }
+      return
+    }
 
     try {
-      let debounceTimer: ReturnType<typeof setTimeout> | null = null
-
-      const watcher = watch(dirPath, { recursive: true }, (_eventType, filename) => {
+      const subscribers = new Map<number, WatchSubscriber>([
+        [senderWindow.id, { window: senderWindow, rootPath: dirPath, count: 1 }]
+      ])
+      let record: WatchRecord
+      const watcher = watch(directory, { recursive: true }, (_eventType, filename) => {
         // Debounce: batch rapid changes into a single notification
-        if (debounceTimer) clearTimeout(debounceTimer)
-        debounceTimer = setTimeout(() => {
-          try {
-            const win = watchOwners.get(dirPath)
-            if (win && !win.isDestroyed()) {
-              // Send the directory that changed so the renderer knows what to reload
-              const changedDir = filename ? dirname(`${dirPath}/${filename}`) : dirPath
-              win.webContents.send('fs:changed', dirPath, changedDir)
+        if (record.debounceTimer) clearTimeout(record.debounceTimer)
+        record.debounceTimer = setTimeout(() => {
+          const changedDir = filename
+            ? dirname(join(record.directory, filename.toString()))
+            : record.directory
+          for (const [windowId, subscriber] of record.subscribers) {
+            if (subscriber.window.isDestroyed()) {
+              record.subscribers.delete(windowId)
+              continue
             }
-          } catch {
-            // Window may have been destroyed between check and send
+            try {
+              subscriber.window.webContents.send(
+                'fs:changed',
+                subscriber.rootPath,
+                changedDir
+              )
+            } catch {
+              record.subscribers.delete(windowId)
+            }
           }
         }, 300)
       })
 
+      record = { watcher, directory, subscribers, debounceTimer: null }
+
       watcher.on('error', (err) => {
-        console.warn(`[fs:watch] watcher error for "${dirPath}": ${err.message}`)
-        watchers.delete(dirPath)
-        watchOwners.delete(dirPath)
+        console.warn(`[fs:watch] watcher error for "${directory}": ${err.message}`)
+        if (watchRecords.get(key) === record) closeWatchRecord(key, record)
       })
 
-      watchers.set(dirPath, watcher)
-      console.log(`[fs:watch] watching "${dirPath}"`)
+      watchRecords.set(key, record)
+      console.log(`[fs:watch] watching "${directory}"`)
     } catch (err) {
-      console.error(`[fs:watch] FAILED to watch "${dirPath}": ${(err as Error).message}`)
+      console.error(`[fs:watch] FAILED to watch "${directory}": ${(err as Error).message}`)
     }
   })
 
-  ipcMain.handle('fs:unwatch', async (_event, dirPath: string) => {
-    const watcher = watchers.get(dirPath)
-    if (watcher) {
-      watcher.close()
-      watchers.delete(dirPath)
-      watchOwners.delete(dirPath)
-      console.log(`[fs:unwatch] stopped watching "${dirPath}"`)
+  ipcMain.handle('fs:unwatch', async (event, dirPath: string) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender)
+    if (!senderWindow) return
+    const key = watchKey(dirPath)
+    const record = watchRecords.get(key)
+    if (!record) return
+    const subscriber = record.subscribers.get(senderWindow.id)
+    if (!subscriber) return
+    subscriber.count -= 1
+    if (subscriber.count <= 0) record.subscribers.delete(senderWindow.id)
+    if (record.subscribers.size === 0) {
+      closeWatchRecord(key, record)
+      console.log(`[fs:unwatch] stopped watching "${record.directory}"`)
     }
   })
 }
@@ -128,26 +201,20 @@ export function registerFsIpc(_mainWindow: BrowserWindow): void {
  * Close all watchers. Call during app shutdown.
  */
 export function closeAllWatchers(): void {
-  for (const [path, watcher] of watchers) {
-    watcher.close()
-    watchers.delete(path)
+  for (const [key, record] of watchRecords) {
+    closeWatchRecord(key, record)
   }
-  watchOwners.clear()
 }
 
 /**
  * Close watchers owned by a specific window. Call when a window closes.
  */
 export function closeWatchersForWindow(win: BrowserWindow): void {
-  for (const [dirPath, owner] of watchOwners) {
-    if (owner === win) {
-      const watcher = watchers.get(dirPath)
-      if (watcher) {
-        watcher.close()
-        watchers.delete(dirPath)
-      }
-      watchOwners.delete(dirPath)
-      console.log(`[fs-ipc] closed watcher for "${dirPath}" (window closing)`)
+  for (const [key, record] of watchRecords) {
+    if (!record.subscribers.delete(win.id)) continue
+    if (record.subscribers.size === 0) {
+      closeWatchRecord(key, record)
+      console.log(`[fs-ipc] closed watcher for "${record.directory}" (last window closed)`)
     }
   }
 }

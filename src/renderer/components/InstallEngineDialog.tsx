@@ -6,6 +6,7 @@ import * as api from '@/lib/api'
 import { useSettingsStore } from '@/stores/settings-store'
 
 interface Props {
+  engineId: string
   engineName: string
   installCommand: string
   onClose: (installed: boolean) => void
@@ -48,7 +49,7 @@ const HINT_PATTERNS: Array<{ pattern: RegExp; hint: Hint }> = [
   }
 ]
 
-export default function InstallEngineDialog({ engineName, installCommand, onClose }: Props) {
+export default function InstallEngineDialog({ engineId, engineName, installCommand, onClose }: Props) {
   const theme = useSettingsStore((s) => s.getResolvedTheme())
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
@@ -109,7 +110,6 @@ export default function InstallEngineDialog({ engineName, installCommand, onClos
 
     const unsubData = api.onPtyData((id, data) => {
       if (id !== ptyId) return
-      console.log('[InstallEngine] PTY data:', JSON.stringify(data))
       terminal.write(data)
       for (const { pattern, hint } of HINT_PATTERNS) {
         if (pattern.test(data)) addHintIfNew(hint)
@@ -128,30 +128,42 @@ export default function InstallEngineDialog({ engineName, installCommand, onClos
       }
     })
 
-    // Spawn PTY and write install command
-    const isWindows = navigator.userAgent.includes('Windows')
-    // Use cmd.exe on Windows — PowerShell parses '@' as a splatting expression
-    // which breaks scoped package names like @google/gemini-cli
-    const shell = isWindows ? 'cmd.exe' : '/bin/bash'
-    const lineEnd = isWindows ? '\r\n' : '\n'
-    console.log('[InstallEngine] Spawning PTY', { ptyId, shell, installCommand })
-    api.ptySpawn(ptyId, {
-      shell,
-      cols: terminal.cols,
-      rows: terminal.rows
-    }).then(() => {
-      if (!active) {
-        console.log('[InstallEngine] Effect cleaned up before spawn resolved, skipping write')
-        return
+    // Script installers require PowerShell on Windows, while scoped npm
+    // packages are safest in cmd.exe. macOS/Linux use bash.
+    const startInstaller = async () => {
+      try {
+        const platform = await api.getPlatform()
+        const needsPowerShell = platform === 'win32' && (engineId === 'claude' || engineId === 'kimi')
+        const shell = platform === 'win32'
+          ? needsPowerShell ? 'powershell.exe' : 'cmd.exe'
+          : '/bin/bash'
+        const lineEnd = platform === 'win32' ? '\r\n' : '\n'
+
+        console.log('[InstallEngine] Spawning PTY', { ptyId, shell, installCommand })
+        const result = await api.ptySpawn(ptyId, {
+          shell,
+          cols: terminal.cols,
+          rows: terminal.rows
+        })
+        if (!result.success) {
+          throw new Error(result.error || 'The installer terminal could not be started.')
+        }
+        if (!active) {
+          console.log('[InstallEngine] Effect cleaned up before spawn resolved, skipping write')
+          return
+        }
+        console.log('[InstallEngine] PTY spawned, writing install command')
+        api.ptyWrite(ptyId, installCommand + lineEnd + 'exit' + lineEnd)
+      } catch (err) {
+        console.error('[InstallEngine] Failed to spawn PTY:', err)
+        if (!active) return
+        const message = err instanceof Error ? err.message : String(err)
+        terminal.writeln(`\x1b[1;31mFailed to start installer: ${message}\x1b[0m`)
+        setRunning(false)
       }
-      console.log('[InstallEngine] PTY spawned, writing install command')
-      api.ptyWrite(ptyId, installCommand + lineEnd + 'exit' + lineEnd)
-    }).catch((err) => {
-      console.error('[InstallEngine] Failed to spawn PTY:', err)
-      if (!active) return
-      terminal.writeln(`\x1b[1;31mFailed to start installer: ${err}\x1b[0m`)
-      setRunning(false)
-    })
+    }
+
+    void startInstaller()
 
     const handleResize = () => fitAddon.fit()
     window.addEventListener('resize', handleResize)
@@ -165,7 +177,7 @@ export default function InstallEngineDialog({ engineName, installCommand, onClos
       terminalRef.current = null
       api.ptyKill(ptyId).catch(() => {})
     }
-  }, [engineName, installCommand, addHintIfNew])
+  }, [engineId, engineName, installCommand, addHintIfNew])
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -188,6 +200,12 @@ export default function InstallEngineDialog({ engineName, installCommand, onClos
             ? 'Done! You can close this dialog.'
             : 'Installation failed. Check the output above for details.'}
         </p>
+
+        {engineId === 'kimi' && (
+          <p className="mb-3 rounded-md border border-win-border bg-win-surface px-3 py-2 text-xs text-win-text-secondary">
+            On Windows, Kimi Code also needs Git for Windows so it can use the bundled Git Bash.
+          </p>
+        )}
 
         <div
           ref={containerRef}

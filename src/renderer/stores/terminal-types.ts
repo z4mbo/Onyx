@@ -10,6 +10,8 @@ export interface TerminalEntry {
   cwd: string
   /** Whether the terminal is still loading (engine starting) */
   isLoading: boolean
+  /** Command intent used for the first CLI process launched in this PTY. */
+  launchIntent?: 'start-session' | 'continue-session'
 }
 
 let nextId = 1

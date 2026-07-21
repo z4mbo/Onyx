@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import { useProjectStore } from '@/stores/project-store'
-import type { McpServer } from '@/lib/api'
+import type { McpServer, MCPServer } from '@/lib/api'
 import * as api from '@/lib/api'
 import MCPServerForm from '@/components/project/MCPServerForm'
 
@@ -56,6 +56,23 @@ export default function MCPServerList() {
     [activeProject, loadServers]
   )
 
+  const handleSave = useCallback(async (server: MCPServer) => {
+    if (!activeProject) return
+    const value: McpServer = {
+      command: server.command,
+      args: server.args,
+      env: server.env
+    }
+    if (editingServer) {
+      await api.updateMcpServer(activeProject.name, editingServer.name, value)
+    } else {
+      await api.addMcpServer(activeProject.name, server.name, value)
+    }
+    setShowForm(false)
+    setEditingServer(null)
+    await loadServers()
+  }, [activeProject, editingServer, loadServers])
+
   const handleCancel = useCallback(() => {
     setShowForm(false)
     setEditingServer(null)
@@ -70,7 +87,15 @@ export default function MCPServerList() {
   }
 
   if (showForm) {
-    return <MCPServerForm server={editingServer} onSave={async () => { setShowForm(false); await loadServers() }} onCancel={handleCancel} />
+    const formServer: MCPServer | null = editingServer
+      ? {
+          id: editingServer.name,
+          name: editingServer.name,
+          enabled: editingServer.enabled,
+          ...editingServer.server
+        }
+      : null
+    return <MCPServerForm server={formServer} onSave={handleSave} onCancel={handleCancel} />
   }
 
   return (

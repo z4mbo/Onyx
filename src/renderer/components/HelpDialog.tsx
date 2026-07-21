@@ -37,7 +37,7 @@ export default function HelpDialog({ onClose }: Props) {
           <section>
             <h3 className="text-base font-medium text-win-text mb-2">Context = Information</h3>
             <p>
-              When you open a session with Claude Code or Gemini, the <strong className="text-win-text">context is empty</strong> — no messages have been sent yet.
+              When you open a session with Claude, Gemini, Codex, Kimi Code, or OpenRouter through Kimi, the <strong className="text-win-text">context is empty</strong> — no messages have been sent yet.
             </p>
             <p className="mt-2">
               Every message you send becomes context. Every response the AI gives you also becomes context. In other words, the more you chat, the more information the AI has available in that session.
@@ -64,7 +64,7 @@ export default function HelpDialog({ onClose }: Props) {
               If you did a large analysis and want to save the conclusions for later use, just ask the AI to <strong className="text-win-text">save the relevant information to the project memory</strong>.
             </p>
             <p className="mt-2">
-              The project memory is a text file called <code className="rounded bg-win-hover px-1.5 py-0.5 text-win-text font-mono text-xs">CLAUDE.md</code> (the <code className="rounded bg-win-hover px-1.5 py-0.5 text-win-text font-mono text-xs">.md</code> is a file type, like a <code className="rounded bg-win-hover px-1.5 py-0.5 text-win-text font-mono text-xs">.txt</code>). The AI writes the information you ask it to save into this file.
+              Project memory is stored in an engine-specific Markdown file, such as <code className="rounded bg-win-hover px-1.5 py-0.5 text-win-text font-mono text-xs">CLAUDE.md</code> or <code className="rounded bg-win-hover px-1.5 py-0.5 text-win-text font-mono text-xs">AGENTS.md</code>. The AI writes the information you ask it to save into this file.
             </p>
           </section>
 

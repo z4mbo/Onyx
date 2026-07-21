@@ -1,54 +1,16 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import { useProjectStore } from '@/stores/project-store'
 import { useTerminalStore } from '@/stores/terminal-store'
 import { useSettingsStore, type CanvasMode } from '@/stores/settings-store'
 import * as api from '@/lib/api'
 
-const YFT_PREAMBLE = `<script>
-(function() {
-  var _reqId = 0;
-  var _pending = {};
-  window.addEventListener('message', function(e) {
-    if (e.data && e.data.type === 'yft_response' && _pending[e.data.reqId]) {
-      _pending[e.data.reqId](e.data);
-      delete _pending[e.data.reqId];
-    }
-  });
-  function _request(type, payload) {
-    return new Promise(function(resolve) {
-      var id = ++_reqId;
-      _pending[id] = resolve;
-      var msg = Object.assign({ type: type, reqId: id }, payload);
-      parent.postMessage(msg, '*');
-      setTimeout(function() { if (_pending[id]) { _pending[id]({ error: 'timeout' }); delete _pending[id]; } }, 5000);
-    });
-  }
-  window.yft = {
-    sendToTerminal: function(text) {
-      parent.postMessage({ type: 'send_to_terminal', text: String(text) }, '*');
-    },
-    switchTab: function(tab) {
-      parent.postMessage({ type: 'switch_tab', tab: String(tab) }, '*');
-    },
-    setMode: function(mode) {
-      parent.postMessage({ type: 'set_canvas_mode', mode: String(mode) }, '*');
-    },
-    readFile: function(path) {
-      return _request('read_file', { path: String(path) }).then(function(r) { return r.error ? null : r.content; });
-    },
-    readDir: function(path) {
-      return _request('read_dir', { path: String(path) }).then(function(r) { return r.error ? null : r.entries; });
-    }
-  };
-})();
-</script>`
-
 /**
- * Strips control characters from text to prevent terminal injection.
+ * Canvas scripts may prefill a terminal, but may not submit commands. Removing
+ * every control character means the user must review the text and press Enter.
  */
 function sanitizeTerminalText(text: string): string {
   // eslint-disable-next-line no-control-regex
-  return text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').slice(0, 4096)
+  return text.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').replace(/\s+/g, ' ').slice(0, 4096)
 }
 
 interface CanvasPanelProps {
@@ -56,32 +18,74 @@ interface CanvasPanelProps {
   mode?: CanvasMode
 }
 
+interface CanvasSource {
+  html: string
+  projectPath: string
+}
+
+interface BoundCanvasDocument extends api.CanvasDocumentInfo {
+  projectPath: string
+}
+
+interface CanvasSession {
+  token: string
+  projectPath: string
+  source: Window
+}
+
 export default function CanvasPanel({ mode = 'panel' }: CanvasPanelProps) {
   const activeProject = useProjectStore((s) => s.activeProject)
-  const [content, setContent] = useState<string | null>(null)
+  const [source, setSource] = useState<CanvasSource | null>(null)
+  const [canvasDocument, setCanvasDocument] = useState<BoundCanvasDocument | null>(null)
+  const [documentError, setDocumentError] = useState(false)
   const [loading, setLoading] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
-  const prevPathRef = useRef<string | null>(null)
+  const sessionRef = useRef<CanvasSession | null>(null)
 
   // Listen for postMessage from iframe
-  useEffect(() => {
+  useLayoutEffect(() => {
     const handler = (event: MessageEvent) => {
-      // Validate message comes from our iframe
-      if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return
+      const iframe = iframeRef.current
+      const session = sessionRef.current
+      const sourceWindow = iframe?.contentWindow
+      const currentProjectPath = useProjectStore.getState().activeProject?.path
+      if (
+        !iframe ||
+        !session ||
+        !sourceWindow ||
+        event.source !== sourceWindow ||
+        session.source !== sourceWindow ||
+        session.projectPath !== currentProjectPath
+      ) return
       const data = event.data
       if (!data || typeof data !== 'object') return
 
-      const iframe = iframeRef.current
+      const sessionIsCurrent = () => {
+        const currentSession = sessionRef.current
+        return currentSession?.token === session.token &&
+          currentSession.projectPath === session.projectPath &&
+          currentSession.source === sourceWindow &&
+          iframeRef.current?.contentWindow === sourceWindow &&
+          useProjectStore.getState().activeProject?.path === session.projectPath
+      }
+      const respond = (payload: Record<string, unknown>) => {
+        if (sessionIsCurrent()) sourceWindow.postMessage(payload, '*')
+      }
+
       switch (data.type) {
         case 'send_to_terminal': {
-          const termId = useTerminalStore.getState().activeTerminalId
-          if (termId && typeof data.text === 'string') {
+          const terminalState = useTerminalStore.getState()
+          const termId = terminalState.activeTerminalId
+          const terminal = termId ? terminalState.terminals.get(termId) : null
+          // OpenRouter credentials live only in that PTY's process environment;
+          // project-controlled Canvas scripts never get a write bridge to it.
+          if (termId && terminal?.engine !== 'openrouter' && typeof data.text === 'string') {
             api.ptyWrite(termId, sanitizeTerminalText(data.text))
           }
           break
         }
         case 'switch_tab': {
-          if (typeof data.tab === 'string') {
+          if (typeof data.tab === 'string' && ['tips', 'agents', 'skills', 'mcps', 'canvas'].includes(data.tab)) {
             useSettingsStore.getState().setRightPanelActiveTab(data.tab as never)
           }
           break
@@ -93,30 +97,23 @@ export default function CanvasPanel({ mode = 'panel' }: CanvasPanelProps) {
           break
         }
         case 'read_file': {
-          if (typeof data.path === 'string' && data.reqId && iframe?.contentWindow) {
-            const project = useProjectStore.getState().activeProject
-            // Resolve relative paths against project root
-            const filePath = data.path.startsWith('/') || /^[A-Z]:/i.test(data.path)
-              ? data.path
-              : `${project?.path}/${data.path}`
-            api.readFile(filePath).then((content) => {
-              iframe.contentWindow!.postMessage({ type: 'yft_response', reqId: data.reqId, content }, '*')
+          if (typeof data.path === 'string' && Number.isSafeInteger(data.reqId)) {
+            const reqId = data.reqId
+            api.canvasReadFile(session.projectPath, data.path).then((content) => {
+              respond({ type: 'yft_response', reqId, content })
             }).catch(() => {
-              iframe.contentWindow!.postMessage({ type: 'yft_response', reqId: data.reqId, error: 'not_found' }, '*')
+              respond({ type: 'yft_response', reqId, error: 'not_found' })
             })
           }
           break
         }
         case 'read_dir': {
-          if (typeof data.path === 'string' && data.reqId && iframe?.contentWindow) {
-            const project = useProjectStore.getState().activeProject
-            const dirPath = data.path.startsWith('/') || /^[A-Z]:/i.test(data.path)
-              ? data.path
-              : `${project?.path}/${data.path}`
-            api.readDir(dirPath).then((entries) => {
-              iframe.contentWindow!.postMessage({ type: 'yft_response', reqId: data.reqId, entries }, '*')
+          if (typeof data.path === 'string' && Number.isSafeInteger(data.reqId)) {
+            const reqId = data.reqId
+            api.canvasReadDir(session.projectPath, data.path).then((entries) => {
+              respond({ type: 'yft_response', reqId, entries })
             }).catch(() => {
-              iframe.contentWindow!.postMessage({ type: 'yft_response', reqId: data.reqId, error: 'not_found' }, '*')
+              respond({ type: 'yft_response', reqId, error: 'not_found' })
             })
           }
           break
@@ -131,30 +128,30 @@ export default function CanvasPanel({ mode = 'panel' }: CanvasPanelProps) {
   // Load canvas.html and watch for changes
   useEffect(() => {
     if (!activeProject) {
-      setContent(null)
-      prevPathRef.current = null
+      setSource(null)
       return
     }
 
+    let cancelled = false
     const projectPath = activeProject.path
     const canvasPath = `${projectPath}/canvas.html`
 
     const load = async () => {
       setLoading(true)
+      setSource(null)
       try {
         const text = await api.readFile(canvasPath)
-        setContent(text)
+        if (!cancelled) setSource(text === null ? null : { html: text, projectPath })
       } catch {
-        setContent(null)
+        if (!cancelled) setSource(null)
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
 
     load()
 
-    api.fsWatch(projectPath)
-    prevPathRef.current = projectPath
+    void api.fsWatch(projectPath)
 
     const unsub = api.onFsChanged((rootPath, changedDir) => {
       if (rootPath !== projectPath) return
@@ -162,7 +159,8 @@ export default function CanvasPanel({ mode = 'panel' }: CanvasPanelProps) {
       const normalizedRoot = projectPath.replace(/\\/g, '/')
       if (normalizedChanged === normalizedRoot || changedDir === projectPath) {
         api.readFile(canvasPath).then((text) => {
-          setContent(text)
+          if (cancelled) return
+          setSource(text === null ? null : { html: text, projectPath })
           if (text !== null) {
             const store = useSettingsStore.getState()
             // Only auto-switch to canvas tab when in panel mode
@@ -170,27 +168,65 @@ export default function CanvasPanel({ mode = 'panel' }: CanvasPanelProps) {
               store.setRightPanelActiveTab('canvas')
             }
           }
-        }).catch(() => setContent(null))
+        }).catch(() => { if (!cancelled) setSource(null) })
       }
     })
 
     return () => {
+      cancelled = true
       unsub()
+      void api.fsUnwatch(projectPath)
     }
   }, [activeProject])
 
-  // Build srcdoc with preamble injected
-  const srcdoc = useCallback(() => {
-    if (!content) return ''
-    // Inject preamble right after <head> or at the start of the document
-    const headIdx = content.toLowerCase().indexOf('<head>')
-    if (headIdx !== -1) {
-      const insertPos = headIdx + 6
-      return content.slice(0, insertPos) + YFT_PREAMBLE + content.slice(insertPos)
+  // Project HTML runs from a dedicated custom-protocol origin with its own
+  // restrictive CSP. It never inherits or weakens the privileged renderer CSP.
+  useEffect(() => {
+    let cancelled = false
+    let token: string | null = null
+    setCanvasDocument(null)
+    setDocumentError(false)
+    if (source === null) return
+
+    void api.canvasCreateDocument(source.html)
+      .then((document) => {
+        token = document.token
+        if (cancelled) {
+          void api.canvasDisposeDocument(document.token)
+          return
+        }
+        setCanvasDocument({ ...document, projectPath: source.projectPath })
+      })
+      .catch(() => {
+        if (!cancelled) setDocumentError(true)
+      })
+
+    return () => {
+      cancelled = true
+      if (token) void api.canvasDisposeDocument(token)
     }
-    // No <head> tag — prepend preamble
-    return YFT_PREAMBLE + content
-  }, [content])
+  }, [source])
+
+  useLayoutEffect(() => {
+    const sourceWindow = iframeRef.current?.contentWindow
+    if (
+      !canvasDocument ||
+      !sourceWindow ||
+      canvasDocument.projectPath !== activeProject?.path
+    ) {
+      sessionRef.current = null
+      return
+    }
+    const session: CanvasSession = {
+      token: canvasDocument.token,
+      projectPath: canvasDocument.projectPath,
+      source: sourceWindow
+    }
+    sessionRef.current = session
+    return () => {
+      if (sessionRef.current === session) sessionRef.current = null
+    }
+  }, [activeProject?.path, canvasDocument])
 
   const handleClose = useCallback(() => {
     useSettingsStore.getState().setCanvasMode('panel')
@@ -205,13 +241,16 @@ export default function CanvasPanel({ mode = 'panel' }: CanvasPanelProps) {
     )
   }
 
-  if (loading) {
+  const activeSource = source?.projectPath === activeProject.path ? source : null
+  const activeDocument = canvasDocument?.projectPath === activeProject.path ? canvasDocument : null
+
+  if (loading || (activeSource !== null && !activeDocument && !documentError)) {
     return (
       <div className="p-4 text-sm text-win-text-tertiary">Loading canvas...</div>
     )
   }
 
-  if (content === null) {
+  if (activeSource === null) {
     // In full/bottom mode, show a minimal empty state
     if (mode !== 'panel') {
       return (
@@ -238,6 +277,14 @@ export default function CanvasPanel({ mode = 'panel' }: CanvasPanelProps) {
     )
   }
 
+  if (documentError || !activeDocument) {
+    return (
+      <div className="flex flex-1 items-center justify-center p-4 text-sm text-red-600">
+        Canvas could not be rendered safely.
+      </div>
+    )
+  }
+
   return (
     <div className="relative flex flex-1 flex-col h-full overflow-hidden">
       {/* Close button for full/bottom modes */}
@@ -254,8 +301,9 @@ export default function CanvasPanel({ mode = 'panel' }: CanvasPanelProps) {
         </button>
       )}
       <iframe
+        key={activeDocument.token}
         ref={iframeRef}
-        srcDoc={srcdoc()}
+        src={activeDocument.url}
         sandbox="allow-scripts"
         className="w-full h-full border-0 flex-1"
         title="Canvas"

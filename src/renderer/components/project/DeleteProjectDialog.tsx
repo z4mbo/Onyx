@@ -86,7 +86,7 @@ export default function DeleteProjectDialog({ projectName, imported, onClose }: 
             </h2>
             <p className="mt-1 text-sm text-win-text-secondary">
               {imported
-                ? 'This will remove the project from Your Friendly Terminal. Your original folder will not be deleted.'
+                ? 'This will remove the project from zAI. Your original folder will not be deleted.'
                 : 'This will permanently delete your project and all its files.'}
             </p>
           </div>
@@ -98,7 +98,7 @@ export default function DeleteProjectDialog({ projectName, imported, onClose }: 
             <>
               <p className="text-xs leading-relaxed text-win-text-secondary">
                 <strong className="text-win-text">{projectName}</strong> is an imported project.
-                Only the link inside Your Friendly Terminal will be removed.
+                Only the link inside zAI will be removed.
               </p>
               <ul className="mt-2 space-y-1 text-xs text-win-text-secondary">
                 <li className="flex items-center gap-2">

@@ -1,45 +1,126 @@
-name: Release
+name: CI and release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [master, main]
+    tags: ['v*']
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
-    runs-on: windows-latest
-
+  verify:
+    name: Verify (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15]
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
+      - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.19.0
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Electron app
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build application
         run: npm run build
 
-      - name: Package installer
-        run: npx electron-builder --win --config electron-builder.config.ts
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  package:
+    name: Package (${{ matrix.platform }}-${{ matrix.arch }})
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            arch: x64
+            runner: windows-latest
+            builder_args: --win --x64
+          - platform: mac
+            arch: arm64
+            runner: macos-15
+            builder_args: --mac --arm64
+          - platform: mac
+            arch: x64
+            runner: macos-15-intel
+            builder_args: --mac --x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
 
-      - name: Upload to GitHub Release
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Package Windows application
+        if: matrix.platform == 'windows'
+        run: npx electron-builder ${{ matrix.builder_args }} --config electron-builder.config.ts --publish never
+
+      - name: Package macOS application
+        if: matrix.platform == 'mac'
+        run: npx electron-builder ${{ matrix.builder_args }} --config electron-builder.config.ts --publish never
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zAI-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Publish tag artifacts
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/*.exe
-            dist/*.blockmap
-            dist/latest.yml
+          files: release-artifacts/**/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
           draft: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          prerelease: ${{ contains(github.ref_name, '-') }}

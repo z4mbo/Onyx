@@ -1,8 +1,8 @@
 /**
  * Generates installer assets:
  *   - icon.ico  from logo.png (multi-size, PNG-encoded for NSIS compatibility)
- *   - sidebar.bmp  (164x314) golden gradient for welcome/finish pages
- *   - header.bmp   (150x57)  golden accent for directory/progress pages
+ *   - sidebar.bmp  (164x314) zAI navy/cyan gradient for welcome/finish pages
+ *   - header.bmp   (150x57)  zAI cyan accent for directory/progress pages
  *
  * Run: node resources/installer/generate-assets.mjs
  */
@@ -15,17 +15,17 @@ import sharp from 'sharp'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const resourcesDir = join(__dirname, '..')
 
-// ── Brand colors (from website global.css) ────────────────────────
+// zAI brand colors
 const C = {
   white: { r: 255, g: 255, b: 255 },
-  golden50: { r: 255, g: 249, b: 240 },
-  golden100: { r: 255, g: 240, b: 214 },
-  golden200: { r: 255, g: 224, b: 173 },
-  golden300: { r: 255, g: 203, b: 122 },
-  golden400: { r: 255, g: 179, b: 71 },
-  golden500: { r: 245, g: 158, b: 11 },
-  golden600: { r: 217, g: 119, b: 6 },
-  golden700: { r: 180, g: 83, b: 9 }
+  ice50: { r: 244, g: 250, b: 252 },
+  cyan100: { r: 218, g: 247, b: 251 },
+  cyan200: { r: 168, g: 241, b: 250 },
+  cyan400: { r: 40, g: 215, b: 234 },
+  cyan500: { r: 0, g: 184, b: 212 },
+  cyan600: { r: 0, g: 142, b: 170 },
+  navy700: { r: 18, g: 48, b: 74 },
+  navy900: { r: 7, g: 28, b: 47 }
 }
 
 function lerp(a, b, t) {
@@ -128,16 +128,16 @@ function generateSidebar() {
   const W = 164, H = 314
   const stops = [
     { pos: 0.0, color: C.white },
-    { pos: 0.12, color: C.golden50 },
-    { pos: 0.3, color: C.golden100 },
-    { pos: 0.5, color: C.golden300 },
-    { pos: 0.7, color: C.golden400 },
-    { pos: 0.85, color: C.golden500 },
-    { pos: 1.0, color: C.golden700 }
+    { pos: 0.14, color: C.ice50 },
+    { pos: 0.32, color: C.cyan100 },
+    { pos: 0.5, color: C.cyan200 },
+    { pos: 0.68, color: C.cyan400 },
+    { pos: 0.84, color: C.cyan600 },
+    { pos: 1.0, color: C.navy900 }
   ]
   return createBMP(W, H, (x, y) => {
     const t = y / (H - 1)
-    if (x < 5) return lerpColor(C.golden500, C.golden700, t)
+    if (x < 5) return lerpColor(C.cyan500, C.navy700, t)
     return multiGradient(stops, t)
   })
 }
@@ -147,10 +147,10 @@ function generateHeader() {
   return createBMP(W, H, (x, y) => {
     if (y >= H - 3) {
       const t = x / (W - 1)
-      return lerpColor(C.golden400, C.golden600, t)
+      return lerpColor(C.cyan400, C.navy700, t)
     }
     const t = y / (H - 4)
-    return lerpColor(C.white, C.golden50, t * 0.6)
+    return lerpColor(C.white, C.ice50, t * 0.7)
   })
 }
 

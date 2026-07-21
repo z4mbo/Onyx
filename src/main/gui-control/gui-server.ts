@@ -6,6 +6,7 @@ import { app, BrowserWindow } from 'electron'
 let wss: WebSocketServer | null = null
 let serverPort = 0
 let portFilePath: string | null = null
+let fallbackWindow: BrowserWindow | null = null
 
 const VALID_TABS = ['tips', 'agents', 'skills', 'mcps', 'canvas'] as const
 type Tab = (typeof VALID_TABS)[number]
@@ -34,10 +35,13 @@ function getPortFilePath(): string {
  * Writes the port number to a .gui-port file in userData.
  */
 export async function startGuiServer(mainWindow: BrowserWindow): Promise<void> {
+  // macOS keeps the local server alive when the last window closes. Refresh
+  // the fallback whenever Dock activation creates a replacement window.
+  fallbackWindow = mainWindow
   if (wss) return
 
   return new Promise((resolve, reject) => {
-    wss = new WebSocketServer({ host: '127.0.0.1', port: 0 }, async () => {
+    wss = new WebSocketServer({ host: '127.0.0.1', port: 0, maxPayload: 64 * 1024 }, async () => {
       const addr = wss!.address()
       if (typeof addr === 'object' && addr) {
         serverPort = addr.port
@@ -59,15 +63,21 @@ export async function startGuiServer(mainWindow: BrowserWindow): Promise<void> {
       reject(err)
     })
 
-    wss.on('connection', (ws: WebSocket) => {
+    wss.on('connection', (ws: WebSocket, request) => {
+      // Browser WebSocket handshakes always carry Origin. The bundled local
+      // Node client does not, so reject web pages scanning localhost ports.
+      if (request.headers.origin) {
+        ws.close(1008, 'Browser origins are not allowed')
+        return
+      }
       console.log('[gui-server] Client connected')
 
       ws.on('message', (rawData) => {
         try {
           const data = JSON.parse(rawData.toString()) as GuiAction
-          // Use the focused window (or mainWindow fallback) so actions route correctly
-          const targetWin = BrowserWindow.getFocusedWindow() || mainWindow
-          if (targetWin.isDestroyed()) {
+          // Use the focused window or the most recently registered fallback.
+          const targetWin = BrowserWindow.getFocusedWindow() || fallbackWindow
+          if (!targetWin || targetWin.isDestroyed()) {
             ws.send(JSON.stringify({ success: false, error: 'No active window' }))
             return
           }
@@ -163,6 +173,7 @@ export function getGuiPortFilePath(): string {
  * Stops the WebSocket server and cleans up the port file.
  */
 export async function stopGuiServer(): Promise<void> {
+  fallbackWindow = null
   if (wss) {
     // Close all connected clients
     for (const client of wss.clients) {

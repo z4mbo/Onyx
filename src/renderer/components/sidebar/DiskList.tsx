@@ -6,14 +6,14 @@ interface DiskListProps {
 }
 
 /**
- * Lists available Windows drives (C:\, D:\, etc).
+ * Lists available filesystem locations (Windows drives or macOS volumes).
  */
 export default function DiskList({ selectedDisk, onSelectDisk }: DiskListProps) {
   const { disks, loading, error, refresh } = useDisks()
 
   if (loading) {
     return (
-      <div className="px-3 py-2 text-xs text-win-text-tertiary">Loading drives...</div>
+      <div className="px-3 py-2 text-xs text-win-text-tertiary">Loading locations...</div>
     )
   }
 
@@ -30,7 +30,7 @@ export default function DiskList({ selectedDisk, onSelectDisk }: DiskListProps) 
 
   if (disks.length === 0) {
     return (
-      <div className="px-3 py-2 text-xs text-win-text-tertiary">No drives found.</div>
+      <div className="px-3 py-2 text-xs text-win-text-tertiary">No locations found.</div>
     )
   }
 
@@ -47,7 +47,7 @@ export default function DiskList({ selectedDisk, onSelectDisk }: DiskListProps) 
                 ? 'bg-win-accent text-white'
                 : 'bg-win-card text-win-text-secondary border border-win-border hover:bg-win-hover hover:text-win-text'
             }`}
-            title={`${disk.name || disk.mount} (${formatSize(disk.size)})`}
+            title={`${disk.name || disk.mount} — ${formatSize(disk.free)} free of ${formatSize(disk.size)}`}
           >
             {disk.mount}
           </button>

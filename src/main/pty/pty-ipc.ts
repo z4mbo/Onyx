@@ -1,10 +1,20 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { PtyManager, PtySpawnOptions } from './pty-manager'
+import {
+  getOpenRouterPtyEnvironment,
+  sanitizeOpenRouterError
+} from '../openrouter/openrouter-service'
+import { detectEngines } from '../ai-engines/engine-registry'
 
 const ptyManager = new PtyManager()
 
 /** Map pty id → the BrowserWindow that owns it, so events route to the right window */
 const ptyOwners = new Map<string, BrowserWindow>()
+const ptyEngines = new Map<string, PtySpawnOptions['engineId']>()
+const pendingPtySpawns = new Map<
+  string,
+  { token: symbol; owner: BrowserWindow; engineId: PtySpawnOptions['engineId'] }
+>()
 
 /**
  * Registers all PTY-related IPC handlers.
@@ -20,18 +30,53 @@ export function registerPtyIpc(_mainWindow: BrowserWindow): void {
     async (
       event,
       id: string,
-      options: PtySpawnOptions
+      options?: PtySpawnOptions
     ): Promise<{ success: boolean; error?: string }> => {
+      const spawnOptions: PtySpawnOptions = options ?? {}
+      const initialOwner = BrowserWindow.fromWebContents(event.sender)
+      if (!initialOwner || initialOwner.isDestroyed()) {
+        return { success: false, error: 'The terminal window is no longer available.' }
+      }
+      const spawnToken = Symbol(id)
+      pendingPtySpawns.set(id, {
+        token: spawnToken,
+        owner: initialOwner,
+        engineId: spawnOptions.engineId
+      })
       try {
-        console.log(`[pty:spawn] id="${id}" shell="${options?.shell || 'default'}" cwd="${options?.cwd || 'default'}"`)
+        if (spawnOptions.engineId === 'openrouter') {
+          const engine = (await detectEngines()).find(({ id }) => id === 'openrouter')
+          if (!engine?.isAvailable) {
+            return {
+              success: false,
+              error: engine?.availabilityReason || 'OpenRouter requires a supported Kimi Code installation.'
+            }
+          }
+          const openRouterEnvironment = await getOpenRouterPtyEnvironment()
+          // Main-process values win so a renderer can never override or read the secret.
+          spawnOptions.env = {
+            ...(spawnOptions.env ?? {}),
+            ...openRouterEnvironment
+          }
+        }
 
-        // Find the BrowserWindow that sent this request
+        // Provider setup may await network/model checks. Re-resolve ownership
+        // immediately before spawn so a closed window cannot leave a headless
+        // credential-bearing terminal behind.
         const senderWindow = BrowserWindow.fromWebContents(event.sender)
-        if (senderWindow) ptyOwners.set(id, senderWindow)
+        const pendingSpawn = pendingPtySpawns.get(id)
+        if (pendingSpawn?.token !== spawnToken) {
+          return { success: false, error: 'Terminal launch was cancelled.' }
+        }
+        if (!senderWindow || senderWindow.isDestroyed() || senderWindow !== pendingSpawn.owner) {
+          return { success: false, error: 'The terminal window was closed before launch.' }
+        }
+        ptyOwners.set(id, senderWindow)
+        ptyEngines.set(id, spawnOptions.engineId)
 
         ptyManager.spawn(
           id,
-          options,
+          spawnOptions,
           (data: string) => {
             try {
               const win = ptyOwners.get(id)
@@ -53,19 +98,27 @@ export function registerPtyIpc(_mainWindow: BrowserWindow): void {
               // Window may have been destroyed between the check and the send
             }
             ptyOwners.delete(id)
+            ptyEngines.delete(id)
           }
         )
         return { success: true }
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        console.error(`[pty:spawn] FAILED id="${id}": ${message}`)
+        const message = spawnOptions.engineId === 'openrouter'
+          ? sanitizeOpenRouterError(err)
+          : 'The terminal process could not be started.'
+        console.error(`[pty:spawn] Failed to start PTY "${id}".`)
+        ptyOwners.delete(id)
+        ptyEngines.delete(id)
         return { success: false, error: message }
+      } finally {
+        if (pendingPtySpawns.get(id)?.token === spawnToken) {
+          pendingPtySpawns.delete(id)
+        }
       }
     }
   )
 
   ipcMain.on('pty:write', (_event, id: string, data: string) => {
-    console.log(`[pty:write] id="${id}" data="${data.replace(/\n/g, '\\n').slice(0, 100)}"`)
     ptyManager.write(id, data)
   })
 
@@ -77,8 +130,10 @@ export function registerPtyIpc(_mainWindow: BrowserWindow): void {
     'pty:kill',
     async (_event, id: string): Promise<void> => {
       console.log(`[pty:kill] id="${id}"`)
+      pendingPtySpawns.delete(id)
       ptyManager.kill(id)
       ptyOwners.delete(id)
+      ptyEngines.delete(id)
     }
   )
 }
@@ -87,7 +142,30 @@ export function registerPtyIpc(_mainWindow: BrowserWindow): void {
  * Kills all PTY processes. Call during app shutdown.
  */
 export function killAllPty(): void {
+  pendingPtySpawns.clear()
   ptyManager.killAll()
+  ptyOwners.clear()
+  ptyEngines.clear()
+}
+
+/** Terminates all PTYs launched for an engine and tells their renderers. */
+export function killPtysForEngine(engineId: PtySpawnOptions['engineId']): void {
+  for (const [id, pendingSpawn] of pendingPtySpawns) {
+    if (pendingSpawn.engineId === engineId) pendingPtySpawns.delete(id)
+  }
+  const ids = [...ptyEngines.entries()]
+    .filter(([, currentEngineId]) => currentEngineId === engineId)
+    .map(([id]) => id)
+
+  for (const id of ids) {
+    const owner = ptyOwners.get(id)
+    ptyManager.kill(id)
+    ptyOwners.delete(id)
+    ptyEngines.delete(id)
+    if (owner && !owner.isDestroyed()) {
+      owner.webContents.send('pty:exit', id, -1)
+    }
+  }
 }
 
 /**
@@ -106,6 +184,9 @@ export function collectPtyIdsForWindow(win: BrowserWindow): string[] {
  * When detachOnly is true, callbacks are nulled but PTY processes stay alive.
  */
 export function killPtysForWindow(win: BrowserWindow, { detachOnly = false } = {}): void {
+  for (const [id, pendingSpawn] of pendingPtySpawns) {
+    if (pendingSpawn.owner === win) pendingPtySpawns.delete(id)
+  }
   const idsToProcess = collectPtyIdsForWindow(win)
   if (idsToProcess.length === 0) return
 
@@ -113,6 +194,7 @@ export function killPtysForWindow(win: BrowserWindow, { detachOnly = false } = {
 
   for (const id of idsToProcess) {
     ptyOwners.delete(id)
+    ptyEngines.delete(id)
     if (detachOnly) {
       ptyManager.detach(id)
     } else {
@@ -125,5 +207,8 @@ export function killPtysForWindow(win: BrowserWindow, { detachOnly = false } = {
  * Kill a single PTY by id. Used for deferred kills after window destruction.
  */
 export function killPtyById(id: string): void {
+  pendingPtySpawns.delete(id)
   ptyManager.kill(id)
+  ptyOwners.delete(id)
+  ptyEngines.delete(id)
 }

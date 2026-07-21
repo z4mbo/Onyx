@@ -2,12 +2,13 @@ import { readdir, stat, lstat, mkdir, rm, writeFile, readFile, symlink } from 'f
 import { join, basename } from 'path'
 import { existsSync } from 'fs'
 import { app } from 'electron'
-import { getProjectsDir, ensureDir } from '../util/paths'
+import { getProjectsDir, prepareProjectsDir, ensureDir } from '../util/paths'
 import { copyDefaultSkills } from './skills-manager'
 import { copyDefaultAgents } from './agents-manager'
 import { createDefaultInstructionFiles } from './engine-instructions'
-import { addMcpServer } from './mcp-config'
+import { readMcpConfig, writeMcpConfig } from './mcp-config'
 import { getGuiPortFilePath } from '../gui-control/gui-server'
+import { resolveManagedProjectPath, validateProjectName } from './project-name'
 
 export interface Project {
   name: string
@@ -21,8 +22,7 @@ export interface Project {
  * Every subdirectory = a project.
  */
 export async function listProjects(): Promise<Project[]> {
-  const projectsDir = getProjectsDir()
-  await ensureDir(projectsDir)
+  const projectsDir = await prepareProjectsDir()
 
   let entries: string[]
   try {
@@ -39,6 +39,9 @@ export async function listProjects(): Promise<Project[]> {
       const isImported = linkInfo.isSymbolicLink()
       const info = await stat(fullPath)
       if (info.isDirectory()) {
+        // Upgrade projects created by older zAI/upstream builds. Every operation
+        // is idempotent and preserves existing user-authored files/settings.
+        await ensureDefaultStructure(fullPath)
         projects.push({
           name: entry,
           path: fullPath,
@@ -59,11 +62,10 @@ export async function listProjects(): Promise<Project[]> {
  * Creates a new project folder.
  */
 export async function createProject(name: string): Promise<Project> {
-  const projectsDir = getProjectsDir()
-  await ensureDir(projectsDir)
-
-  const projectDir = join(projectsDir, name)
-  await mkdir(projectDir, { recursive: true })
+  const projectsDir = await prepareProjectsDir()
+  const safeName = validateProjectName(name)
+  const projectDir = resolveManagedProjectPath(projectsDir, safeName)
+  await mkdir(projectDir, { recursive: false })
 
   // Create empty tips.md — tips will be populated by the tip-creator skill
   const tipsPath = join(projectDir, 'tips.md')
@@ -88,9 +90,10 @@ export async function createProject(name: string): Promise<Project> {
   console.log(`[project-manager] created project "${name}" at ${projectDir}`)
 
   return {
-    name,
+    name: safeName,
     path: projectDir,
-    createdAt: info.birthtime.toISOString()
+    createdAt: info.birthtime.toISOString(),
+    imported: false
   }
 }
 
@@ -100,11 +103,9 @@ export async function createProject(name: string): Promise<Project> {
  * then fills in any missing default structure (tips.md, skills, agents, MCP, permissions, instruction files).
  */
 export async function importProject(folderPath: string): Promise<Project> {
-  const projectsDir = getProjectsDir()
-  await ensureDir(projectsDir)
-
-  const name = basename(folderPath)
-  const linkPath = join(projectsDir, name)
+  const projectsDir = await prepareProjectsDir()
+  const name = validateProjectName(basename(folderPath))
+  const linkPath = resolveManagedProjectPath(projectsDir, name)
 
   // Check if a project with this name already exists
   if (existsSync(linkPath)) {
@@ -123,7 +124,8 @@ export async function importProject(folderPath: string): Promise<Project> {
   return {
     name,
     path: linkPath,
-    createdAt: info.birthtime.toISOString()
+    createdAt: info.birthtime.toISOString(),
+    imported: true
   }
 }
 
@@ -158,7 +160,7 @@ async function ensureDefaultStructure(projectDir: string): Promise<void> {
  * Deletes a project folder.
  */
 export async function deleteProject(name: string): Promise<boolean> {
-  const projectDir = join(getProjectsDir(), name)
+  const projectDir = resolveManagedProjectPath(await prepareProjectsDir(), name)
   try {
     await rm(projectDir, { recursive: true, force: true })
     console.log(`[project-manager] deleted project "${name}"`)
@@ -172,7 +174,7 @@ export async function deleteProject(name: string): Promise<boolean> {
  * Returns the path for a project by name.
  */
 export function getProjectPath(name: string): string {
-  return join(getProjectsDir(), name)
+  return resolveManagedProjectPath(getProjectsDir(), name)
 }
 
 /**
@@ -195,15 +197,22 @@ async function addDefaultGuiMcp(projectDir: string): Promise<void> {
     const scriptPath = getGuiMcpScriptPath()
     const portFilePath = getGuiPortFilePath()
 
-    await addMcpServer(projectDir, 'gui-control', {
-      command: 'node',
+    const guiControlServer = {
+      // Electron can act as the bundled Node runtime on both Windows and macOS,
+      // so users do not need a separate `node` executable for this MCP server.
+      command: process.execPath,
       args: [scriptPath],
       env: {
-        YFT_GUI_PORT_FILE: portFilePath,
-        YFT_PROJECT_PATH: projectDir
+        ELECTRON_RUN_AS_NODE: '1',
+        NODE_PATH: join(app.getAppPath(), 'node_modules'),
+        ZAI_GUI_PORT_FILE: portFilePath,
+        ZAI_PROJECT_PATH: projectDir
       }
-    })
-    console.log(`[project-manager] Added gui-control MCP server to ${projectDir}`)
+    }
+    const config = await readMcpConfig(projectDir)
+    config.mcpServers['gui-control'] = guiControlServer
+    await writeMcpConfig(projectDir, config)
+    console.log(`[project-manager] Synchronized gui-control MCP server in ${projectDir}`)
   } catch (err) {
     // Don't fail project creation if MCP setup fails
     console.error('[project-manager] Failed to add gui-control MCP:', err)
@@ -216,6 +225,7 @@ async function addDefaultGuiMcp(projectDir: string): Promise<void> {
  * Claude: .claude/settings.local.json — allows all gui-control MCP tools
  * Gemini: .gemini/settings.json — sets trust:true on gui-control server
  * Codex: uses --full-auto flag; .agents/ dir is ensured by skills/agents copy
+ * Kimi Code: keeps approvals enabled; its MCP config is synced to .kimi-code/.
  */
 async function createDefaultPermissions(projectDir: string): Promise<void> {
   // Claude: allow all gui-control MCP tools via permissions.allow

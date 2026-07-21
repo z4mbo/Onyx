@@ -49,13 +49,17 @@ export default function SkillList() {
     setLoading(true)
     loadSkills(activeProject.path)
 
-    const engineDir = ENGINE_DIRS[defaultEngine]
-    const skillsDirSuffix = `/${engineDir}/skills`
+    const engineDirs = defaultEngine === 'kimi' || defaultEngine === 'openrouter'
+      ? ['.agents', '.kimi-code']
+      : [ENGINE_DIRS[defaultEngine]]
 
     const unsub = api.onFsChanged((rootPath, changedDir) => {
       if (rootPath !== activeProject.path) return
       const normalized = changedDir.replace(/\\/g, '/')
-      if (normalized.includes(skillsDirSuffix) || normalized.includes(`/${engineDir}/commands`)) {
+      if (engineDirs.some((engineDir) =>
+        normalized.includes(`/${engineDir}/skills`) ||
+        normalized.includes(`/${engineDir}/commands`)
+      )) {
         loadSkills(activeProject.path)
       }
     })

@@ -3,13 +3,7 @@ import { useSettingsStore } from '@/stores/settings-store'
 import { ENGINE_NAMES, type EngineId } from '@/lib/constants'
 import * as api from '@/lib/api'
 import TerminalThemeSection from './TerminalThemeSection'
-
-type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
-
-interface UpdateInfo {
-  version: string
-  releaseDate?: string
-}
+import OpenRouterProviderSection from './OpenRouterProviderSection'
 
 export default function SettingsDialog() {
   const show = useSettingsStore((s) => s.showSettingsDialog)
@@ -17,43 +11,14 @@ export default function SettingsDialog() {
   const defaultEngine = useSettingsStore((s) => s.defaultEngine)
   const updateSetting = useSettingsStore((s) => s.updateSetting)
 
-  const [activeSection, setActiveSection] = useState<'general' | 'terminal' | 'git' | 'about'>('general')
+  const [activeSection, setActiveSection] = useState<'general' | 'providers' | 'terminal' | 'git' | 'about'>('general')
   const [gitName, setGitName] = useState('')
   const [gitEmail, setGitEmail] = useState('')
   const [gitAvailable, setGitAvailable] = useState<boolean | null>(null)
   const [appVersion, setAppVersion] = useState('')
 
-  // Update state
-  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle')
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
-  const [downloadPercent, setDownloadPercent] = useState(0)
-  const [updateError, setUpdateError] = useState<string | null>(null)
-
-  const nameTimer = useRef<ReturnType<typeof setTimeout>>()
-  const emailTimer = useRef<ReturnType<typeof setTimeout>>()
-
-  // Listen for update events
-  useEffect(() => {
-    const unsubs = [
-      api.onUpdateAvailable((info) => {
-        setUpdateStatus('available')
-        setUpdateInfo({ version: info.version, releaseDate: info.releaseDate })
-        setUpdateError(null)
-      }),
-      api.onUpdateDownloaded((info) => {
-        setUpdateStatus('ready')
-        setUpdateInfo((prev) => prev ? { ...prev, version: info.version } : { version: info.version })
-      }),
-      api.onUpdateProgress((progress) => {
-        setDownloadPercent(Math.round(progress.percent))
-      }),
-      api.onUpdateError((err) => {
-        setUpdateStatus('error')
-        setUpdateError(err.message)
-      })
-    ]
-    return () => unsubs.forEach((u) => u())
-  }, [])
+  const nameTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const emailTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   // Load git config + app version on open
   useEffect(() => {
@@ -89,32 +54,26 @@ export default function SettingsDialog() {
     }, 500)
   }, [])
 
-  const handleCheckForUpdates = useCallback(() => {
-    setUpdateStatus('checking')
-    setUpdateError(null)
-    api.updaterCheck().then(() => {
-      // If no update-available event fires within 5s, assume up to date
-      setTimeout(() => {
-        setUpdateStatus((s) => s === 'checking' ? 'idle' : s)
-      }, 5000)
-    }).catch(() => {
-      setUpdateStatus('error')
-      setUpdateError('Failed to check for updates')
-    })
-  }, [])
-
-  const handleDownloadUpdate = useCallback(() => {
-    setUpdateStatus('downloading')
-    setDownloadPercent(0)
-    api.updaterDownload().catch(() => {
-      setUpdateStatus('error')
-      setUpdateError('Download failed')
-    })
-  }, [])
-
-  const handleInstallUpdate = useCallback(() => {
-    api.updaterInstall()
-  }, [])
+  const handleDefaultEngineChange = useCallback(async (engine: EngineId) => {
+    if (engine === 'openrouter') {
+      try {
+        const [status, detectedEngines] = await Promise.all([
+          api.openRouterGetStatus(),
+          api.detectEngines()
+        ])
+        const openRouterAvailable = detectedEngines
+          .some((item) => item.id === 'openrouter' && item.isAvailable)
+        if (!status.hasApiKey || !status.selectedModelId || !openRouterAvailable) {
+          setActiveSection('providers')
+          return
+        }
+      } catch {
+        setActiveSection('providers')
+        return
+      }
+    }
+    await updateSetting('defaultEngine', engine)
+  }, [updateSetting])
 
   if (!show) return null
 
@@ -123,7 +82,7 @@ export default function SettingsDialog() {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) setShow(false) }}
     >
-      <div className="w-full max-w-lg rounded-lg border border-win-border bg-win-card shadow-xl">
+      <div className="w-full max-w-2xl rounded-lg border border-win-border bg-win-card shadow-xl">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-win-border px-5 py-3.5">
           <h2 className="text-sm font-semibold text-win-text">Settings</h2>
@@ -140,7 +99,7 @@ export default function SettingsDialog() {
 
         {/* Section tabs */}
         <div className="flex border-b border-win-border bg-win-surface">
-          {(['general', 'terminal', 'git', 'about'] as const).map((section) => (
+          {(['general', 'providers', 'terminal', 'git', 'about'] as const).map((section) => (
             <button
               key={section}
               onClick={() => setActiveSection(section)}
@@ -168,7 +127,7 @@ export default function SettingsDialog() {
                 </label>
                 <select
                   value={defaultEngine}
-                  onChange={(e) => updateSetting('defaultEngine', e.target.value as EngineId)}
+                  onChange={(e) => void handleDefaultEngineChange(e.target.value as EngineId)}
                   className="w-full rounded border border-win-border bg-win-surface px-3 py-2 text-sm text-win-text outline-none focus:border-win-accent"
                 >
                   {Object.entries(ENGINE_NAMES).map(([id, name]) => (
@@ -176,7 +135,7 @@ export default function SettingsDialog() {
                   ))}
                 </select>
                 <p className="mt-1 text-[10px] text-win-text-tertiary">
-                  New sessions will use this engine by default
+                  New sessions will use this engine by default. OpenRouter requires Kimi Code plus a connected provider and selected model.
                 </p>
               </div>
             </div>
@@ -184,6 +143,10 @@ export default function SettingsDialog() {
 
           {activeSection === 'terminal' && (
             <TerminalThemeSection />
+          )}
+
+          {activeSection === 'providers' && (
+            <OpenRouterProviderSection />
           )}
 
           {activeSection === 'git' && (
@@ -201,7 +164,6 @@ export default function SettingsDialog() {
                     <span className="text-xs text-win-text-secondary">Git not found</span>
                     <a
                       href="https://git-scm.com/downloads"
-                      target="_blank"
                       rel="noopener noreferrer"
                       className="text-xs text-win-accent hover:underline ml-1"
                     >
@@ -253,111 +215,50 @@ export default function SettingsDialog() {
                 <p className="text-sm font-medium text-win-text">{appVersion || '...'}</p>
               </div>
 
-              {/* Update section */}
-              <div className="rounded-md border border-win-border bg-win-surface p-3 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs font-medium text-win-text-secondary">Updates</p>
-                  {updateStatus === 'idle' && (
-                    <button
-                      onClick={handleCheckForUpdates}
-                      className="text-[11px] font-medium text-win-accent hover:underline"
-                    >
-                      Check for updates
-                    </button>
-                  )}
-                </div>
-
-                {updateStatus === 'checking' && (
-                  <div className="flex items-center gap-2">
-                    <div className="h-3 w-3 animate-spin rounded-full border-2 border-win-accent border-t-transparent" />
-                    <span className="text-xs text-win-text-secondary">Checking...</span>
-                  </div>
-                )}
-
-                {updateStatus === 'available' && updateInfo && (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <div className="h-2 w-2 rounded-full bg-green-400" />
-                      <span className="text-xs text-win-text">
-                        v{updateInfo.version} available
-                      </span>
-                    </div>
-                    <button
-                      onClick={handleDownloadUpdate}
-                      className="w-full rounded border border-win-accent bg-win-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 transition-opacity"
-                    >
-                      Download update
-                    </button>
-                  </div>
-                )}
-
-                {updateStatus === 'downloading' && (
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-win-text-secondary">Downloading...</span>
-                      <span className="text-xs font-medium text-win-text">{downloadPercent}%</span>
-                    </div>
-                    <div className="h-1.5 w-full rounded-full bg-win-border overflow-hidden">
-                      <div
-                        className="h-full rounded-full bg-win-accent transition-all duration-300"
-                        style={{ width: `${downloadPercent}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {updateStatus === 'ready' && (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <div className="h-2 w-2 rounded-full bg-green-400" />
-                      <span className="text-xs text-win-text">
-                        v{updateInfo?.version} ready to install
-                      </span>
-                    </div>
-                    <button
-                      onClick={handleInstallUpdate}
-                      className="w-full rounded border border-win-accent bg-win-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 transition-opacity"
-                    >
-                      Restart and install
-                    </button>
-                    <p className="text-[10px] text-win-text-tertiary">
-                      The app will restart to apply the update
-                    </p>
-                  </div>
-                )}
-
-                {updateStatus === 'error' && (
-                  <div className="space-y-1.5">
-                    <div className="flex items-center gap-2">
-                      <div className="h-2 w-2 rounded-full bg-red-400" />
-                      <span className="text-xs text-win-text-secondary">
-                        {updateError || 'Update check failed'}
-                      </span>
-                    </div>
-                    <button
-                      onClick={handleCheckForUpdates}
-                      className="text-[11px] font-medium text-win-accent hover:underline"
-                    >
-                      Try again
-                    </button>
-                  </div>
-                )}
+              <div className="rounded-md border border-win-border bg-win-surface p-3">
+                <p className="text-xs font-medium text-win-text-secondary">Updates</p>
+                <p className="mt-1 text-[10px] leading-relaxed text-win-text-tertiary">
+                  Updates are installed manually so private GitHub credentials never need to be embedded in the app.
+                  Download the build for your platform from{' '}
+                  <a
+                    href="https://github.com/z4mbo/zAI/releases/latest"
+                    rel="noopener noreferrer"
+                    className="font-medium text-win-accent hover:underline"
+                  >
+                    GitHub Releases
+                  </a>
+                  . Repository access is required while zAI is private.
+                </p>
               </div>
 
               <div>
-                <p className="text-xs text-win-text-tertiary">Repository</p>
-                <a
-                  href="https://github.com/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-sm text-win-accent hover:underline"
-                >
-                  View on GitHub
-                </a>
+                <p className="text-xs text-win-text-tertiary">Repositories</p>
+                <div className="mt-1 flex flex-col items-start gap-1">
+                  <a
+                    href="https://github.com/z4mbo/zAI"
+                    rel="noopener noreferrer"
+                    className="text-sm text-win-accent hover:underline"
+                  >
+                    zAI on GitHub
+                  </a>
+                  <a
+                    href="https://github.com/BrunoPigat/friendly-terminal"
+                    rel="noopener noreferrer"
+                    className="text-xs text-win-text-secondary hover:text-win-accent hover:underline"
+                  >
+                    Based on Friendly Terminal by BrunoPigat
+                  </a>
+                </div>
+              </div>
+              <div className="rounded-md border border-win-border bg-win-surface p-3">
+                <p className="text-xs font-medium text-win-text-secondary">GPL-3.0 License</p>
+                <p className="mt-1 text-[10px] leading-relaxed text-win-text-tertiary">
+                  zAI is free software distributed under GPL-3.0, without any warranty; without even the implied warranty of merchantability or fitness for a particular purpose.
+                </p>
               </div>
               <div className="pt-2 border-t border-win-border">
                 <p className="text-[10px] text-win-text-tertiary">
-                  Your Friendly Terminal — AI coding assistant interface
+                  zAI — AI coding assistant interface
                 </p>
               </div>
             </div>

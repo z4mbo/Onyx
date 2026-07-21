@@ -11,7 +11,6 @@ export default function TitleBar() {
   const panels = useSplitViewStore((s) => s.panels)
   const activatePanel = useSplitViewStore((s) => s.activatePanel)
   const closePanel = useSplitViewStore((s) => s.closePanel)
-  const activeProject = useProjectStore((s) => s.activeProject)
   const clearProject = useProjectStore((s) => s.clearProject)
   const selectProject = useProjectStore((s) => s.selectProject)
   const defaultEngine = useSettingsStore((s) => s.defaultEngine)
@@ -24,7 +23,14 @@ export default function TitleBar() {
   const [newProjectName, setNewProjectName] = useState('')
   const [creatingProject, setCreatingProject] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
+  const [platform, setPlatform] = useState<'win32' | 'darwin' | 'linux'>(() =>
+    navigator.userAgent.includes('Mac') ? 'darwin' : navigator.userAgent.includes('Windows') ? 'win32' : 'linux'
+  )
   const dropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    api.getPlatform().then(setPlatform).catch(() => {})
+  }, [])
 
   const handleBack = useCallback(() => {
     setShowCloseConfirm(true)
@@ -94,8 +100,11 @@ export default function TitleBar() {
 
   return (
     <header
-      className="flex h-10 shrink-0 items-center justify-between border-b border-win-border bg-win-surface px-3 select-none"
-      style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      className="flex h-10 shrink-0 items-center justify-between border-b border-win-border bg-win-surface pr-3 select-none"
+      style={{
+        WebkitAppRegion: 'drag',
+        paddingLeft: platform === 'darwin' ? 76 : 12
+      } as React.CSSProperties}
     >
       {/* Left: back + app name + breadcrumb */}
       <div className="flex items-center gap-2 text-sm" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
@@ -221,10 +230,11 @@ export default function TitleBar() {
       </div>
 
       {/* Right: window controls - Windows 11 style */}
-      <div
-        className="flex items-center"
-        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-      >
+      {platform !== 'darwin' && (
+        <div
+          className="flex items-center"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
         <button
           onClick={handleMinimize}
           className="flex h-8 w-11 items-center justify-center text-win-text-secondary hover:bg-black/5 transition-colors"
@@ -253,7 +263,8 @@ export default function TitleBar() {
             <line x1="10" y1="0" x2="0" y2="10" />
           </svg>
         </button>
-      </div>
+        </div>
+      )}
 
       {/* Close project confirmation dialog */}
       {showCloseConfirm && (

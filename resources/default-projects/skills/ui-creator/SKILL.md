@@ -15,7 +15,7 @@ Your UI is not a generic dashboard. It's a **project lens** — a living view th
 - File structure with inline previews (the canvas can read files at runtime)
 - Key patterns, dependencies, and architecture at a glance
 - Important metrics, config summaries, or data overviews
-- Clickable elements that send commands to the terminal via `yft.sendToTerminal()`
+- Clickable elements that prefill reviewed text in a non-OpenRouter terminal via `yft.sendToTerminal()`
 
 ## Design language — Windows 11 minimalist
 
@@ -58,13 +58,13 @@ Never update just because you answered a question. The UI is a persistent worksp
 The iframe runs in a sandbox but can communicate with the app:
 
 ### Actions (fire-and-forget)
-- **`yft.sendToTerminal(text)`** — Types text into the active terminal
+- **`yft.sendToTerminal(text)`** — Prefills printable text in the active terminal. Control characters are removed, the user must press Enter, and OpenRouter terminals reject Canvas writes.
 - **`yft.switchTab(tab)`** — Switches right panel tab
 - **`yft.setMode(mode)`** — Changes layout mode (`panel`, `full`, `bottom`)
 
 ### Data access (async, returns Promises)
-- **`yft.readFile(path)`** — Reads a file's content. Relative paths resolve from project root. Returns `string | null`.
-- **`yft.readDir(path)`** — Lists directory entries. Returns array of `{ name, path, isDirectory, size, modified }` or `null`.
+- **`yft.readFile(path)`** — Reads a file's content. Only relative paths contained in the project are accepted. Returns `string | null`.
+- **`yft.readDir(path)`** — Lists a contained project directory by relative path. Returns array of `{ name, path, isDirectory, size, modified }` or `null`.
 
 This means your UI can **read project files at runtime** — render file previews, show config contents, display code snippets, all live:
 

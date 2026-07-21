@@ -135,6 +135,76 @@ const COMMAND_MAP: Record<string, Record<CommandIntent, CommandTemplate>> = {
       template: '/help',
       isInSession: true
     }
+  },
+  kimi: {
+    'start-session': {
+      template: 'kimi',
+      isInSession: false
+    },
+    'continue-session': {
+      template: 'kimi --continue',
+      isInSession: false
+    },
+    'add-dir': {
+      template: '/add-dir {dirPath}',
+      isInSession: true
+    },
+    'add-file': {
+      template: '@{filePath}',
+      isInSession: true
+    },
+    'add-mcp': {
+      template: '/mcp-config',
+      isInSession: true
+    },
+    'list-mcp': {
+      template: '/mcp',
+      isInSession: true
+    },
+    'remove-mcp': {
+      template: '/mcp-config',
+      isInSession: true
+    },
+    'show-help': {
+      template: '/help',
+      isInSession: true
+    }
+  },
+  openrouter: {
+    'start-session': {
+      // Exit the provider-bearing shell as soon as Kimi exits so the API key
+      // cannot remain available in a reusable general-purpose terminal.
+      template: 'kimi; exit',
+      isInSession: false
+    },
+    'continue-session': {
+      template: 'kimi --continue; exit',
+      isInSession: false
+    },
+    'add-dir': {
+      template: '/add-dir {dirPath}',
+      isInSession: true
+    },
+    'add-file': {
+      template: '@{filePath}',
+      isInSession: true
+    },
+    'add-mcp': {
+      template: '/mcp-config',
+      isInSession: true
+    },
+    'list-mcp': {
+      template: '/mcp',
+      isInSession: true
+    },
+    'remove-mcp': {
+      template: '/mcp-config',
+      isInSession: true
+    },
+    'show-help': {
+      template: '/help',
+      isInSession: true
+    }
   }
 }
 

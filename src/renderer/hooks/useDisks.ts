@@ -4,12 +4,13 @@ import * as api from '@/lib/api'
 export interface DiskInfo {
   name: string
   mount: string
+  free: number
   size: number
 }
 
 /**
- * Fetches the list of available Windows drives on mount.
- * Returns the disk list, a loading flag, and a refresh function.
+ * Fetches the available filesystem locations/volumes on mount.
+ * Returns the location list, a loading flag, and a refresh function.
  */
 export function useDisks() {
   const [disks, setDisks] = useState<DiskInfo[]>([])
@@ -24,7 +25,7 @@ export function useDisks() {
       setDisks(result)
     } catch (err) {
       console.error('Failed to list disks:', err)
-      setError('Failed to list disks')
+      setError('Failed to list locations')
       setDisks([])
     } finally {
       setLoading(false)

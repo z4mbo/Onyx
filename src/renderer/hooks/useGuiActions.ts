@@ -22,7 +22,8 @@ interface GuiActionPayload {
  */
 export function useGuiActions(): void {
   useEffect(() => {
-    const unsub = window.api.onGuiAction(async (payload: GuiActionPayload) => {
+    const unsub = api.onGuiAction(async (rawPayload) => {
+      const payload = rawPayload as GuiActionPayload
       const store = useSettingsStore.getState()
 
       switch (payload.action) {

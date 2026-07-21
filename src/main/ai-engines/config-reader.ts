@@ -84,9 +84,19 @@ async function readMdFiles(dirPath: string): Promise<{ name: string; content: st
  * Reads agent definitions from engine-specific directories.
  * Checks both project-level and user-level directories.
  */
-const ENGINE_DIR_MAP: Record<string, string> = { claude: '.claude', gemini: '.gemini', codex: '.agents' }
+const ENGINE_DIR_MAP: Record<string, string> = {
+  claude: '.claude',
+  gemini: '.gemini',
+  codex: '.agents',
+  kimi: '.kimi-code',
+  openrouter: '.kimi-code'
+}
 
 export async function readAgents(engineId: string, projectPath: string): Promise<AgentEntry[]> {
+  // Kimi Code uses AGENTS.md for instructions and `.agents/skills` for skills;
+  // it does not consume the Claude/Gemini markdown subagent directory format.
+  if (engineId === 'kimi' || engineId === 'openrouter') return []
+
   const engineDir = ENGINE_DIR_MAP[engineId] ?? `.${engineId}`
   const dirs = [
     join(projectPath, engineDir, 'agents'),
@@ -125,12 +135,26 @@ export async function readAgents(engineId: string, projectPath: string): Promise
  * Checks SKILL.md in subdirectories and legacy command files.
  */
 export async function readSkills(engineId: string, projectPath: string): Promise<SkillEntry[]> {
-  const engineDir = ENGINE_DIR_MAP[engineId] ?? `.${engineId}`
+  const engineDirs = engineId === 'kimi' || engineId === 'openrouter'
+    ? ['.agents', '.kimi-code']
+    : [ENGINE_DIR_MAP[engineId] ?? `.${engineId}`]
   const dirs: { path: string; type: 'skills' | 'commands' }[] = [
-    { path: join(projectPath, engineDir, 'skills'), type: 'skills' },
-    { path: join(homedir(), engineDir, 'skills'), type: 'skills' },
-    { path: join(projectPath, engineDir, 'commands'), type: 'commands' },
-    { path: join(homedir(), engineDir, 'commands'), type: 'commands' }
+    ...engineDirs.map((engineDir) => ({
+      path: join(projectPath, engineDir, 'skills'),
+      type: 'skills' as const
+    })),
+    ...engineDirs.map((engineDir) => ({
+      path: join(projectPath, engineDir, 'commands'),
+      type: 'commands' as const
+    })),
+    ...engineDirs.map((engineDir) => ({
+      path: join(homedir(), engineDir, 'skills'),
+      type: 'skills' as const
+    })),
+    ...engineDirs.map((engineDir) => ({
+      path: join(homedir(), engineDir, 'commands'),
+      type: 'commands' as const
+    }))
   ]
 
   const allSkills = new Map<string, SkillEntry>()

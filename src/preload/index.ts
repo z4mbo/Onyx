@@ -22,6 +22,10 @@ const api: IElectronAPI = {
   listDisks: () => ipcRenderer.invoke('fs:list-disks'),
   readDir: (dirPath) => ipcRenderer.invoke('fs:read-dir', dirPath),
   readFile: (filePath) => ipcRenderer.invoke('fs:read-file', filePath),
+  canvasReadFile: (projectRoot, relativePath) => ipcRenderer.invoke('fs:canvas-read-file', projectRoot, relativePath),
+  canvasReadDir: (projectRoot, relativePath) => ipcRenderer.invoke('fs:canvas-read-dir', projectRoot, relativePath),
+  canvasCreateDocument: (content) => ipcRenderer.invoke('canvas:create-document', content),
+  canvasDisposeDocument: (token) => ipcRenderer.invoke('canvas:dispose-document', token),
   writeFile: (filePath, content) => ipcRenderer.invoke('fs:write-file', filePath, content),
   stat: (filePath) => ipcRenderer.invoke('fs:stat', filePath),
   fsWatch: (dirPath) => ipcRenderer.invoke('fs:watch', dirPath),
@@ -72,6 +76,15 @@ const api: IElectronAPI = {
 
   // App
   getAppVersion: () => ipcRenderer.invoke('app:version'),
+  getPlatform: () => ipcRenderer.invoke('app:get-platform'),
+
+  // OpenRouter
+  openRouterSaveApiKey: (apiKey) => ipcRenderer.invoke('openrouter:save-api-key', apiKey),
+  openRouterClearApiKey: () => ipcRenderer.invoke('openrouter:clear-api-key'),
+  openRouterGetStatus: () => ipcRenderer.invoke('openrouter:status'),
+  openRouterListModels: (forceRefresh) => ipcRenderer.invoke('openrouter:list-models', forceRefresh),
+  openRouterGetSelectedModel: () => ipcRenderer.invoke('openrouter:get-selected-model'),
+  openRouterSetSelectedModel: (modelId) => ipcRenderer.invoke('openrouter:set-selected-model', modelId),
 
   // Settings
   getSetting: (key) => ipcRenderer.invoke('settings:get', key),
@@ -87,36 +100,6 @@ const api: IElectronAPI = {
   // Clipboard
   clipboardReadText: () => clipboard.readText(),
   showTerminalContextMenu: (hasSelection) => ipcRenderer.invoke('context-menu:terminal', hasSelection),
-  onClipboardPaste: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, text: string) => callback(text)
-    ipcRenderer.on('clipboard:paste', listener)
-    return () => ipcRenderer.removeListener('clipboard:paste', listener)
-  },
-
-  // Updater
-  updaterCheck: () => ipcRenderer.invoke('updater:check'),
-  updaterDownload: () => ipcRenderer.invoke('updater:download'),
-  updaterInstall: () => ipcRenderer.invoke('updater:install'),
-  onUpdateAvailable: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, info: { version: string; releaseDate: string; releaseNotes: string }) => callback(info)
-    ipcRenderer.on('updater:update-available', listener)
-    return () => ipcRenderer.removeListener('updater:update-available', listener)
-  },
-  onUpdateDownloaded: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, info: { version: string }) => callback(info)
-    ipcRenderer.on('updater:update-downloaded', listener)
-    return () => ipcRenderer.removeListener('updater:update-downloaded', listener)
-  },
-  onUpdateProgress: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, progress: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => callback(progress)
-    ipcRenderer.on('updater:download-progress', listener)
-    return () => ipcRenderer.removeListener('updater:download-progress', listener)
-  },
-  onUpdateError: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, error: { message: string }) => callback(error)
-    ipcRenderer.on('updater:error', listener)
-    return () => ipcRenderer.removeListener('updater:error', listener)
-  },
 
   // Window controls
   windowMinimize: () => ipcRenderer.send('window:minimize'),

@@ -28,6 +28,14 @@ function geminiSettingsPath(projectDir: string): string {
 }
 
 /**
+ * Path to Kimi Code's project-level MCP configuration.
+ * Current Kimi Code releases load .kimi-code/mcp.json from the working tree.
+ */
+function kimiMcpPath(projectDir: string): string {
+  return join(projectDir, '.kimi-code', 'mcp.json')
+}
+
+/**
  * Reads .mcp.json from a project directory.
  * Returns an empty config if the file does not exist.
  */
@@ -42,7 +50,7 @@ export async function readMcpConfig(projectDir: string): Promise<McpConfig> {
 
 /**
  * Writes the full .mcp.json config to a project directory.
- * Also syncs the Gemini settings.json format if .gemini dir exists.
+ * Also syncs the engine-specific Gemini and Kimi Code formats.
  */
 export async function writeMcpConfig(
   projectDir: string,
@@ -56,6 +64,7 @@ export async function writeMcpConfig(
 
   // Also write Gemini-format settings.json
   await syncGeminiSettings(projectDir, config)
+  await syncKimiMcpConfig(projectDir, config)
 }
 
 /**
@@ -146,5 +155,37 @@ async function syncGeminiSettings(
     await writeFile(settingsFile, JSON.stringify(merged, null, 2), 'utf-8')
   } catch {
     // Non-critical: Gemini sync failure should not block Claude config
+  }
+}
+
+/**
+ * Syncs the project MCP list to Kimi Code's well-known mcp.json format while
+ * preserving any future top-level Kimi-specific fields.
+ */
+async function syncKimiMcpConfig(
+  projectDir: string,
+  config: McpConfig
+): Promise<void> {
+  const settingsDir = join(projectDir, '.kimi-code')
+  const settingsFile = kimiMcpPath(projectDir)
+
+  try {
+    await ensureDir(settingsDir)
+
+    let existingSettings: Record<string, unknown> = {}
+    try {
+      const raw = await readFile(settingsFile, 'utf-8')
+      existingSettings = JSON.parse(raw)
+    } catch {
+      // File does not exist yet, start fresh.
+    }
+
+    await writeFile(
+      settingsFile,
+      JSON.stringify({ ...existingSettings, mcpServers: config.mcpServers }, null, 2),
+      'utf-8'
+    )
+  } catch {
+    // Non-critical: Kimi Code sync failure should not block the shared config.
   }
 }

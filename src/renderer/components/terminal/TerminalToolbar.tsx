@@ -1,19 +1,26 @@
-import { useCallback, useState, useEffect, useRef } from 'react'
+import { useCallback, useState, useEffect, useMemo, useRef } from 'react'
 import { useTerminalStore, generateTerminalId } from '@/stores/terminal-store'
 import { useProjectStore } from '@/stores/project-store'
 import { useSettingsStore } from '@/stores/settings-store'
 import { ENGINE_NAMES, ENGINE_COLORS, ENGINE_MD_FILES, ENGINE_COMPACT_CMD, type EngineId } from '@/lib/constants'
-import type { AIEngineInfo } from '@/preload/types'
 import * as api from '@/lib/api'
+import type { AIEngineInfo } from '@/lib/api'
 import ClearSessionDialog from './ClearSessionDialog'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 /** Install URLs for each engine */
-const ENGINE_INSTALL_URLS: Record<EngineId, string> = {
+const ENGINE_INSTALL_URLS: Partial<Record<EngineId, string>> = {
   claude: 'https://docs.anthropic.com/en/docs/claude-code/overview',
   gemini: 'https://github.com/google-gemini/gemini-cli?tab=readme-ov-file#-installation',
-  codex: 'https://github.com/openai/codex'
+  codex: 'https://github.com/openai/codex',
+  kimi: 'https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html'
+}
+
+interface OpenRouterModelInfo {
+  id: string
+  name: string
+  description?: string
 }
 
 /**
@@ -156,6 +163,8 @@ export default function TerminalToolbar() {
   const addTerminal = useTerminalStore((s) => s.addTerminal)
   const activeProject = useProjectStore((s) => s.activeProject)
   const defaultEngine = useSettingsStore((s) => s.defaultEngine)
+  const settingsOpen = useSettingsStore((s) => s.showSettingsDialog)
+  const setShowSettings = useSettingsStore((s) => s.setShowSettingsDialog)
 
   const minifiedView = useSettingsStore((s) => s.minifiedView)
   const toggleMinifiedView = useSettingsStore((s) => s.toggleMinifiedView)
@@ -168,70 +177,178 @@ export default function TerminalToolbar() {
   const [showMemory, setShowMemory] = useState(false)
   const [engines, setEngines] = useState<AIEngineInfo[]>([])
   const [engineDropdownOpen, setEngineDropdownOpen] = useState(false)
-  const dropdownRef = useRef<HTMLDivElement>(null)
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false)
+  const [openRouterHasKey, setOpenRouterHasKey] = useState(false)
+  const [openRouterModelId, setOpenRouterModelId] = useState<string | null>(null)
+  const [openRouterModels, setOpenRouterModels] = useState<OpenRouterModelInfo[]>([])
+  const [openRouterLoading, setOpenRouterLoading] = useState(false)
+  const [modelSearch, setModelSearch] = useState('')
+  const [providerGuide, setProviderGuide] = useState<string | null>(null)
+  const engineDropdownRef = useRef<HTMLDivElement>(null)
+  const modelDropdownRef = useRef<HTMLDivElement>(null)
 
   // Detect installed engines on mount
   useEffect(() => {
-    api.detectEngines().then(setEngines)
+    api.detectEngines().then((result) => setEngines(result as AIEngineInfo[]))
   }, [])
 
-  // Close dropdown on outside click
+  const loadOpenRouterState = useCallback(async (forceRefresh = false) => {
+    setOpenRouterLoading(true)
+    try {
+      const status = await api.openRouterGetStatus()
+      setOpenRouterHasKey(status.hasApiKey)
+      setOpenRouterModelId(status.selectedModelId)
+      if (status.hasApiKey) {
+        const result = await api.openRouterListModels(forceRefresh)
+        if (result.success) {
+          setOpenRouterModels(result.models)
+          setOpenRouterModelId(await api.openRouterGetSelectedModel())
+        } else setOpenRouterModels([])
+      } else {
+        setOpenRouterModels([])
+      }
+    } catch (err) {
+      console.error('[TerminalToolbar] Failed to load OpenRouter state:', err)
+    } finally {
+      setOpenRouterLoading(false)
+    }
+  }, [])
+
+  // Refresh after Settings closes so changes made in Providers immediately
+  // appear in the toolbar.
   useEffect(() => {
-    if (!engineDropdownOpen) return
+    if (!settingsOpen) void loadOpenRouterState(false)
+  }, [settingsOpen, loadOpenRouterState])
+
+  // The selector represents the active session when one exists, otherwise the
+  // configured default for the next session.
+  useEffect(() => {
+    setSelectedEngine(activeTerminal?.engine ?? defaultEngine)
+  }, [activeTerminal?.engine, defaultEngine])
+
+  // Close either selector on outside click.
+  useEffect(() => {
+    if (!engineDropdownOpen && !modelDropdownOpen) return
     const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+      if (engineDropdownRef.current && !engineDropdownRef.current.contains(e.target as Node)) {
         setEngineDropdownOpen(false)
+      }
+      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
+        setModelDropdownOpen(false)
       }
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [engineDropdownOpen])
+  }, [engineDropdownOpen, modelDropdownOpen])
 
   const atMaxTerminals = terminals.size >= 4
 
-  const handleEngineChange = useCallback(
-    (engine: EngineId) => {
-      setSelectedEngine(engine)
-      setEngineDropdownOpen(false)
-
-      // If already at max, don't create a new terminal
-      if (atMaxTerminals) return
-
-      // Create a new terminal with the selected engine
-      const id = generateTerminalId()
-      const count = terminals.size + 1
-      addTerminal({
-        id,
-        ptyId: null,
-        name: `${ENGINE_NAMES[engine]} #${count}`,
-        engine,
-        isActive: true,
-        cwd: activeProject?.path ?? '',
-        isLoading: true
-      })
-    },
-    [addTerminal, terminals.size, activeProject, atMaxTerminals]
-  )
-
-  const handleNewSession = useCallback(() => {
+  const createSession = useCallback(
+    (engine: EngineId, launchIntent: 'start-session' | 'continue-session' = 'start-session') => {
     const id = generateTerminalId()
     const count = terminals.size + 1
     addTerminal({
       id,
       ptyId: null,
-      name: `${ENGINE_NAMES[selectedEngine]} #${count}`,
-      engine: selectedEngine,
+      name: `${ENGINE_NAMES[engine]} #${count}`,
+      engine,
       isActive: true,
       cwd: activeProject?.path ?? '',
-      isLoading: true
+      isLoading: true,
+      launchIntent
     })
-  }, [addTerminal, selectedEngine, terminals.size, activeProject])
+  }, [addTerminal, terminals.size, activeProject])
 
-  const handleContinueSession = useCallback(() => {
+  const ensureOpenRouterReady = useCallback(async (): Promise<boolean> => {
+    try {
+      const status = await api.openRouterGetStatus()
+      setOpenRouterHasKey(status.hasApiKey)
+      setOpenRouterModelId(status.selectedModelId)
+
+      if (!status.hasApiKey) {
+        setProviderGuide('Connect an OpenRouter API key in Settings → Providers before starting an OpenRouter chat.')
+        return false
+      }
+      if (!status.selectedModelId) {
+        setProviderGuide('Choose an OpenRouter model in Settings → Providers before starting an OpenRouter chat.')
+        return false
+      }
+      const kimiInstalled = engines.find((engine) => engine.id === 'kimi')?.isAvailable ?? false
+      if (!kimiInstalled) {
+        setProviderGuide('OpenRouter runs through Kimi Code. Install Kimi Code before starting this chat.')
+        return false
+      }
+      const openRouterEngine = engines.find((engine) => engine.id === 'openrouter')
+      if (!openRouterEngine?.isAvailable) {
+        setProviderGuide(
+          openRouterEngine?.availabilityReason ||
+          'OpenRouter requires Kimi Code 0.6.0 or newer. Upgrade Kimi Code and restart zAI.'
+        )
+        return false
+      }
+      setProviderGuide(null)
+      return true
+    } catch (err) {
+      setProviderGuide(err instanceof Error ? err.message : 'Could not check the OpenRouter connection.')
+      return false
+    }
+  }, [engines])
+
+  const handleEngineChange = useCallback(
+    async (engine: EngineId) => {
+      setEngineDropdownOpen(false)
+
+      if (engine === 'openrouter' && !(await ensureOpenRouterReady())) return
+
+      setSelectedEngine(engine)
+      // If already at max, don't create a new terminal
+      if (atMaxTerminals) return
+      createSession(engine)
+    },
+    [atMaxTerminals, createSession, ensureOpenRouterReady]
+  )
+
+  const handleNewSession = useCallback(async () => {
+    if (selectedEngine === 'openrouter' && !(await ensureOpenRouterReady())) return
+    createSession(selectedEngine)
+  }, [selectedEngine, createSession, ensureOpenRouterReady])
+
+  const handleContinueSession = useCallback(async () => {
     if (!activeTerminal) return
-    const continueCmd = currentEngine === 'codex' ? 'codex --resume' : 'claude --continue'
-    api.ptyWrite(activeTerminal.id, continueCmd + '\n')
-  }, [activeTerminal, currentEngine])
+    try {
+      if (currentEngine === 'openrouter' && !(await ensureOpenRouterReady())) return
+      if (atMaxTerminals) {
+        setProviderGuide('Close a chat before resuming; zAI supports up to four terminals.')
+        return
+      }
+      createSession(currentEngine, 'continue-session')
+    } catch (err) {
+      setProviderGuide(err instanceof Error ? err.message : `Could not resume ${ENGINE_NAMES[currentEngine]}.`)
+    }
+  }, [activeTerminal, currentEngine, ensureOpenRouterReady, atMaxTerminals, createSession])
+
+  const handleSelectOpenRouterModel = useCallback(async (modelId: string) => {
+    try {
+      const result = await api.openRouterSetSelectedModel(modelId)
+      if (!result.success) throw new Error(result.error || 'Could not save the selected model.')
+      setOpenRouterModelId(modelId)
+      setModelDropdownOpen(false)
+      setModelSearch('')
+      setProviderGuide(null)
+    } catch (err) {
+      setProviderGuide(err instanceof Error ? err.message : 'Could not save the selected model.')
+    }
+  }, [])
+
+  const filteredOpenRouterModels = useMemo(() => {
+    const query = modelSearch.trim().toLowerCase()
+    if (!query) return openRouterModels
+    return openRouterModels.filter((model) =>
+      model.name.toLowerCase().includes(query) || model.id.toLowerCase().includes(query)
+    )
+  }, [modelSearch, openRouterModels])
+
+  const selectedOpenRouterModel = openRouterModels.find((model) => model.id === openRouterModelId)
 
   // ---- Clear session handlers ----
 
@@ -277,7 +394,7 @@ export default function TerminalToolbar() {
     <>
       <div className="flex h-12 shrink-0 items-center gap-3 border-b border-win-border bg-win-surface px-4">
         {/* AI assistant selector */}
-        <div className="relative flex items-center gap-2" ref={dropdownRef}>
+        <div className="relative flex items-center gap-2" ref={engineDropdownRef}>
           <label className="text-sm font-medium text-win-text-secondary">
             Assistant
           </label>
@@ -296,14 +413,18 @@ export default function TerminalToolbar() {
             <div className="absolute left-0 top-full mt-1 z-50 min-w-[200px] rounded-lg border border-win-border bg-win-card shadow-lg overflow-hidden">
               {(Object.entries(ENGINE_NAMES) as [EngineId, string][]).map(([key, name]) => {
                 const info = engines.find((e) => e.id === key)
-                const isInstalled = info?.isAvailable ?? false
+                const kimiInstalled = engines.find((e) => e.id === 'kimi')?.isAvailable ?? false
+                const openRouterCapable = engines.find((e) => e.id === 'openrouter')?.isAvailable ?? false
+                const isInstalled = key === 'openrouter'
+                  ? openRouterHasKey && !!openRouterModelId && openRouterCapable
+                  : info?.isAvailable ?? false
                 const isCurrent = key === selectedEngine
 
                 if (isInstalled) {
                   return (
                     <button
                       key={key}
-                      onClick={() => handleEngineChange(key)}
+                      onClick={() => void handleEngineChange(key)}
                       disabled={atMaxTerminals && !isCurrent}
                       className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-sm transition-colors ${
                         isCurrent
@@ -325,6 +446,48 @@ export default function TerminalToolbar() {
                   )
                 }
 
+                if (key === 'openrouter') {
+                  const reason = !kimiInstalled
+                    ? 'Needs Kimi Code'
+                    : !openRouterCapable
+                      ? 'Upgrade Kimi Code'
+                    : !openRouterHasKey
+                      ? 'API key required'
+                      : 'Choose a model'
+                  return (
+                    <div
+                      key={key}
+                      className="flex w-full items-center gap-2.5 px-3 py-2.5 text-sm text-win-text-tertiary"
+                    >
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-neutral-300" />
+                      <span className="min-w-0 flex-1 text-left">
+                        <span className="block text-win-text-secondary">{name}</span>
+                        <span className="block text-[10px]">{reason}</span>
+                      </span>
+                      {!kimiInstalled || !openRouterCapable ? (
+                        <a
+                          href={ENGINE_INSTALL_URLS.kimi}
+                          rel="noreferrer"
+                          onClick={() => setEngineDropdownOpen(false)}
+                          className="text-xs font-medium text-win-accent hover:underline"
+                        >
+                          {kimiInstalled ? 'Upgrade Kimi' : 'Install Kimi'}
+                        </a>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setEngineDropdownOpen(false)
+                            setShowSettings(true)
+                          }}
+                          className="text-xs font-medium text-win-accent hover:underline"
+                        >
+                          Configure
+                        </button>
+                      )}
+                    </div>
+                  )
+                }
+
                 return (
                   <div
                     key={key}
@@ -334,7 +497,6 @@ export default function TerminalToolbar() {
                     <span className="flex-1 text-left">{name}</span>
                     <a
                       href={ENGINE_INSTALL_URLS[key]}
-                      target="_blank"
                       rel="noreferrer"
                       onClick={(e) => {
                         e.stopPropagation()
@@ -351,6 +513,74 @@ export default function TerminalToolbar() {
           )}
         </div>
 
+        {/* OpenRouter model selector. Model changes apply to new chats. */}
+        {(selectedEngine === 'openrouter' || currentEngine === 'openrouter') && (
+          <div className="relative flex items-center gap-2" ref={modelDropdownRef}>
+            <label className="text-xs font-medium text-win-text-secondary">New chat model</label>
+            <button
+              onClick={() => {
+                setModelDropdownOpen((open) => !open)
+                if (openRouterModels.length === 0) void loadOpenRouterState(false)
+              }}
+              className="flex max-w-[220px] items-center gap-2 rounded-md border border-win-border bg-win-card px-2.5 py-1.5 text-xs text-win-text hover:bg-win-hover transition-colors"
+              title={openRouterModelId || 'Choose an OpenRouter model'}
+            >
+              <span className="truncate">{selectedOpenRouterModel?.name || openRouterModelId || 'Choose model'}</span>
+              <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" className="shrink-0 text-win-text-tertiary">
+                <path d="M2 4l3 3 3-3" />
+              </svg>
+            </button>
+
+            {modelDropdownOpen && (
+              <div className="absolute left-0 top-full z-50 mt-1 w-80 rounded-lg border border-win-border bg-win-card p-2 shadow-lg">
+                <div className="mb-2 flex gap-1.5">
+                  <input
+                    type="search"
+                    value={modelSearch}
+                    onChange={(event) => setModelSearch(event.target.value)}
+                    placeholder="Search models…"
+                    autoFocus
+                    className="min-w-0 flex-1 rounded border border-win-border bg-win-surface px-2.5 py-1.5 text-xs text-win-text placeholder:text-win-text-tertiary outline-none focus:border-win-accent"
+                  />
+                  <button
+                    onClick={() => void loadOpenRouterState(true)}
+                    disabled={openRouterLoading}
+                    title="Refresh OpenRouter models"
+                    className="rounded border border-win-border px-2 text-win-text-secondary hover:bg-win-hover disabled:opacity-40"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={openRouterLoading ? 'animate-spin' : ''}>
+                      <polyline points="23 4 23 10 17 10" />
+                      <polyline points="1 20 1 14 7 14" />
+                      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                    </svg>
+                  </button>
+                </div>
+                <div className="max-h-64 overflow-y-auto">
+                  {filteredOpenRouterModels.map((model) => (
+                    <button
+                      key={model.id}
+                      onClick={() => void handleSelectOpenRouterModel(model.id)}
+                      className={`w-full rounded px-2.5 py-2 text-left transition-colors ${
+                        model.id === openRouterModelId
+                          ? 'bg-win-accent-subtle text-win-accent'
+                          : 'text-win-text-secondary hover:bg-win-hover hover:text-win-text'
+                      }`}
+                    >
+                      <span className="block truncate text-xs font-medium">{model.name}</span>
+                      <span className="mt-0.5 block truncate font-mono text-[9px] text-win-text-tertiary">{model.id}</span>
+                    </button>
+                  ))}
+                  {!openRouterLoading && filteredOpenRouterModels.length === 0 && (
+                    <div className="px-2.5 py-4 text-center text-xs text-win-text-tertiary">
+                      {openRouterHasKey ? 'No matching models.' : 'Connect OpenRouter in Settings → Providers.'}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Action buttons */}
         <div className="flex items-center gap-1.5">
           <button
@@ -365,11 +595,11 @@ export default function TerminalToolbar() {
             New Chat
           </button>
 
-          {/* Resume Chat - for Claude and Codex (both support session resumption) */}
-          {(activeTerminal?.engine === 'claude' || activeTerminal?.engine === 'codex' || selectedEngine === 'claude' || selectedEngine === 'codex') && (
+          {/* Engines with a backend-defined continuation command. */}
+          {(['claude', 'codex', 'kimi', 'openrouter'] as EngineId[]).includes(currentEngine) && (
             <button
               onClick={handleContinueSession}
-              disabled={!hasPty}
+              disabled={atMaxTerminals}
               className="flex items-center gap-2 rounded-md border border-win-border bg-win-card px-2 py-1 text-sm text-win-text-secondary hover:bg-win-hover hover:text-win-text disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -458,6 +688,40 @@ export default function TerminalToolbar() {
           )}
         </button>
       </div>
+
+      {providerGuide && (
+        <div className="fixed left-1/2 top-14 z-[60] flex max-w-xl -translate-x-1/2 items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 shadow-lg">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-amber-600">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+          <p className="flex-1 text-xs leading-relaxed text-amber-800">{providerGuide}</p>
+          {providerGuide.includes('Kimi Code') ? (
+            <a
+              href={ENGINE_INSTALL_URLS.kimi}
+              rel="noreferrer"
+              className="shrink-0 text-xs font-semibold text-amber-800 underline"
+            >
+              Kimi setup
+            </a>
+          ) : (
+            <button
+              onClick={() => setShowSettings(true)}
+              className="shrink-0 text-xs font-semibold text-amber-800 underline"
+            >
+              Open Settings
+            </button>
+          )}
+          <button
+            onClick={() => setProviderGuide(null)}
+            aria-label="Dismiss"
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-amber-600 hover:bg-amber-100"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Clear session confirmation dialog */}
       {showClearDialog && (

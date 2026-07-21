@@ -16,11 +16,29 @@ export default function TerminalTabs() {
   const removeTerminal = useTerminalStore((s) => s.removeTerminal)
   const setActive = useTerminalStore((s) => s.setActive)
   const defaultEngine = useSettingsStore((s) => s.defaultEngine)
+  const setShowSettings = useSettingsStore((s) => s.setShowSettingsDialog)
   const activeProject = useProjectStore((s) => s.activeProject)
 
   const tabList = Array.from(terminals.values())
 
-  const handleNew = useCallback(() => {
+  const handleNew = useCallback(async () => {
+    if (defaultEngine === 'openrouter') {
+      try {
+        const [status, detected] = await Promise.all([
+          api.openRouterGetStatus(),
+          api.detectEngines()
+        ])
+        const openRouterAvailable = detected
+          .some((engine) => engine.id === 'openrouter' && engine.isAvailable)
+        if (!status.hasApiKey || !status.selectedModelId || !openRouterAvailable) {
+          setShowSettings(true)
+          return
+        }
+      } catch {
+        setShowSettings(true)
+        return
+      }
+    }
     const id = generateTerminalId()
     addTerminal({
       id,
@@ -31,7 +49,7 @@ export default function TerminalTabs() {
       cwd: activeProject?.path || '',
       isLoading: true
     })
-  }, [addTerminal, defaultEngine, tabList.length, activeProject])
+  }, [addTerminal, defaultEngine, tabList.length, activeProject, setShowSettings])
 
   const handleClose = useCallback(
     (e: React.MouseEvent, id: string) => {
