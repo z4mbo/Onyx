@@ -89,6 +89,7 @@ jobs:
         run: |
           if [[ -z "${CSC_LINK:-}" ]]; then
             export ZAI_MAC_ADHOC_SIGNING=1
+            unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
           fi
           for variable in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
             if [[ -z "${!variable:-}" ]]; then
