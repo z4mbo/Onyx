@@ -67,6 +67,7 @@ const config: Configuration = {
     target: ['dmg', 'zip'],
     icon: 'resources/logo.png',
     category: 'public.app-category.developer-tools',
+    identity: process.env.ZAI_MAC_ADHOC_SIGNING === '1' ? '-' : undefined,
     hardenedRuntime: true,
     gatekeeperAssess: false,
     entitlements: 'build/entitlements.mac.plist',

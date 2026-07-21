@@ -51,7 +51,8 @@ jobs:
         include:
           - platform: windows
             arch: x64
-            runner: windows-latest
+            # node-gyp/node-pty currently require the VS 2022 toolchain.
+            runner: windows-2022
             builder_args: --win --x64
           - platform: mac
             arch: arm64
@@ -84,7 +85,17 @@ jobs:
 
       - name: Package macOS application
         if: matrix.platform == 'mac'
-        run: npx electron-builder ${{ matrix.builder_args }} --config electron-builder.config.ts --publish never
+        shell: bash
+        run: |
+          if [[ -z "${CSC_LINK:-}" ]]; then
+            export ZAI_MAC_ADHOC_SIGNING=1
+          fi
+          for variable in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!variable:-}" ]]; then
+              unset "$variable"
+            fi
+          done
+          npx electron-builder ${{ matrix.builder_args }} --config electron-builder.config.ts --publish never
         env:
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
