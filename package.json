@@ -1,73 +1,32 @@
 {
   "name": "zai",
-  "version": "0.2.0",
-  "description": "A cross-platform desktop workspace for AI coding assistants and OpenRouter models",
-  "main": "./out/main/index.js",
-  "author": "z4mbo and contributors",
-  "license": "GPL-3.0",
+  "version": "0.1.0",
   "private": true,
+  "type": "module",
+  "description": "A Rust-native desktop workspace for local coding agents and OpenRouter",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/z4mbo/zAI.git"
   },
-  "homepage": "https://github.com/z4mbo/zAI",
-  "bugs": {
-    "url": "https://github.com/z4mbo/zAI/issues"
-  },
-  "engines": {
-    "node": ">=22.19.0"
-  },
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tests/core.test.mjs",
-    "preview": "electron-vite preview",
-    "rebuild": "electron-builder install-app-deps",
-    "generate:installer-assets": "node resources/installer/generate-assets.mjs",
-    "build:win": "npm run build && electron-builder --win --config electron-builder.config.ts",
-    "build:mac": "npm run build && electron-builder --mac --x64 --arm64 --config electron-builder.config.ts",
-    "build:mac:x64": "npm run build && electron-builder --mac --x64 --config electron-builder.config.ts",
-    "build:mac:arm64": "npm run build && electron-builder --mac --arm64 --config electron-builder.config.ts"
+    "dev": "tauri dev",
+    "dev:web": "vite --port 1420 --strictPort",
+    "build": "npm run typecheck && vite build",
+    "build:desktop": "tauri build",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
-    "@tailwindcss/typography": "^0.5.19",
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/addon-webgl": "^0.19.0",
-    "@xterm/xterm": "^6.0.0",
-    "electron-store": "^8.2.0",
-    "node-pty": "^1.1.0",
-    "react": "^19.2.4",
-    "react-arborist": "^3.4.3",
-    "react-dom": "^19.2.4",
-    "react-markdown": "^9.1.0",
-    "remark-gfm": "^4.0.1",
-    "ws": "^8.19.0",
-    "zustand": "^5.0.11"
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "lucide-solid": "^0.468.0",
+    "solid-js": "^1.9.9"
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.0.3",
-    "@tailwindcss/vite": "^4.2.1",
-    "@types/node": "^25.3.0",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "@types/ws": "^8.18.1",
-    "@vitejs/plugin-react": "^5.1.4",
-    "electron": "^40.6.1",
-    "electron-builder": "^26.8.1",
-    "electron-vite": "^5.0.0",
-    "sharp": "^0.34.5",
-    "tailwindcss": "^4.2.1",
-    "typescript": "^5.9.3",
-    "vite": "^7.3.1"
-  },
-  "allowScripts": {
-    "electron-winstaller@5.4.0": true,
-    "esbuild@0.25.12": true,
-    "node-pty@1.1.0": true,
-    "sharp@0.34.5": true,
-    "electron@40.10.6": true,
-    "esbuild@0.28.1": true
+    "@tauri-apps/cli": "^2.8.5",
+    "typescript": "^5.8.3",
+    "vite": "^7.1.4",
+    "vite-plugin-solid": "^2.11.8"
   }
 }
