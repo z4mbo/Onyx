@@ -1,157 +1,139 @@
-<p align="center">
-  <img src="resources/logo.png" alt="zAI logo" width="120" height="120" />
-</p>
+# zAI
 
-<h1 align="center">zAI</h1>
+zAI is a Rust-native desktop workspace for local coding-agent CLIs and
+OpenRouter models. It keeps one consistent conversation interface while each
+provider runs through an isolated adapter in the selected project directory.
 
-<p align="center">
-  A cross-platform desktop workspace for AI coding assistants and OpenRouter models.
-</p>
+The desktop shell and orchestration layer are written in Rust with Tauri. The
+interface is SolidJS and follows the compact workspace layout and interaction
+language that made [OpenCode](https://github.com/anomalyco/opencode) useful,
+while the provider boundary and normalized event stream are inspired by
+[T3 Code](https://github.com/pingdotgg/t3code).
 
-<p align="center">
-  <a href="https://github.com/z4mbo/zAI/releases/latest"><img src="https://img.shields.io/github/v/release/z4mbo/zAI?style=flat-square" alt="Latest release" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square" alt="GPL-3.0 license" /></a>
-  <img src="https://img.shields.io/badge/Windows%2011-x64-0078d4?style=flat-square" alt="Windows 11 x64" />
-  <img src="https://img.shields.io/badge/macOS-Intel%20%7C%20Apple%20silicon-black?style=flat-square" alt="macOS Intel and Apple silicon" />
-</p>
+> [!IMPORTANT]
+> zAI is an independent community project. It is not affiliated with or
+> endorsed by OpenCode, T3 Tools, Anthropic, OpenAI, Google, Moonshot AI, or
+> OpenRouter.
 
-zAI puts project files, split terminals, chat views, Git, reusable skills and agents, and Model Context Protocol (MCP) connections in one desktop app. It can launch locally installed Claude Code, Gemini CLI, Codex CLI, and Kimi Code. OpenRouter appears as a selectable zAI engine profile and executes through the official Kimi Code CLI, so one OpenRouter key can be used with a compatible model chosen from its catalog.
+## Providers
 
-> zAI is a desktop client, not a model subscription. The CLI or provider you select may require its own account, API key, and usage charges.
+| Provider | Integration | Authentication |
+| --- | --- | --- |
+| Claude Code | `claude --print` with streaming JSON and session resume | Existing Claude Code login/configuration |
+| Codex | `codex exec --json` with resumable threads and workspace-write sandboxing | Existing Codex login/configuration |
+| Gemini CLI | `gemini --prompt` with streaming JSON, `auto_edit`, and session resume | Existing Gemini CLI login/configuration |
+| Kimi Code | `kimi --prompt` with streaming JSON and session resume | Existing Kimi Code login/configuration |
+| OpenRouter | Direct HTTPS chat-completions API with model discovery and a bounded tool loop | API key stored in the operating-system credential store |
 
-## Features
-
-- **Five choices in one workspace:** Claude, Gemini, Codex, Kimi Code, and OpenRouter through Kimi Code.
-- **OpenRouter model selection:** connect a key, load the authenticated catalog of tool-capable models, and choose the model used for new OpenRouter sessions.
-- **Up to four terminals:** split project work across independent AI or shell sessions.
-- **Project workspace:** file tree, project switching, imported folders, per-project instructions, skills, and agents.
-- **Git without leaving the app:** inspect changes and run common repository operations.
-- **MCP connections:** the shared `.mcp.json` is synchronized for Gemini and Kimi Code, including zAI's bundled GUI-control server.
-- **Windows and macOS releases:** Windows 11 x64 NSIS installer plus macOS DMG and ZIP builds for Intel and Apple silicon.
-- **User-owned files:** packaged builds create projects in `Documents/zAI Projects`, not beside the executable or inside an app bundle.
-
-## Install
-
-Download the appropriate artifact from [GitHub Releases](https://github.com/z4mbo/zAI/releases/latest).
-
-### Windows 11
-
-1. Download `zAI-<version>-win-x64.exe`.
-2. Run the installer and choose an install location.
-3. If Microsoft Defender SmartScreen appears on an unsigned development release, verify that the file came from this repository before choosing **More info → Run anyway**.
-
-### macOS
-
-1. Download the `arm64` DMG for Apple silicon (M1 or later), or the `x64` DMG for an Intel Mac.
-2. Open the DMG and drag zAI to **Applications**. The ZIP contains the same app without the DMG wrapper.
-3. Releases built without an Apple Developer certificate are not notarized. After verifying the download, macOS users can Control-click zAI, choose **Open**, and confirm once. Properly signed and notarized releases open normally.
-
-The release workflow supports signing and notarization when the repository's Apple certificate and notarization secrets are configured. Updates are installed manually from GitHub Releases; while this repository is private, downloading a release requires an authorized GitHub account. This avoids embedding a private-repository access token in desktop builds and keeps the Intel and Apple-silicon packages unambiguous.
-
-## Set up an assistant
-
-Install at least one supported CLI and complete that tool's login or API-key setup. Restart zAI after installation so it can detect the executable on `PATH`.
+Only OpenRouter requires a credential to be entered in zAI. Local CLI adapters
+discover the executable, report its version, and reuse that tool's own login,
+settings, model access, and billing account. Providers are optional and can be
+installed independently:
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- [Codex CLI](https://developers.openai.com/codex/cli)
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli)
-- [Codex CLI](https://github.com/openai/codex)
-- [Kimi Code](https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html)
+- [Kimi Code](https://moonshotai.github.io/kimi-code/)
+- [OpenRouter API keys](https://openrouter.ai/keys)
 
-Kimi Code's official installers are:
+## How it works
 
-```powershell
-# Windows PowerShell
-irm https://code.kimi.com/kimi-code/install.ps1 | iex
+```text
+SolidJS interface
+      │ Tauri commands + events
+Rust session runtime
+      ├── Claude adapter ── claude CLI
+      ├── Codex adapter  ── codex CLI
+      ├── Gemini adapter ── gemini CLI
+      ├── Kimi adapter   ── kimi CLI
+      └── OpenRouter adapter ── HTTPS API + approved local tools
 ```
 
-```bash
-# macOS
-curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash
+Provider-specific JSONL is normalized into session deltas, tool activity, and
+provider session IDs before it reaches the interface. A session is tied to one
+provider, model, and canonical workspace. One turn runs at a time per session;
+closing the app or cancelling a turn terminates its child process group.
 
-# Alternative when Node.js 22.19+ is already installed
-npm install -g @moonshot-ai/kimi-code
-```
+Conversation history is stored as `sessions.json` in the platform-specific
+Tauri application-data directory. It is local, but it is not encrypted; avoid
+putting secrets in prompts or tool output.
 
-Verify the installation with `kimi --version`, then run `kimi` once to sign in. OpenRouter integration requires Kimi Code 0.6.0 or newer. On Windows, Kimi Code also requires Git for Windows; see its official setup guide if Git Bash is installed in a custom location.
+## Security model
 
-### OpenRouter
+Coding agents can change files and execute programs. Use zAI on a clean Git
+worktree, review diffs, and keep important data backed up.
 
-OpenRouter sessions run through Kimi Code, so install Kimi Code 0.6.0 or newer first.
+- The OpenRouter key is validated before storage, placed in the operating
+  system keychain/credential manager, and never returned to the webview.
+- OpenRouter read, list, and literal-search tools are constrained to the
+  selected canonical workspace. File writes and shell commands require an
+  explicit in-app approval and time out after ten minutes.
+- OpenRouter file reads are capped at 256 KiB, writes at 1 MiB, and a response
+  can perform at most 12 tool rounds.
+- Prompts sent through command-line arguments are capped at 24 KiB for portable
+  process creation. OpenRouter prompts use HTTPS and retain the 256 KiB cap.
+- Local CLIs are separate trusted programs. zAI launches them in the selected
+  workspace, but their native permission policy remains authoritative. Claude
+  currently uses `acceptEdits`; Codex uses its `workspace-write` sandbox.
+  Gemini runs headlessly in its documented `auto_edit` mode: edits are allowed,
+  while tools still covered by an `ask_user` policy are denied in headless mode.
+  Selecting a workspace in zAI marks it trusted for that Gemini process. Kimi's
+  prompt mode is autonomous by upstream design. An in-app OpenRouter approval
+  does not govern any of those CLI providers.
+- Provider CLIs and OpenRouter necessarily send prompts, context, and selected
+  tool results to their respective services. Their privacy policies, terms,
+  quotas, and charges apply. zAI adds no analytics service of its own.
+- The webview content-security policy limits network connections to OpenRouter;
+  local CLIs make their own network connections outside the webview.
 
-1. Create a key in [OpenRouter settings](https://openrouter.ai/settings/keys).
-2. In zAI, open **Settings → Providers → OpenRouter** and enter the key.
-3. Refresh the model list and choose a model. OpenRouter model IDs use the `provider/model` form shown in the [model catalog](https://openrouter.ai/models).
-4. Start a new terminal and select **OpenRouter**. Existing terminals retain the configuration with which they were launched.
+## Develop
 
-Treat an OpenRouter key like a password. Electron encrypts it locally with the operating system's `safeStorage`; the renderer and settings UI never receive the plaintext after saving. zAI fetches compatible choices from OpenRouter's authenticated `/api/v1/models/user` endpoint and injects temporary `KIMI_MODEL_*` environment variables only into that OpenRouter terminal's local process tree. Replacing or disconnecting the key terminates active OpenRouter terminals. A same-user process inspector, an inherited child process, or a compromised machine can still expose a running process's environment, so do not paste keys into project instructions, MCP configuration, screenshots, issues, or logs. Prefer a dedicated key with a spending limit, and revoke it immediately if it is exposed. Model pricing and data policies vary by provider, so review them before selecting a model.
+Prerequisites:
 
-## Projects and MCP configuration
+- Current stable [Rust](https://www.rust-lang.org/tools/install)
+- Node.js 20 or newer and npm
+- The [Tauri 2 system prerequisites](https://v2.tauri.app/start/prerequisites/)
+  for your operating system
+- At least one provider CLI, or an OpenRouter API key, to run an agent
 
-Packaged zAI builds store managed projects here:
+Install JavaScript dependencies and start the desktop app:
 
-- Windows: `%USERPROFILE%\Documents\zAI Projects`
-- macOS: `~/Documents/zAI Projects`
-
-On first access, zAI copies projects found in older install-adjacent or legacy application-data locations. Migration never deletes the old copy and never overwrites a same-named project in the new location. Review and remove an old copy manually only after confirming the migrated project works.
-
-Each project's shared MCP list lives in `.mcp.json`. zAI also preserves unrelated settings while synchronizing that list to:
-
-- `.gemini/settings.json` for Gemini CLI; and
-- `.kimi-code/mcp.json` for current Kimi Code releases.
-
-Project-level MCP servers and `canvas.html` are active content. Only open projects and enable MCP servers that you trust. Canvas file access is confined to the active project; Canvas scripts cannot write to OpenRouter terminals and can only prefill other terminals without pressing Enter.
-
-## Development
-
-### Prerequisites
-
-- Node.js 22.19 or newer
-- npm and Git
-- Windows 11 with Visual Studio Build Tools, or macOS with Xcode Command Line Tools, when `node-pty` must compile locally
-
-```bash
-git clone https://github.com/z4mbo/zAI.git
-cd zAI
+```sh
 npm install
-npm run rebuild
 npm run dev
 ```
 
-Useful commands:
+The browser-only interface can be previewed with `npm run dev:web`. Native
+commands require the Tauri desktop runtime.
 
-| Command | Purpose |
-|---|---|
-| `npm run dev` | Run zAI with hot reload |
-| `npm run typecheck` | Check main, preload, and renderer TypeScript |
-| `npm test` | Run Node's test runner |
-| `npm run build` | Build the Electron application into `out/` |
-| `npm run rebuild` | Rebuild native dependencies for Electron |
-| `npm run build:win` | Build the Windows 11 x64 NSIS installer |
-| `npm run build:mac:x64` | Build Intel macOS DMG and ZIP artifacts |
-| `npm run build:mac:arm64` | Build Apple-silicon macOS DMG and ZIP artifacts |
-| `npm run build:mac` | Build both macOS architectures on a capable Mac |
+Run the static checks and production builds:
 
-Native packages must be built on the target operating system and architecture. The GitHub Actions workflow uses native Windows x64, macOS arm64, and macOS Intel runners. Push a tag such as `v0.2.0` to verify, package, and publish all three release variants. The workflow publishes installers only; it intentionally does not publish auto-update metadata for the private repository.
-
-## Architecture
-
-zAI uses Electron's main/preload/renderer separation:
-
-```text
-src/
-├── main/          Electron lifecycle, PTYs, engines, projects, Git, files, MCP
-├── preload/       narrow contextBridge IPC API
-└── renderer/      React UI, xterm.js terminals, Zustand stores
-
-resources/
-├── default-projects/   bundled skills, agents, and GUI-control MCP server
-└── installer/          Windows NSIS artwork and copy
+```sh
+npm run typecheck
+npm run build
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo test --manifest-path src-tauri/Cargo.toml
+npm run build:desktop
 ```
 
-The terminal process uses `node-pty`, so the packaged native module must match the target Electron architecture. The GUI-control MCP server uses the packaged Electron executable in Node mode, avoiding a separate Node.js runtime requirement for that bundled server.
+Tauri installers and application bundles are emitted below
+`src-tauri/target/release/bundle/` unless Cargo's target directory is
+overridden.
 
-## License and upstream credit
+## Attribution
 
-zAI is free software under the [GNU General Public License v3.0](LICENSE). It is a modified fork of Bruno Pigat's [friendly-terminal](https://github.com/BrunoPigat/friendly-terminal). Original authors retain copyright in their work; later contributors retain copyright in their modifications. See [ATTRIBUTION.md](ATTRIBUTION.md) for the modification notice.
+The OpenCode and T3 Code source trees were reviewed at pinned revisions so the
+design and architectural influences are reproducible:
 
-This fork is independently maintained and is not affiliated with or endorsed by the upstream project, Anthropic, Google, OpenAI, Moonshot AI, or OpenRouter.
+- [OpenCode `0a601cf334b9a83cc2854108a2b860f25e6e7e8e`](https://github.com/anomalyco/opencode/tree/0a601cf334b9a83cc2854108a2b860f25e6e7e8e), plus its historical Tauri desktop at [`6f7d63e9ceaacc5debbfcba18bf8391a90e59e8f`](https://github.com/anomalyco/opencode/tree/6f7d63e9ceaacc5debbfcba18bf8391a90e59e8f)
+- [T3 Code `32c6012dabdbd0eb178b25ea4225d889ec8f6475`](https://github.com/pingdotgg/t3code/tree/32c6012dabdbd0eb178b25ea4225d889ec8f6475)
+
+Both upstream projects are MIT-licensed. Their copyright notices and complete
+license texts are preserved in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+and [`licenses/`](licenses/). No upstream logo or brand asset is used.
+
+## Contributing and license
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow. The
+current zAI rewrite is released under the [MIT License](LICENSE). Historical
+revisions remain governed by the licenses included in those revisions.
