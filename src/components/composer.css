@@ -1,0 +1,502 @@
+@import "@fontsource-variable/dm-sans";
+@import "@fontsource/jetbrains-mono/latin-400.css";
+
+/*
+ * T3 Code composer geometry, adapted to zAI's Solid controls and semantic
+ * OpenCode color tokens. Kept component-scoped so the surrounding shell stays
+ * in the OpenCode-informed Inter visual language.
+ */
+.t3-composer {
+  --t3-composer-primary: oklch(0.488 0.217 264);
+  --t3-composer-primary-foreground: #fff;
+  --t3-composer-destructive: #ef4444;
+  width: 100%;
+  max-width: 48rem;
+  margin-inline: auto;
+  font-family: "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-optical-sizing: auto;
+}
+
+.t3-composer .zai-composer__frame {
+  width: 100%;
+  margin: 0;
+  padding: 1px;
+  border: 0;
+  border-radius: 22px;
+  background: transparent;
+  transition: background-color 200ms ease;
+}
+
+.t3-composer .zai-composer__surface,
+.t3-composer .zai-composer__permission {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: visible;
+  border: 1px solid rgb(0 0 0 / 12%);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--v2-background-bg-base) 20%, transparent);
+  box-shadow:
+    0 18px 48px -20px rgb(0 0 0 / 28%),
+    0 4px 14px -7px rgb(0 0 0 / 22%);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  transition: background-color 200ms ease, border-color 200ms ease;
+}
+
+.t3-composer .zai-composer__surface:has(:focus-visible) {
+  border-color: color-mix(in srgb, var(--v2-text-text-base) 40%, transparent);
+}
+
+[data-color-scheme="dark"] .t3-composer {
+  --t3-composer-primary: oklch(0.588 0.217 264);
+}
+
+[data-color-scheme="dark"] .t3-composer .zai-composer__surface,
+[data-color-scheme="dark"] .t3-composer .zai-composer__permission {
+  border-color: rgb(255 255 255 / 12%);
+  background: color-mix(in srgb, var(--v2-background-bg-base) 45%, transparent);
+  box-shadow:
+    0 18px 48px -20px rgb(0 0 0 / 60%),
+    0 4px 14px -7px rgb(0 0 0 / 40%);
+}
+
+[data-color-scheme="dark"] .t3-composer .zai-composer__surface:has(:focus-visible) {
+  border-color: color-mix(in srgb, var(--v2-text-text-base) 40%, transparent);
+}
+
+.t3-composer .zai-composer__editor-region {
+  display: block;
+  min-height: 94px;
+  padding: 16px 16px 8px;
+}
+
+.t3-composer .zai-composer__editor {
+  display: block;
+  width: 100%;
+  min-height: 70px;
+  max-height: 200px;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 0;
+  outline: 0 !important;
+  resize: none;
+  background: transparent;
+  color: var(--v2-text-text-base);
+  caret-color: var(--v2-text-text-base);
+  font: 400 14px/1.625 "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-variation-settings: "wght" 400;
+  letter-spacing: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.t3-composer .zai-composer__editor::placeholder {
+  color: color-mix(in srgb, var(--v2-text-text-muted) 52%, transparent);
+  opacity: 1;
+}
+
+.t3-composer .zai-composer__editor::-webkit-scrollbar {
+  width: 6px;
+}
+
+.t3-composer .zai-composer__editor::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--v2-text-text-muted) 22%, transparent);
+}
+
+.t3-composer .zai-composer__footer {
+  display: flex;
+  height: auto;
+  min-height: 40px;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.t3-composer .zai-composer__controls {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: visible;
+  scrollbar-width: none;
+}
+
+.t3-composer .zai-composer__controls::-webkit-scrollbar {
+  display: none;
+}
+
+.t3-composer .zai-composer__control {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  height: 28px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0 9px;
+  background: transparent;
+  color: color-mix(in srgb, var(--v2-text-text-muted) 70%, transparent);
+  cursor: pointer;
+  font: 500 14px/20px "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-variation-settings: "wght" 500;
+  white-space: nowrap;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.t3-composer button.zai-composer__control:hover:not(:disabled),
+.t3-composer .zai-composer__control:has(select:not(:disabled)):hover {
+  background: color-mix(in srgb, var(--v2-text-text-base) 4%, transparent);
+  color: color-mix(in srgb, var(--v2-text-text-base) 80%, transparent);
+}
+
+.t3-composer .zai-composer__control:focus-visible,
+.t3-composer .zai-composer__control:has(select:focus-visible) {
+  outline: 2px solid var(--v2-border-border-focus);
+  outline-offset: 1px;
+}
+
+.t3-composer .zai-composer__control:has(select:disabled) {
+  cursor: default;
+}
+
+.t3-composer .zai-composer__control:disabled {
+  cursor: default;
+  opacity: 0.64;
+}
+
+.t3-composer .zai-composer__control > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: var(--v2-icon-icon-muted);
+  opacity: 0.8;
+}
+
+.t3-composer .zai-composer__provider-model {
+  max-width: 224px;
+}
+
+.t3-composer .zai-composer__provider-model[data-unavailable="true"] {
+  color: var(--v2-state-fg-danger);
+}
+
+.t3-composer .zai-composer__provider-model .provider-badge {
+  width: 16px;
+  height: 16px;
+  flex-basis: 16px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.t3-composer .zai-composer__control-label,
+.t3-composer .zai-composer__mode span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.t3-composer .zai-composer__chevron {
+  width: 12px;
+  height: 12px;
+  margin-right: -4px;
+  opacity: 0.6;
+}
+
+.t3-composer .zai-composer__native-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.t3-composer .zai-composer__native-select:focus-visible {
+  outline: none;
+}
+
+.t3-composer .zai-composer__native-select:disabled {
+  cursor: default;
+}
+
+.t3-composer .zai-composer__separator {
+  width: 1px;
+  height: 16px;
+  flex: 0 0 1px;
+  margin-inline: 2px;
+  background: color-mix(in srgb, var(--v2-border-border-base) 78%, transparent);
+}
+
+.t3-composer .zai-composer__mode {
+  cursor: default;
+}
+
+.t3-composer .zai-composer__reasoning {
+  max-width: 154px;
+  opacity: 0.72;
+}
+
+.t3-composer .zai-composer__reasoning .zai-composer__chevron {
+  margin-left: -3px;
+}
+
+.t3-composer .zai-composer__primary-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.t3-composer .zai-composer__context-meter {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--v2-text-text-muted) 58%, transparent);
+  cursor: help;
+}
+
+.t3-composer .zai-composer__context-meter:hover {
+  background: color-mix(in srgb, var(--v2-text-text-base) 5%, transparent);
+  color: color-mix(in srgb, var(--v2-text-text-muted) 78%, transparent);
+}
+
+.t3-composer .zai-composer__context-meter svg {
+  width: 16px;
+  height: 16px;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+}
+
+.t3-composer .zai-composer__context-meter circle {
+  stroke-width: 3;
+  opacity: 0.34;
+}
+
+.t3-composer .zai-composer__context-meter path {
+  stroke-width: 3;
+  opacity: 0.74;
+}
+
+.t3-composer .zai-composer__submit {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--t3-composer-primary) 90%, transparent);
+  box-shadow:
+    0 1px 2px color-mix(in srgb, var(--t3-composer-primary) 24%, transparent),
+    inset 0 1px rgb(255 255 255 / 16%);
+  color: var(--t3-composer-primary-foreground);
+  cursor: pointer;
+  transition: background-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.t3-composer .zai-composer__submit:hover:not(:disabled) {
+  background: var(--t3-composer-primary);
+  filter: none;
+  transform: scale(1.05);
+}
+
+.t3-composer .zai-composer__submit:active:not(:disabled) {
+  box-shadow: none;
+  transform: scale(1);
+}
+
+.t3-composer .zai-composer__submit:disabled {
+  background: color-mix(in srgb, var(--t3-composer-primary) 90%, transparent);
+  box-shadow: none;
+  color: var(--t3-composer-primary-foreground);
+  cursor: default;
+  opacity: 0.3;
+}
+
+.t3-composer .zai-composer__stop {
+  background: color-mix(in srgb, var(--t3-composer-destructive) 90%, transparent);
+  box-shadow:
+    0 1px 2px color-mix(in srgb, var(--t3-composer-destructive) 24%, transparent),
+    inset 0 1px rgb(255 255 255 / 16%);
+  color: #fff;
+}
+
+.t3-composer .zai-composer__stop:hover:not(:disabled) {
+  background: var(--t3-composer-destructive);
+}
+
+.t3-composer .zai-composer__spinner {
+  animation: zai-spin 0.8s linear infinite;
+}
+
+.t3-composer .zai-composer__frame--permission {
+  border-radius: 22px;
+}
+
+.t3-composer .zai-composer__permission {
+  overflow: hidden;
+}
+
+.t3-composer .zai-composer__permission-body {
+  padding: 16px;
+  border-radius: 0;
+  background: transparent;
+}
+
+.t3-composer .zai-composer__permission-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.t3-composer .zai-composer__permission-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--v2-state-bg-warning);
+  color: var(--v2-state-fg-warning);
+}
+
+.t3-composer .zai-composer__permission-header > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.t3-composer .zai-composer__eyebrow {
+  color: var(--v2-text-text-faint);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.t3-composer .zai-composer__permission-header strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-variation-settings: "wght" 550;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.t3-composer .zai-composer__permission-detail {
+  max-height: 120px;
+  margin: 12px 0 0;
+  overflow: auto;
+  color: var(--v2-text-text-muted);
+  font: 400 12px/18px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variation-settings: "wght" 400;
+  white-space: pre-wrap;
+}
+
+.t3-composer .zai-composer__permission-tray {
+  display: flex;
+  min-height: 50px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--v2-border-border-base) 65%, transparent);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--v2-background-bg-layer-02) 20%, transparent);
+}
+
+.t3-composer .zai-composer__permission-risk {
+  min-width: 0;
+  overflow: hidden;
+  padding-left: 4px;
+  color: var(--v2-text-text-faint);
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.t3-composer .zai-composer__permission-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.t3-composer .zai-composer__permission-button {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--v2-border-border-base) 80%, transparent);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: color-mix(in srgb, var(--v2-background-bg-base) 55%, transparent);
+  color: var(--v2-text-text-base);
+  cursor: pointer;
+  font: 500 13px/18px "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-variation-settings: "wght" 500;
+}
+
+.t3-composer .zai-composer__permission-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--v2-text-text-base) 7%, transparent);
+}
+
+.t3-composer .zai-composer__permission-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.t3-composer .zai-composer__permission-button--allow {
+  border-color: var(--t3-composer-primary);
+  background: var(--t3-composer-primary);
+  color: var(--t3-composer-primary-foreground);
+}
+
+.t3-composer .zai-composer__permission-button--allow:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--t3-composer-primary) 90%, #000);
+}
+
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .t3-composer .zai-composer__surface,
+  .t3-composer .zai-composer__permission {
+    background: var(--v2-background-bg-base);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t3-composer .zai-composer__frame,
+  .t3-composer .zai-composer__surface,
+  .t3-composer .zai-composer__control,
+  .t3-composer .zai-composer__submit {
+    transition: none;
+  }
+
+  .t3-composer .zai-composer__spinner {
+    animation-duration: 1.5s;
+  }
+}

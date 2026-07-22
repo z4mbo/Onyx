@@ -2,6 +2,8 @@ mod model;
 mod openrouter;
 mod providers;
 mod storage;
+mod terminal;
+mod workspace;
 
 use crate::{
     model::{
@@ -32,6 +34,8 @@ struct AppState {
     store: Arc<SessionStore>,
     running: Arc<Mutex<HashMap<String, CancellationToken>>>,
     approvals: ApprovalRegistry,
+    providers: Arc<providers::ProviderRuntime>,
+    terminals: terminal::TerminalRegistry,
     exiting: AtomicBool,
 }
 
@@ -72,7 +76,7 @@ fn create_session(
 }
 
 #[tauri::command]
-fn delete_session(
+async fn delete_session(
     app: AppHandle,
     session_id: String,
     state: State<'_, AppState>,
@@ -80,8 +84,14 @@ fn delete_session(
     if let Some(token) = state.running.lock().remove(&session_id) {
         token.cancel();
     }
+    state.providers.remove_session(&session_id).await;
     if state.store.remove(&session_id)? {
-        let _ = app.emit("zai://session", SessionEvent::Removed { session_id });
+        let _ = app.emit(
+            "zai://session",
+            SessionEvent::Removed {
+                session_id: session_id.clone(),
+            },
+        );
     }
     Ok(())
 }
@@ -137,6 +147,7 @@ async fn send_message(
     let store = state.store.clone();
     let running = state.running.clone();
     let approvals = state.approvals.clone();
+    let provider_runtime = state.providers.clone();
     let session_id = input.session_id;
     let assistant_id = Uuid::new_v4().to_string();
     let app_for_task = app.clone();
@@ -155,25 +166,27 @@ async fn send_message(
             .await
             .map(|result| (result.content, None, result.activities))
         } else {
-            providers::run_cli_turn(
-                app_for_task.clone(),
-                session_for_task.provider,
-                session_id.clone(),
-                session_for_task.provider_session_id.clone(),
-                session_for_task.model.clone(),
-                session_for_task.workspace.clone(),
-                content,
-                assistant_id.clone(),
-                cancellation,
-            )
-            .await
-            .map(|result| {
-                (
-                    result.content,
-                    result.provider_session_id,
-                    result.activities,
+            provider_runtime
+                .run_turn(
+                    app_for_task.clone(),
+                    session_for_task.provider,
+                    session_id.clone(),
+                    session_for_task.provider_session_id.clone(),
+                    session_for_task.model.clone(),
+                    session_for_task.workspace.clone(),
+                    content,
+                    assistant_id.clone(),
+                    cancellation,
+                    approvals,
                 )
-            })
+                .await
+                .map(|result| {
+                    (
+                        result.content,
+                        result.provider_session_id,
+                        result.activities,
+                    )
+                })
         };
 
         let snapshot = match result {
@@ -284,6 +297,87 @@ fn workspace_entries(workspace: String) -> Result<Vec<WorkspaceEntry>, String> {
     Ok(entries)
 }
 
+#[tauri::command]
+async fn workspace_repo_summary(workspace: String) -> Result<workspace::RepoSummary, String> {
+    workspace::repo_summary(workspace).await
+}
+
+#[tauri::command]
+async fn workspace_git_diff(workspace: String) -> Result<String, String> {
+    workspace::git_diff(workspace).await
+}
+
+#[tauri::command]
+fn workspace_read_file(
+    workspace: String,
+    path: String,
+) -> Result<workspace::WorkspaceFile, String> {
+    workspace::read_file(workspace, path)
+}
+
+#[tauri::command]
+fn workspace_editors() -> Vec<workspace::EditorTarget> {
+    workspace::editors()
+}
+
+#[tauri::command]
+fn workspace_open(workspace: String, target: String) -> Result<(), String> {
+    workspace::open_workspace(workspace, target)
+}
+
+#[tauri::command]
+async fn workspace_commit(
+    workspace: String,
+    message: Option<String>,
+) -> Result<workspace::GitActionResult, String> {
+    workspace::commit(workspace, message).await
+}
+
+#[tauri::command]
+async fn workspace_push(workspace: String) -> Result<workspace::GitActionResult, String> {
+    workspace::push(workspace).await
+}
+
+#[tauri::command]
+async fn workspace_create_pr(workspace: String) -> Result<workspace::GitActionResult, String> {
+    workspace::create_pr(workspace).await
+}
+
+#[tauri::command]
+async fn terminal_open(
+    app: AppHandle,
+    workspace: String,
+    cols: u16,
+    rows: u16,
+    state: State<'_, AppState>,
+) -> Result<terminal::TerminalSession, String> {
+    state.terminals.open(app, workspace, cols, rows).await
+}
+
+#[tauri::command]
+async fn terminal_write(
+    session_id: String,
+    data: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.terminals.write(session_id, data).await
+}
+
+#[tauri::command]
+async fn terminal_resize(
+    session_id: String,
+    cols: u16,
+    rows: u16,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.terminals.resize(session_id, cols, rows).await
+}
+
+#[tauri::command]
+async fn terminal_close(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.terminals.close(session_id).await
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -301,6 +395,18 @@ pub fn run() {
             openrouter_models,
             respond_approval,
             workspace_entries,
+            workspace_repo_summary,
+            workspace_git_diff,
+            workspace_read_file,
+            workspace_editors,
+            workspace_open,
+            workspace_commit,
+            workspace_push,
+            workspace_create_pr,
+            terminal_open,
+            terminal_write,
+            terminal_resize,
+            terminal_close,
         ])
         .setup(|app| {
             let data_dir = app
@@ -311,6 +417,8 @@ pub fn run() {
                 store: Arc::new(SessionStore::load(&data_dir)?),
                 running: Arc::new(Mutex::new(HashMap::new())),
                 approvals: Arc::new(Mutex::new(HashMap::new())),
+                providers: Arc::new(providers::ProviderRuntime::new()),
+                terminals: terminal::TerminalRegistry::default(),
                 exiting: AtomicBool::new(false),
             });
             Ok(())
@@ -320,20 +428,29 @@ pub fn run() {
 
     app.run(|handle, event| match event {
         RunEvent::ExitRequested { api, code, .. } => {
-            if let Some(state) = handle.try_state::<AppState>()
-                && !state.running.lock().is_empty()
-                && !state.exiting.swap(true, Ordering::SeqCst)
-            {
-                api.prevent_exit();
-                for token in state.running.lock().values() {
-                    token.cancel();
+            if let Some(state) = handle.try_state::<AppState>() {
+                let had_running_turns = !state.running.lock().is_empty();
+                let had_terminals = state.terminals.has_sessions();
+                if (had_running_turns || state.providers.has_sessions() || had_terminals)
+                    && !state.exiting.swap(true, Ordering::SeqCst)
+                {
+                    api.prevent_exit();
+                    for token in state.running.lock().values() {
+                        token.cancel();
+                    }
+                    state.approvals.lock().clear();
+                    let handle = handle.clone();
+                    let providers = state.providers.clone();
+                    let terminals = state.terminals.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = tokio::task::spawn_blocking(move || terminals.shutdown_all()).await;
+                        providers.shutdown_all().await;
+                        if had_running_turns {
+                            tokio::time::sleep(Duration::from_millis(2_500)).await;
+                        }
+                        handle.exit(code.unwrap_or(0));
+                    });
                 }
-                state.approvals.lock().clear();
-                let handle = handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(2_500)).await;
-                    handle.exit(code.unwrap_or(0));
-                });
             }
         }
         RunEvent::Exit => {
@@ -342,6 +459,7 @@ pub fn run() {
                     token.cancel();
                 }
                 state.approvals.lock().clear();
+                state.terminals.shutdown_all();
             }
         }
         _ => {}

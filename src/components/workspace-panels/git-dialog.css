@@ -1,0 +1,28 @@
+.zai-git-dialog-scrim { position: fixed; z-index: 70; inset: 0; display: grid; place-items: center; padding: 24px; background: var(--v2-overlay-simple-overlay-scrim); }
+.zai-git-dialog { width: min(520px, calc(100vw - 48px)); overflow: hidden; border: .5px solid var(--zai-workspace-border); border-radius: 12px; background: var(--zai-workspace-panel-bg); box-shadow: var(--v2-elevation-overlay); color: var(--zai-workspace-text); font-family: "DM Sans Variable", "DM Sans", sans-serif; }
+.zai-git-dialog > header { display: flex; min-height: 72px; align-items: center; gap: 11px; border-bottom: .5px solid var(--zai-workspace-border); padding: 12px 14px; }
+.zai-git-dialog__icon { display: grid; width: 32px; height: 32px; flex: 0 0 32px; place-items: center; border-radius: 8px; background: var(--zai-workspace-active); }
+.zai-git-dialog__icon svg { width: 16px; height: 16px; }
+.zai-git-dialog > header > div { min-width: 0; flex: 1; }
+.zai-git-dialog h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.zai-git-dialog p { margin: 3px 0 0; color: var(--zai-workspace-muted); font-size: 12px; }
+.zai-git-dialog > header > button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--zai-workspace-muted); cursor: pointer; }
+.zai-git-dialog > header > button:hover { background: var(--zai-workspace-hover); }
+.zai-git-dialog > header > button svg { width: 14px; height: 14px; }
+.zai-git-dialog__body { padding: 16px; }
+.zai-git-dialog__summary { display: flex; gap: 12px; color: var(--zai-workspace-muted); font-size: 11px; }
+.zai-git-dialog__files { max-height: 180px; margin: 10px 0 16px; overflow: auto; border: .5px solid var(--zai-workspace-border); border-radius: 8px; background: var(--zai-workspace-deep-bg); }
+.zai-git-dialog__files > div { display: flex; height: 28px; align-items: center; gap: 8px; border-bottom: .5px solid var(--zai-workspace-border); padding: 0 10px; font-size: 11px; }
+.zai-git-dialog__files > div:last-child { border-bottom: 0; }
+.zai-git-dialog__files code { width: 16px; flex: 0 0 16px; color: var(--zai-workspace-faint); font-family: "JetBrains Mono", monospace; }
+.zai-git-dialog__files span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zai-git-dialog__body > label { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-weight: 550; }
+.zai-git-dialog__body > label small { margin-left: 4px; color: var(--zai-workspace-faint); font-size: 10px; font-weight: 400; }
+.zai-git-dialog input { width: 100%; height: 36px; border: .5px solid var(--zai-workspace-border); border-radius: 8px; padding: 0 10px; outline: 0; background: var(--zai-workspace-deep-bg); color: var(--zai-workspace-text); font-size: 12px; }
+.zai-git-dialog input:focus { border-color: var(--v2-border-border-focus); }
+.zai-git-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; border-top: .5px solid var(--zai-workspace-border); padding: 12px 14px; }
+.zai-git-dialog > footer button { display: inline-flex; height: 30px; align-items: center; justify-content: center; gap: 6px; border: .5px solid var(--zai-workspace-border); border-radius: 8px; padding: 0 12px; cursor: pointer; font-size: 12px; font-weight: 550; }
+.zai-git-dialog > footer button:disabled { cursor: default; opacity: .5; }
+.zai-git-dialog__cancel { background: transparent; color: var(--zai-workspace-text); }
+.zai-git-dialog__commit { background: var(--v2-background-bg-contrast); color: var(--v2-text-text-contrast); }
+.zai-git-dialog__commit svg { width: 14px; height: 14px; }

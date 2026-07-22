@@ -46,12 +46,12 @@ impl StreamNormalizer {
         }
 
         match string_at(value, &["type"]) {
-            Some("stream_event") => {
-                if string_at(value, &["event", "type"]) == Some("content_block_delta") {
-                    if let Some(text) = string_at(value, &["event", "delta", "text"]) {
-                        self.saw_delta = true;
-                        events.push(NormalizedEvent::Delta(text.to_string()));
-                    }
+            Some("stream_event")
+                if string_at(value, &["event", "type"]) == Some("content_block_delta") =>
+            {
+                if let Some(text) = string_at(value, &["event", "delta", "text"]) {
+                    self.saw_delta = true;
+                    events.push(NormalizedEvent::Delta(text.to_string()));
                 }
             }
             Some("assistant") => {
@@ -142,25 +142,23 @@ impl StreamNormalizer {
         if matches!(
             event_type,
             Some("init") | Some("session_start") | Some("session.started")
-        ) {
-            if let Some(id) = string_at(value, &["session_id"])
-                .or_else(|| string_at(value, &["sessionId"]))
-                .or_else(|| string_at(value, &["id"]))
-            {
-                events.push(NormalizedEvent::Session(id.to_string()));
-            }
+        ) && let Some(id) = string_at(value, &["session_id"])
+            .or_else(|| string_at(value, &["sessionId"]))
+            .or_else(|| string_at(value, &["id"]))
+        {
+            events.push(NormalizedEvent::Session(id.to_string()));
         }
 
         match event_type {
-            Some("message") | Some("assistant") | Some("content") => {
-                if string_at(value, &["role"]).is_none_or(|role| role == "assistant") {
-                    if let Some(text) = string_at(value, &["content"])
-                        .or_else(|| string_at(value, &["text"]))
-                        .or_else(|| string_at(value, &["delta"]))
-                    {
-                        self.saw_delta = true;
-                        events.push(NormalizedEvent::Delta(text.to_string()));
-                    }
+            Some("message") | Some("assistant") | Some("content")
+                if string_at(value, &["role"]).is_none_or(|role| role == "assistant") =>
+            {
+                if let Some(text) = string_at(value, &["content"])
+                    .or_else(|| string_at(value, &["text"]))
+                    .or_else(|| string_at(value, &["delta"]))
+                {
+                    self.saw_delta = true;
+                    events.push(NormalizedEvent::Delta(text.to_string()));
                 }
             }
             Some("tool_use") | Some("tool_call") => {
@@ -199,12 +197,11 @@ impl StreamNormalizer {
 
     fn parse_kimi(&mut self, value: &Value) -> Vec<NormalizedEvent> {
         let mut events = Vec::new();
-        if string_at(value, &["type"]) == Some("session.resume_hint") {
-            if let Some(id) =
+        if string_at(value, &["type"]) == Some("session.resume_hint")
+            && let Some(id) =
                 string_at(value, &["session_id"]).or_else(|| string_at(value, &["sessionId"]))
-            {
-                events.push(NormalizedEvent::Session(id.to_string()));
-            }
+        {
+            events.push(NormalizedEvent::Session(id.to_string()));
         }
         match string_at(value, &["role"]) {
             Some("assistant") => {
@@ -265,6 +262,23 @@ fn text_content(value: Option<&Value>) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn activity(title: String, detail: Option<&Value>) -> NormalizedEvent {
+    let content = detail
+        .and_then(|value| {
+            if let Some(value) = value.as_str() {
+                Some(format!("{title}\n{value}"))
+            } else if value.is_null() {
+                None
+            } else {
+                serde_json::to_string_pretty(value)
+                    .ok()
+                    .map(|value| format!("{title}\n{value}"))
+            }
+        })
+        .unwrap_or(title);
+    NormalizedEvent::Activity(Message::new(MessageRole::Tool, MessageKind::Tool, content))
 }
 
 #[cfg(test)]
@@ -340,21 +354,4 @@ mod tests {
             [NormalizedEvent::Session(value)] if value == "abc"
         ));
     }
-}
-
-fn activity(title: String, detail: Option<&Value>) -> NormalizedEvent {
-    let content = detail
-        .and_then(|value| {
-            if let Some(value) = value.as_str() {
-                Some(format!("{title}\n{value}"))
-            } else if value.is_null() {
-                None
-            } else {
-                serde_json::to_string_pretty(value)
-                    .ok()
-                    .map(|value| format!("{title}\n{value}"))
-            }
-        })
-        .unwrap_or(title);
-    NormalizedEvent::Activity(Message::new(MessageRole::Tool, MessageKind::Tool, content))
 }

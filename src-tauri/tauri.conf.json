@@ -16,22 +16,27 @@
         "label": "main",
         "title": "zAI",
         "width": 1280,
-        "height": 820,
-        "minWidth": 900,
-        "minHeight": 620,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
         "center": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 16, "y": 19 }
+        "trafficLightPosition": { "x": 14, "y": 14 }
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost https://openrouter.ai; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost https://openrouter.ai; frame-src http: https:; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../licenses/": "licenses/"
+    },
     "category": "DeveloperTool",
     "shortDescription": "One workspace for your coding agents",
     "longDescription": "zAI wraps Claude Code, Codex, Gemini CLI, Kimi Code and OpenRouter in a native Rust desktop workspace.",

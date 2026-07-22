@@ -9,24 +9,38 @@
     "type": "git",
     "url": "https://github.com/z4mbo/zAI.git"
   },
+  "overrides": {
+    "diff": "8.0.3",
+    "dompurify": "3.4.12"
+  },
   "scripts": {
     "dev": "tauri dev",
     "dev:web": "vite --port 1420 --strictPort",
     "build": "npm run typecheck && vite build",
     "build:desktop": "tauri build",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@fontsource-variable/dm-sans": "5.2.8",
+    "@fontsource/jetbrains-mono": "5.2.8",
+    "@opencode-ai/ui": "1.18.4",
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@tauri-apps/plugin-opener": "2.5.4",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
     "lucide-solid": "^0.468.0",
     "solid-js": "^1.9.9"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "4.1.11",
     "@tauri-apps/cli": "^2.8.5",
+    "tailwindcss": "4.1.11",
     "typescript": "^5.8.3",
     "vite": "^7.1.4",
-    "vite-plugin-solid": "^2.11.8"
+    "vite-plugin-solid": "^2.11.8",
+    "vitest": "^4.1.10"
   }
 }

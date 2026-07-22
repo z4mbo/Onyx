@@ -56,6 +56,57 @@ export interface WorkspaceEntry {
   depth: number
 }
 
+export interface RepoFileChange {
+  path: string
+  status: string
+}
+
+export interface RepoSummary {
+  isRepo: boolean
+  branch: string | null
+  changedFiles: RepoFileChange[]
+  stagedCount: number
+  unstagedCount: number
+  untrackedCount: number
+  ahead: number
+  behind: number
+  hasUpstream: boolean
+  hasRemote: boolean
+  /** Commits between the remote default branch and HEAD, when Git can resolve that base. */
+  prCommitCount: number | null
+  prUrl: string | null
+}
+
+export interface WorkspaceFile {
+  path: string
+  content: string
+  truncated: boolean
+}
+
+export interface EditorTarget {
+  id: string
+  label: string
+  available: boolean
+}
+
+export interface GitActionResult {
+  message: string
+  url: string | null
+}
+
+export interface TerminalSession {
+  id: string
+  cwd: string
+  shell: string
+}
+
+export interface TerminalEvent {
+  sessionId: string
+  kind: "data" | "exit" | "error"
+  data: string | null
+  exitCode: number | null
+}
+
 export interface OpenRouterModel {
   id: string
   name: string

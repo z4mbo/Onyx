@@ -3,6 +3,7 @@ use chrono::Utc;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
+    cmp::Reverse,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -57,7 +58,7 @@ impl SessionStore {
 
     pub fn list(&self) -> Vec<AgentSession> {
         let mut sessions = self.state.read().sessions.clone();
-        sessions.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        sessions.sort_by_key(|session| Reverse(session.updated_at));
         sessions
     }
 
