@@ -10,8 +10,12 @@ export default defineConfig({
     emptyOutDir: true,
     minify: true,
     rollupOptions: {
-      input: "frontend-rs/styles-entry.css",
+      input: {
+        styles: "frontend-rs/styles-entry.css",
+        runtime: "frontend-rs/runtime.ts",
+      },
       output: {
+        entryFileNames: "[name].js",
         assetFileNames: (asset) =>
           asset.name?.endsWith(".css")
             ? "onyx.css"

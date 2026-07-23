@@ -1,40 +1,199 @@
+use std::cell::RefCell;
+
+use gloo_timers::future::TimeoutFuture;
 use icondata::{LuArrowUp, LuMic, LuSquare, LuX};
 use leptos::ev::{KeyboardEvent, SubmitEvent};
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::spawn_local;
 
 use crate::{
-    bridge,
-    model::{HoldMode, HoldPayload, HoldPhase},
+    bridge, markdown,
+    model::{
+        ActiveAppContext, ChatMessageInput, ChatRequest, HoldMode, HoldPayload, HoldPhase,
+        VoiceHistoryItem,
+    },
+    storage, theme,
 };
 
 use super::OnyxOrb;
 
+thread_local! {
+    static AUDIO_CAPTURE: RefCell<Option<bridge::AudioCaptureHandle>> =
+        const { RefCell::new(None) };
+}
+
+fn capture_is_retained() -> bool {
+    AUDIO_CAPTURE.with(|capture| capture.borrow().is_some())
+}
+
+fn retain_capture(handle: bridge::AudioCaptureHandle) {
+    AUDIO_CAPTURE.with(|capture| {
+        *capture.borrow_mut() = Some(handle);
+    });
+}
+
+fn release_capture() {
+    AUDIO_CAPTURE.with(|capture| {
+        capture.borrow_mut().take();
+    });
+}
+
+async fn begin_capture(level: RwSignal<f64>) -> Result<(), String> {
+    let handle = bridge::start_audio_capture(move |next| level.set(next)).await?;
+    retain_capture(handle);
+    Ok(())
+}
+
+async fn cancel_capture() {
+    let _ = bridge::cancel_audio_capture().await;
+    release_capture();
+}
+
+fn default_active_app() -> ActiveAppContext {
+    ActiveAppContext {
+        name: "Active app".to_owned(),
+        process: String::new(),
+        accent: "#7165e8".to_owned(),
+        symbol: "O".to_owned(),
+    }
+}
+
+fn hide_hud_after(delay_ms: u32) {
+    spawn_local(async move {
+        TimeoutFuture::new(delay_ms).await;
+        let _ = bridge::hide_window("hud").await;
+    });
+}
+
+async fn finish_hud(
+    phase: RwSignal<String>,
+    level: RwSignal<f64>,
+    app: RwSignal<ActiveAppContext>,
+    starting: RwSignal<bool>,
+    finishing: RwSignal<bool>,
+    pending_stop: RwSignal<bool>,
+) {
+    if starting.get_untracked() {
+        pending_stop.set(true);
+        return;
+    }
+    if finishing.get_untracked() || !capture_is_retained() {
+        return;
+    }
+    finishing.set(true);
+    phase.set("Transcribing".to_owned());
+    let result = async {
+        let audio = bridge::stop_audio_capture().await?;
+        release_capture();
+        let transcription = bridge::transcribe_audio(&audio.audio_base64, &audio.format).await?;
+        storage::append_voice_history(VoiceHistoryItem {
+            id: storage::unique_id("voice"),
+            created_at: storage::timestamp(),
+            kind: "dictation".to_owned(),
+            text: transcription.text.clone(),
+            answer: None,
+            app_name: Some(app.get_untracked().name),
+            model: Some(transcription.model),
+        });
+        bridge::inject_text(&transcription.text).await?;
+        Ok::<(), String>(())
+    }
+    .await;
+    match result {
+        Ok(()) => {
+            phase.set("Inserted".to_owned());
+            hide_hud_after(650);
+        }
+        Err(cause) => {
+            release_capture();
+            let cause = if cause.chars().count() > 140 {
+                format!("{}…", cause.chars().take(140).collect::<String>())
+            } else {
+                cause
+            };
+            phase.set(cause);
+            hide_hud_after(6_500);
+        }
+    }
+    finishing.set(false);
+    level.set(0.0);
+}
+
+async fn start_hud(
+    phase: RwSignal<String>,
+    level: RwSignal<f64>,
+    app: RwSignal<ActiveAppContext>,
+    starting: RwSignal<bool>,
+    finishing: RwSignal<bool>,
+    pending_stop: RwSignal<bool>,
+) {
+    if starting.get_untracked() || finishing.get_untracked() || capture_is_retained() {
+        return;
+    }
+    theme::apply_document_theme();
+    starting.set(true);
+    pending_stop.set(false);
+    phase.set("Starting microphone".to_owned());
+    let result = async {
+        app.set(bridge::active_app_context().await?);
+        begin_capture(level).await
+    }
+    .await;
+    match result {
+        Ok(()) => {
+            phase.set("Listening".to_owned());
+            starting.set(false);
+            if pending_stop.get_untracked() {
+                finish_hud(phase, level, app, starting, finishing, pending_stop).await;
+            }
+        }
+        Err(cause) => {
+            starting.set(false);
+            phase.set(cause);
+            hide_hud_after(6_500);
+        }
+    }
+}
+
 #[component]
 pub fn Hud() -> impl IntoView {
-    let (phase, set_phase) = signal("Ready".to_owned());
-    let (level, set_level) = signal(0.0_f64);
+    let phase = RwSignal::new("Ready".to_owned());
+    let level = RwSignal::new(0.0_f64);
+    let app = RwSignal::new(default_active_app());
+    let starting = RwSignal::new(false);
+    let finishing = RwSignal::new(false);
+    let pending_stop = RwSignal::new(false);
+
     Effect::new(move |_| {
         spawn_local(async move {
-            let result = bridge::listen::<HoldPayload, _>("onyx://hold", move |payload| {
+            if let Ok(listener) = bridge::listen::<HoldPayload, _>("onyx://hold", move |payload| {
                 if payload.mode != HoldMode::Dictation {
                     return;
                 }
                 match payload.phase {
-                    HoldPhase::Pressed => {
-                        set_phase.set("Listening".to_owned());
-                        set_level.set(0.78);
-                    }
-                    HoldPhase::Released => {
-                        set_phase.set("Transcribing".to_owned());
-                        set_level.set(0.0);
-                    }
+                    HoldPhase::Pressed => spawn_local(start_hud(
+                        phase,
+                        level,
+                        app,
+                        starting,
+                        finishing,
+                        pending_stop,
+                    )),
+                    HoldPhase::Released => spawn_local(finish_hud(
+                        phase,
+                        level,
+                        app,
+                        starting,
+                        finishing,
+                        pending_stop,
+                    )),
                 }
             })
-            .await;
-            if let Ok(result) = result {
-                result.forget();
+            .await
+            {
+                listener.forget();
             }
         });
     });
@@ -43,8 +202,8 @@ pub fn Hud() -> impl IntoView {
     view! {
         <main
             class="onyx-hud"
-            style="--app-accent:#7165e8"
-            title=move || format!("{} · Active app", phase.get())
+            style=move || format!("--app-accent:{}", app.get().accent)
+            title=move || format!("{} · {}", phase.get(), app.get().name)
         >
             <OnyxOrb class="onyx-hud__app" />
             <i />
@@ -81,69 +240,296 @@ impl OverlayMode {
 
 #[derive(Clone)]
 struct IslandMessage {
-    id: u32,
+    id: String,
     user: bool,
     content: String,
 }
 
+#[derive(Clone, Copy)]
+enum AgentSource {
+    Voice,
+    Typed,
+}
+
+#[derive(Clone, Copy)]
+struct AgentState {
+    mode: RwSignal<OverlayMode>,
+    phase: RwSignal<String>,
+    level: RwSignal<f64>,
+    draft: RwSignal<String>,
+    messages: RwSignal<Vec<IslandMessage>>,
+    busy: RwSignal<bool>,
+    recording: RwSignal<bool>,
+    starting: RwSignal<bool>,
+    finishing: RwSignal<bool>,
+    pending_stop: RwSignal<bool>,
+}
+
+async fn change_agent_mode(mode: RwSignal<OverlayMode>, next: OverlayMode) {
+    mode.set(next);
+    let _ = bridge::set_agent_overlay_mode(next.as_str()).await;
+}
+
+fn append_agent_error(messages: RwSignal<Vec<IslandMessage>>, cause: String) {
+    messages.update(|items| {
+        items.push(IslandMessage {
+            id: storage::unique_id("agent-message"),
+            user: false,
+            content: cause,
+        });
+    });
+}
+
+fn request_needs_web(prompt: &str) -> bool {
+    let prompt = prompt.to_ascii_lowercase();
+    [
+        "search", "look up", "latest", "today", "news", "weather", "web", "online", "source",
+        "price",
+    ]
+    .iter()
+    .any(|needle| prompt.contains(needle))
+}
+
+async fn ask_agent(text: String, source: AgentSource, state: AgentState) {
+    let prompt = text.trim().to_owned();
+    if prompt.is_empty() || state.busy.get_untracked() {
+        return;
+    }
+    let user = IslandMessage {
+        id: storage::unique_id("agent-message"),
+        user: true,
+        content: prompt.clone(),
+    };
+    let mut history = state.messages.get_untracked();
+    history.push(user);
+    if history.len() > 20 {
+        history.drain(..history.len() - 20);
+    }
+    state.messages.set(history.clone());
+    state.draft.set(String::new());
+    state.phase.set("Thinking".to_owned());
+    state.busy.set(true);
+    change_agent_mode(state.mode, OverlayMode::Expanded).await;
+
+    let result = async {
+        let settings = bridge::get_voice_settings().await?;
+        let active = bridge::active_app_context().await?;
+        let needs_web = request_needs_web(&prompt);
+        let (provider, model, route_label) = if needs_web {
+            (settings.web_provider, settings.web_model.clone(), "web")
+        } else {
+            (
+                settings.agent_provider,
+                settings.agent_model.clone(),
+                "general",
+            )
+        };
+        let history_len = history.len();
+        let request_messages = history
+            .into_iter()
+            .enumerate()
+            .map(|(index, message)| ChatMessageInput {
+                role: if message.user { "user" } else { "assistant" }.to_owned(),
+                content: if index + 1 == history_len {
+                    format!(
+                        "The active application is {}. This is a {route_label} {} request. \
+                         Answer in concise Markdown and only use read-only tools when needed:\n\n{}",
+                        active.name,
+                        match source {
+                            AgentSource::Voice => "voice",
+                            AgentSource::Typed => "typed",
+                        },
+                        message.content,
+                    )
+                } else {
+                    message.content
+                },
+            })
+            .collect();
+        let reply = bridge::chat_send(ChatRequest {
+            provider,
+            model,
+            messages: request_messages,
+            web_search: needs_web,
+        })
+        .await?;
+        Ok::<_, String>((settings, active, reply))
+    }
+    .await;
+
+    match result {
+        Ok((settings, active, reply)) => {
+            state.messages.update(|items| {
+                items.push(IslandMessage {
+                    id: storage::unique_id("agent-message"),
+                    user: false,
+                    content: reply.content.clone(),
+                });
+            });
+            state.phase.set("Ready".to_owned());
+            storage::append_voice_history(VoiceHistoryItem {
+                id: storage::unique_id("voice"),
+                created_at: storage::timestamp(),
+                kind: "agent".to_owned(),
+                text: prompt,
+                answer: Some(reply.content.clone()),
+                app_name: Some(active.name),
+                model: Some(reply.model),
+            });
+            if settings.speak_responses
+                && matches!(source, AgentSource::Voice)
+                && let Ok(source) = bridge::speak_text(&reply.content).await
+                && !source.is_empty()
+            {
+                let _ = bridge::play_audio(&source).await;
+            }
+        }
+        Err(cause) => {
+            state.phase.set("Couldn’t answer".to_owned());
+            append_agent_error(state.messages, cause);
+        }
+    }
+    state.busy.set(false);
+}
+
+async fn finish_agent(state: AgentState) {
+    if state.starting.get_untracked() {
+        state.pending_stop.set(true);
+        return;
+    }
+    if state.finishing.get_untracked() || !capture_is_retained() {
+        return;
+    }
+    state.finishing.set(true);
+    state.phase.set("Transcribing".to_owned());
+    let result = async {
+        let audio = bridge::stop_audio_capture().await?;
+        release_capture();
+        bridge::transcribe_audio(&audio.audio_base64, &audio.format).await
+    }
+    .await;
+    state.recording.set(false);
+    state.level.set(0.0);
+    match result {
+        Ok(transcription) => {
+            ask_agent(transcription.text, AgentSource::Voice, state).await;
+        }
+        Err(cause) => {
+            release_capture();
+            change_agent_mode(state.mode, OverlayMode::Expanded).await;
+            state.phase.set("Something went wrong".to_owned());
+            append_agent_error(state.messages, cause);
+        }
+    }
+    state.finishing.set(false);
+}
+
+async fn start_agent(from_panel: bool, state: AgentState) {
+    if state.starting.get_untracked() || state.finishing.get_untracked() || capture_is_retained() {
+        return;
+    }
+    theme::apply_document_theme();
+    state.starting.set(true);
+    state.pending_stop.set(false);
+    state.phase.set("Starting microphone".to_owned());
+    if !from_panel {
+        change_agent_mode(state.mode, OverlayMode::Listening).await;
+    }
+    match begin_capture(state.level).await {
+        Ok(()) => {
+            state.recording.set(true);
+            state.phase.set("Listening".to_owned());
+            state.starting.set(false);
+            if state.pending_stop.get_untracked() {
+                finish_agent(state).await;
+            }
+        }
+        Err(cause) => {
+            state.starting.set(false);
+            change_agent_mode(state.mode, OverlayMode::Expanded).await;
+            state.phase.set("Microphone unavailable".to_owned());
+            append_agent_error(state.messages, cause);
+        }
+    }
+}
+
+async fn collapse_agent(state: AgentState) {
+    cancel_capture().await;
+    state.recording.set(false);
+    state.level.set(0.0);
+    state.phase.set("Ask Onyx".to_owned());
+    change_agent_mode(state.mode, OverlayMode::Inactive).await;
+}
+
 #[component]
 pub fn AgentOverlay() -> impl IntoView {
-    let (mode, set_mode) = signal(OverlayMode::Inactive);
-    let (phase, set_phase) = signal("Ask Onyx".to_owned());
-    let (level, set_level) = signal(0.0_f64);
-    let (draft, set_draft) = signal(String::new());
-    let (messages, set_messages) = signal(Vec::<IslandMessage>::new());
-    let (recording, set_recording) = signal(false);
-    let ask = Callback::new(move |_: ()| {
-        let prompt = draft.get().trim().to_owned();
-        if prompt.is_empty() {
-            return;
-        }
-        let next_id = messages.with(|items| items.len() as u32 + 1);
-        set_messages.update(|items| {
-            items.push(IslandMessage {
-                id: next_id,
-                user: true,
-                content: prompt,
-            });
-            items.push(IslandMessage {
-                id: next_id + 1,
-                user: false,
-                content: "The Rust overlay is connected. Agent routing and audio capture remain behind the parity gate.".to_owned(),
-            });
+    let mode = RwSignal::new(OverlayMode::Inactive);
+    let phase = RwSignal::new("Ask Onyx".to_owned());
+    let level = RwSignal::new(0.0_f64);
+    let draft = RwSignal::new(String::new());
+    let messages = RwSignal::new(Vec::<IslandMessage>::new());
+    let busy = RwSignal::new(false);
+    let recording = RwSignal::new(false);
+    let starting = RwSignal::new(false);
+    let finishing = RwSignal::new(false);
+    let pending_stop = RwSignal::new(false);
+    let state = AgentState {
+        mode,
+        phase,
+        level,
+        draft,
+        messages,
+        busy,
+        recording,
+        starting,
+        finishing,
+        pending_stop,
+    };
+    let conversation = NodeRef::<leptos::html::Div>::new();
+
+    let submit = Callback::new(move |_: ()| {
+        spawn_local(ask_agent(draft.get_untracked(), AgentSource::Typed, state));
+    });
+
+    Effect::new(move |_| {
+        let _ = messages.get();
+        let _ = busy.get();
+        let conversation = conversation;
+        spawn_local(async move {
+            TimeoutFuture::new(0).await;
+            if let Some(element) = conversation.get_untracked() {
+                element.set_scroll_top(element.scroll_height());
+            }
         });
-        set_draft.set(String::new());
-        set_phase.set("Ready".to_owned());
-        set_mode.set(OverlayMode::Expanded);
     });
 
     Effect::new(move |_| {
         spawn_local(async move {
-            let result = bridge::listen::<HoldPayload, _>("onyx://hold", move |payload| {
+            if let Ok(listener) = bridge::listen::<HoldPayload, _>("onyx://hold", move |payload| {
                 if payload.mode != HoldMode::Agent {
                     return;
                 }
                 match payload.phase {
-                    HoldPhase::Pressed => {
-                        set_mode.set(OverlayMode::Listening);
-                        set_phase.set("Listening".to_owned());
-                        set_recording.set(true);
-                        set_level.set(0.76);
-                    }
-                    HoldPhase::Released => {
-                        set_mode.set(OverlayMode::Expanded);
-                        set_phase.set("Transcribing".to_owned());
-                        set_recording.set(false);
-                        set_level.set(0.0);
-                    }
+                    HoldPhase::Pressed => spawn_local(start_agent(false, state)),
+                    HoldPhase::Released => spawn_local(finish_agent(state)),
                 }
             })
-            .await;
-            if let Ok(result) = result {
-                result.forget();
+            .await
+            {
+                listener.forget();
             }
         });
     });
+
+    let escape = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+        if event.key() == "Escape" && mode.get_untracked() != OverlayMode::Inactive {
+            spawn_local(collapse_agent(state));
+        }
+    }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+    if let Some(window) = web_sys::window() {
+        let _ = window.add_event_listener_with_callback("keydown", escape.as_ref().unchecked_ref());
+        escape.forget();
+    }
 
     let listen_weights = [0.35, 0.62, 1.0, 0.74, 0.44];
     view! {
@@ -151,8 +537,8 @@ pub fn AgentOverlay() -> impl IntoView {
             class="onyx-agent"
             data-state=move || mode.get().as_str()
             on:mouseenter=move |_| {
-                if mode.get() == OverlayMode::Inactive {
-                    set_mode.set(OverlayMode::Expanded);
+                if mode.get_untracked() == OverlayMode::Inactive {
+                    spawn_local(change_agent_mode(mode, OverlayMode::Expanded));
                 }
             }
         >
@@ -182,17 +568,14 @@ pub fn AgentOverlay() -> impl IntoView {
                         <OnyxOrb class="onyx-agent__orb" />
                         <div><strong>"Onyx Agent"</strong><span>{move || phase.get()}</span></div>
                         <button
-                            on:click=move |_| {
-                                set_mode.set(OverlayMode::Inactive);
-                                set_phase.set("Ask Onyx".to_owned());
-                            }
+                            on:click=move |_| spawn_local(collapse_agent(state))
                             aria-label="Close"
                         >
                             <Icon icon=LuX width="15px" height="15px" />
                         </button>
                     </header>
 
-                    <div class="onyx-agent__conversation" aria-live="polite">
+                    <div node_ref=conversation class="onyx-agent__conversation" aria-live="polite">
                         <Show
                             when=move || !messages.read().is_empty()
                             fallback=move || view! {
@@ -204,16 +587,26 @@ pub fn AgentOverlay() -> impl IntoView {
                         >
                             <For
                                 each=move || messages.get()
-                                key=|message| message.id
-                                children=|message| view! {
-                                    <article
-                                        class="onyx-agent__message"
-                                        data-role=if message.user { "user" } else { "assistant" }
-                                    >
-                                        <p>{message.content}</p>
-                                    </article>
+                                key=|message| message.id.clone()
+                                children=|message| {
+                                    let rendered = markdown::render(&message.content);
+                                    view! {
+                                        <article
+                                            class="onyx-agent__message"
+                                            data-role=if message.user { "user" } else { "assistant" }
+                                        >
+                                            {if message.user {
+                                                view! { <p>{message.content}</p> }.into_any()
+                                            } else {
+                                                view! { <div inner_html=rendered /> }.into_any()
+                                            }}
+                                        </article>
+                                    }
                                 }
                             />
+                        </Show>
+                        <Show when=move || busy.get()>
+                            <div class="onyx-agent__typing" aria-label="Onyx is thinking"><i /><i /><i /></div>
                         </Show>
                     </div>
 
@@ -221,7 +614,7 @@ pub fn AgentOverlay() -> impl IntoView {
                         class="onyx-agent__composer"
                         on:submit=move |event: SubmitEvent| {
                             event.prevent_default();
-                            ask.run(());
+                            submit.run(());
                         }
                     >
                         <textarea
@@ -229,11 +622,11 @@ pub fn AgentOverlay() -> impl IntoView {
                             rows="1"
                             placeholder="Ask or search anything…"
                             prop:value=move || draft.get()
-                            on:input=move |event| set_draft.set(event_target_value(&event))
+                            on:input=move |event| draft.set(event_target_value(&event))
                             on:keydown=move |event: KeyboardEvent| {
-                                if event.key() == "Enter" && !event.shift_key() {
+                                if event.key() == "Enter" && !event.shift_key() && !event.is_composing() {
                                     event.prevent_default();
-                                    ask.run(());
+                                    submit.run(());
                                 }
                             }
                         />
@@ -242,8 +635,11 @@ pub fn AgentOverlay() -> impl IntoView {
                             class="onyx-agent__voice"
                             aria-label=move || if recording.get() { "Stop recording" } else { "Ask with voice" }
                             on:click=move |_| {
-                                set_recording.update(|recording| *recording = !*recording);
-                                set_phase.set(if recording.get() { "Listening" } else { "Ask Onyx" }.to_owned());
+                                if recording.get_untracked() {
+                                    spawn_local(finish_agent(state));
+                                } else {
+                                    spawn_local(start_agent(true, state));
+                                }
                             }
                         >
                             {move || if recording.get() {
@@ -256,7 +652,7 @@ pub fn AgentOverlay() -> impl IntoView {
                             type="submit"
                             class="onyx-agent__send"
                             aria-label="Send"
-                            disabled=move || draft.get().trim().is_empty()
+                            disabled=move || busy.get() || draft.get().trim().is_empty()
                         >
                             <Icon icon=LuArrowUp width="15px" height="15px" />
                         </button>

@@ -16,7 +16,7 @@ const directory = [...pathEntries, cargoBin].find((entry) =>
 
 if (!directory) {
   console.error(
-    "Trunk is required for the Rust UI preview. Install it with: "
+    "Trunk is required for the Onyx interface. Install it with: "
       + "cargo install trunk --version 0.21.14 --locked",
   );
   process.exit(1);

@@ -41,17 +41,6 @@ impl ProviderId {
             Self::Openrouter => "openrouter",
         }
     }
-
-    pub fn from_str(value: &str) -> Option<Self> {
-        match value {
-            "claude" => Some(Self::Claude),
-            "codex" => Some(Self::Codex),
-            "gemini" => Some(Self::Gemini),
-            "kimi" => Some(Self::Kimi),
-            "openrouter" => Some(Self::Openrouter),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -87,6 +76,29 @@ impl ProviderBrand {
             Self::Openrouter => "OpenRouter",
         }
     }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Google => "google",
+            Self::Xai => "xai",
+            Self::Moonshot => "moonshot",
+            Self::Openrouter => "openrouter",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "openai" => Some(Self::Openai),
+            "anthropic" => Some(Self::Anthropic),
+            "google" => Some(Self::Google),
+            "xai" => Some(Self::Xai),
+            "moonshot" => Some(Self::Moonshot),
+            "openrouter" => Some(Self::Openrouter),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -103,12 +115,66 @@ pub enum ReasoningEffort {
     Ultracode,
 }
 
+impl ReasoningEffort {
+    pub const ALL: [Self; 8] = [
+        Self::None,
+        Self::Minimal,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::Xhigh,
+        Self::Max,
+        Self::Ultracode,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+            Self::Ultracode => "ultracode",
+        }
+    }
+
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Minimal => "Minimal",
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
+            Self::Xhigh => "Extra high",
+            Self::Max => "Max",
+            Self::Ultracode => "Ultracode",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|effort| effort.as_str() == value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeedMode {
     #[default]
     Standard,
     Fast,
+}
+
+impl SpeedMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Fast => "fast",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -126,6 +192,16 @@ pub enum AccessMode {
     ApprovalRequired,
     AutoAcceptEdits,
     FullAccess,
+}
+
+impl AccessMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ApprovalRequired => "approval_required",
+            Self::AutoAcceptEdits => "auto_accept_edits",
+            Self::FullAccess => "full_access",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -193,6 +269,40 @@ pub struct ProviderStatus {
     pub version: Option<String>,
     pub install_url: String,
     pub transport: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModelOption {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_default: bool,
+    #[serde(default)]
+    pub reasoning: Vec<ReasoningEffort>,
+    pub default_reasoning: Option<ReasoningEffort>,
+    #[serde(default)]
+    pub speeds: Vec<SpeedMode>,
+    pub default_speed: SpeedMode,
+    pub context_length: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageWindow {
+    pub label: String,
+    pub used_percent: f64,
+    pub window_minutes: Option<u64>,
+    pub resets_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsage {
+    pub provider: ProviderId,
+    pub plan: Option<String>,
+    pub windows: Vec<UsageWindow>,
+    pub updated_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -283,6 +393,334 @@ pub struct CreateSessionInput {
     pub interaction_mode: InteractionMode,
     pub access_mode: AccessMode,
     pub workspace: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSessionOptionsInput {
+    pub session_id: String,
+    pub provider: ProviderId,
+    pub provider_brand: ProviderBrand,
+    pub model: Option<String>,
+    pub reasoning: Option<ReasoningEffort>,
+    pub speed_mode: SpeedMode,
+    pub interaction_mode: InteractionMode,
+    pub access_mode: AccessMode,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalRequest {
+    pub id: String,
+    pub session_id: String,
+    pub title: String,
+    pub detail: String,
+    pub risk: String,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEntry {
+    pub name: String,
+    pub path: String,
+    pub is_directory: bool,
+    pub depth: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoFileChange {
+    pub path: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoSummary {
+    pub is_repo: bool,
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub changed_files: Vec<RepoFileChange>,
+    pub staged_count: usize,
+    pub unstaged_count: usize,
+    pub untracked_count: usize,
+    pub ahead: u32,
+    pub behind: u32,
+    pub has_upstream: bool,
+    pub has_remote: bool,
+    pub pr_commit_count: Option<u32>,
+    pub pr_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFile {
+    pub path: String,
+    pub content: String,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorTarget {
+    pub id: String,
+    pub label: String,
+    pub available: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitActionResult {
+    pub message: String,
+    pub url: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSession {
+    pub id: String,
+    pub cwd: String,
+    pub shell: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalEvent {
+    pub session_id: String,
+    pub kind: String,
+    pub data: Option<String>,
+    pub exit_code: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenRouterModel {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub context_length: Option<u64>,
+    pub prompt_price: Option<String>,
+    pub completion_price: Option<String>,
+    #[serde(default)]
+    pub input_modalities: Vec<String>,
+    #[serde(default)]
+    pub output_modalities: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionStatus {
+    pub connected: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayPosition {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    Center,
+    BottomLeft,
+    #[default]
+    BottomCenter,
+    BottomRight,
+}
+
+impl OverlayPosition {
+    pub const ALL: [Self; 7] = [
+        Self::TopLeft,
+        Self::TopCenter,
+        Self::TopRight,
+        Self::Center,
+        Self::BottomLeft,
+        Self::BottomCenter,
+        Self::BottomRight,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TopLeft => "top_left",
+            Self::TopCenter => "top_center",
+            Self::TopRight => "top_right",
+            Self::Center => "center",
+            Self::BottomLeft => "bottom_left",
+            Self::BottomCenter => "bottom_center",
+            Self::BottomRight => "bottom_right",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|position| position.as_str() == value)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VoiceSettings {
+    pub dictation_shortcut: String,
+    pub agent_shortcut: String,
+    pub overlay_position: OverlayPosition,
+    pub overlay_margin: u32,
+    pub transcription_provider: String,
+    pub transcription_model: String,
+    pub agent_provider: ProviderId,
+    pub agent_model: String,
+    pub web_provider: ProviderId,
+    pub web_model: String,
+    pub files_provider: ProviderId,
+    pub files_model: String,
+    pub image_provider: ProviderId,
+    pub image_model: String,
+    pub reasoning: ReasoningEffort,
+    pub language: Option<String>,
+    pub speak_responses: bool,
+    pub voice_provider: String,
+    pub voice_id: String,
+    pub voice_model: String,
+    pub voice_rate: f32,
+}
+
+impl Default for VoiceSettings {
+    fn default() -> Self {
+        Self {
+            dictation_shortcut: "Ctrl+Shift (hold)".to_owned(),
+            agent_shortcut: "Ctrl+Alt (hold)".to_owned(),
+            overlay_position: OverlayPosition::BottomCenter,
+            overlay_margin: 18,
+            transcription_provider: "openrouter".to_owned(),
+            transcription_model: "openai/whisper-large-v3-turbo".to_owned(),
+            agent_provider: ProviderId::Openrouter,
+            agent_model: "openrouter/auto".to_owned(),
+            web_provider: ProviderId::Openrouter,
+            web_model: "openrouter/auto".to_owned(),
+            files_provider: ProviderId::Codex,
+            files_model: "gpt-5.4".to_owned(),
+            image_provider: ProviderId::Openrouter,
+            image_model: String::new(),
+            reasoning: ReasoningEffort::Medium,
+            language: None,
+            speak_responses: true,
+            voice_provider: "openrouter".to_owned(),
+            voice_id: "alloy".to_owned(),
+            voice_model: "openai/gpt-4o-mini-tts-2025-12-15".to_owned(),
+            voice_rate: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptionReply {
+    pub text: String,
+    pub model: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeVoicePermissions {
+    pub input_monitoring: bool,
+    pub accessibility: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveAppContext {
+    pub name: String,
+    pub process: String,
+    pub accent: String,
+    pub symbol: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessageInput {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRequest {
+    pub provider: ProviderId,
+    pub model: String,
+    pub messages: Vec<ChatMessageInput>,
+    #[serde(default)]
+    pub web_search: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMedia {
+    pub kind: String,
+    pub url: String,
+    pub mime_type: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatReply {
+    pub content: String,
+    pub model: String,
+    #[serde(default)]
+    pub media: Vec<ChatMedia>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountProfile {
+    pub id: String,
+    pub name: String,
+    pub email: String,
+    pub image_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthStart {
+    pub authorize_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountEvent {
+    pub profile: Option<AccountProfile>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturedAudio {
+    pub audio_base64: String,
+    pub format: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    pub version: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProgress {
+    pub downloaded: u64,
+    pub total: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceHistoryItem {
+    pub id: String,
+    pub created_at: String,
+    pub kind: String,
+    pub text: String,
+    pub answer: Option<String>,
+    pub app_name: Option<String>,
+    pub model: Option<String>,
 }
 
 impl Default for CreateSessionInput {

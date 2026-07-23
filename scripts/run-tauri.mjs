@@ -66,6 +66,7 @@ const environment = {
   ...process.env,
   PATH: [cargoDirectory, ...pathEntries].join(delimiter),
 };
+const tauriArguments = process.argv.slice(2);
 
 if (
   process.platform === "darwin"
@@ -87,7 +88,20 @@ if (
   }
 }
 
-const child = spawn(process.execPath, [tauriCli, ...process.argv.slice(2)], {
+if (
+  tauriArguments.includes("build")
+  && !environment.TAURI_SIGNING_PRIVATE_KEY
+) {
+  tauriArguments.push(
+    "--config",
+    JSON.stringify({ bundle: { createUpdaterArtifacts: false } }),
+  );
+  console.info(
+    "Updater signing key not present; building installable bundles without updater artifacts.",
+  );
+}
+
+const child = spawn(process.execPath, [tauriCli, ...tauriArguments], {
   env: environment,
   stdio: "inherit",
 });

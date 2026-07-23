@@ -1,7 +1,9 @@
-use icondata::{LuPlus, LuSettings, LuUserRound, LuX};
+use icondata::{LuLogOut, LuPanelBottom, LuPanelRight, LuPlus, LuSettings, LuUserRound, LuX};
 use leptos::ev::MouseEvent;
 use leptos::prelude::*;
 use leptos_icons::Icon;
+
+use crate::model::AccountProfile;
 
 use super::OnyxOrb;
 
@@ -14,14 +16,32 @@ pub struct TitlebarTab {
     pub project_initial: char,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitlebarSession {
+    pub id: String,
+    pub label: String,
+    pub project: String,
+}
+
 #[component]
 pub fn Titlebar(
     tabs: Signal<Vec<TitlebarTab>>,
+    sessions: Signal<Vec<TitlebarSession>>,
     on_select: Callback<String>,
     on_close: Callback<String>,
     on_new: Callback<()>,
+    on_open_session: Callback<String>,
     on_home: Callback<()>,
     on_settings: Callback<()>,
+    on_sign_out: Callback<()>,
+    profile: Signal<Option<AccountProfile>>,
+    show_layout_controls: Signal<bool>,
+    bottom_panel_open: Signal<bool>,
+    right_panel_open: Signal<bool>,
+    bottom_panel_available: Signal<bool>,
+    right_panel_available: Signal<bool>,
+    on_toggle_bottom_panel: Callback<()>,
+    on_toggle_right_panel: Callback<()>,
 ) -> impl IntoView {
     let (new_menu_open, set_new_menu_open) = signal(false);
     let (profile_menu_open, set_profile_menu_open) = signal(false);
@@ -174,9 +194,9 @@ pub fn Titlebar(
                                display:inline-flex;align-items:center;justify-content:center;width:28px;\
                                height:28px;min-width:28px;border-radius:6px;background:transparent"
                         on:click=move |_| set_new_menu_open.update(|open| *open = !*open)
-                        aria-label="New session"
+                        aria-label="New or open session"
                         aria-expanded=move || new_menu_open.get()
-                        title="New session"
+                        title="New or open session"
                     >
                         <Icon icon=LuPlus width="14px" height="14px" />
                     </button>
@@ -189,6 +209,34 @@ pub fn Titlebar(
                                 <Icon icon=LuPlus width="14px" height="14px" />
                                 <span><strong>"New session"</strong><small>"Start in the current project"</small></span>
                             </button>
+                            <Show when=move || !sessions.read().is_empty()>
+                                <p>"Open session"</p>
+                                <For
+                                    each=move || sessions.get()
+                                    key=|session| session.id.clone()
+                                    children=move |session| {
+                                        let id = session.id.clone();
+                                        let initial = session
+                                            .project
+                                            .chars()
+                                            .next()
+                                            .unwrap_or('O')
+                                            .to_ascii_uppercase();
+                                        view! {
+                                            <button on:click=move |_| {
+                                                set_new_menu_open.set(false);
+                                                on_open_session.run(id.clone());
+                                            }>
+                                                <span class="zai-titlebar__project-icon">{initial}</span>
+                                                <span>
+                                                    <strong>{session.label}</strong>
+                                                    <small>{session.project}</small>
+                                                </span>
+                                            </button>
+                                        }
+                                    }
+                                />
+                            </Show>
                         </div>
                     </Show>
                 </div>
@@ -199,6 +247,35 @@ pub fn Titlebar(
                     style="flex:1;height:100%"
                 />
 
+                <Show when=move || show_layout_controls.get()>
+                    <div class="zai-layout-controls" data-slot="workspace-layout-controls">
+                        <button
+                            type="button"
+                            class="zai-workspace-icon-button"
+                            data-active=move || if bottom_panel_open.get() { "true" } else { "false" }
+                            aria-label="Toggle terminal drawer (⌘J)"
+                            aria-pressed=move || bottom_panel_open.get()
+                            title="Toggle terminal drawer (⌘J)"
+                            disabled=move || !bottom_panel_available.get()
+                            on:click=move |_| on_toggle_bottom_panel.run(())
+                        >
+                            <Icon icon=LuPanelBottom width="16px" height="16px" />
+                        </button>
+                        <button
+                            type="button"
+                            class="zai-workspace-icon-button"
+                            data-active=move || if right_panel_open.get() { "true" } else { "false" }
+                            aria-label="Toggle right panel (⌘⇧J)"
+                            aria-pressed=move || right_panel_open.get()
+                            title="Toggle right panel (⌘⇧J)"
+                            disabled=move || !right_panel_available.get()
+                            on:click=move |_| on_toggle_right_panel.run(())
+                        >
+                            <Icon icon=LuPanelRight width="16px" height="16px" />
+                        </button>
+                    </div>
+                </Show>
+
                 <div class="zai-titlebar__profile-wrap">
                     <button
                         type="button"
@@ -208,14 +285,37 @@ pub fn Titlebar(
                         aria-label="Account and settings"
                         aria-haspopup="menu"
                         aria-expanded=move || profile_menu_open.get()
-                        title="Account and settings"
+                        title=move || profile
+                            .get()
+                            .map(|profile| profile.name)
+                            .unwrap_or_else(|| "Account and settings".to_owned())
                     >
-                        <span class="zai-titlebar__profile-avatar zai-titlebar__profile-avatar--fallback">
-                            <Icon icon=LuUserRound width="14px" height="14px" />
-                        </span>
+                        {move || profile.get().and_then(|profile| profile.image_url).map(|url| view! {
+                            <img
+                                class="zai-titlebar__profile-avatar"
+                                src=url
+                                alt=""
+                                referrerpolicy="no-referrer"
+                            />
+                        }.into_any()).unwrap_or_else(|| view! {
+                            <span class="zai-titlebar__profile-avatar zai-titlebar__profile-avatar--fallback">
+                                <Icon icon=LuUserRound width="14px" height="14px" />
+                            </span>
+                        }.into_any())}
+                        <Show when=move || profile.get().is_some()>
+                            <span class="zai-titlebar__profile-name">
+                                {move || profile.get().map(|profile| profile.name).unwrap_or_default()}
+                            </span>
+                        </Show>
                     </button>
                     <Show when=move || profile_menu_open.get()>
                         <div class="zai-titlebar__profile-menu" role="menu">
+                            <Show when=move || profile.get().is_some()>
+                                <div class="zai-titlebar__profile-summary">
+                                    <strong>{move || profile.get().map(|profile| profile.name).unwrap_or_default()}</strong>
+                                    <span>{move || profile.get().map(|profile| profile.email).unwrap_or_default()}</span>
+                                </div>
+                            </Show>
                             <button
                                 role="menuitem"
                                 on:click=move |_| {
@@ -226,6 +326,18 @@ pub fn Titlebar(
                                 <Icon icon=LuSettings width="14px" height="14px" />
                                 <span>"Settings"</span>
                             </button>
+                            <Show when=move || profile.get().is_some()>
+                                <button
+                                    role="menuitem"
+                                    on:click=move |_| {
+                                        set_profile_menu_open.set(false);
+                                        on_sign_out.run(());
+                                    }
+                                >
+                                    <Icon icon=LuLogOut width="14px" height="14px" />
+                                    <span>"Sign out"</span>
+                                </button>
+                            </Show>
                         </div>
                     </Show>
                 </div>

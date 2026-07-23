@@ -48,7 +48,7 @@ npm ci --legacy-peer-deps
 npm run dev
 ```
 
-The first native launch compiles Rust dependencies and may take several minutes. `npm run dev:web` is a UI-only browser preview with mocked native operations.
+The first native launch compiles Rust dependencies and may take several minutes. The production interface is Leptos/WebAssembly; `npm run dev:web` runs that same Rust UI in a browser, where native-only operations are unavailable. `npm run dev:solid` remains available only as a legacy visual reference while its shared CSS is retired incrementally.
 
 ### Coding-agent smoke test
 
