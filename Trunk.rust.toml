@@ -8,7 +8,12 @@ filehash = true
 minify = "never"
 
 [watch]
-ignore = ["./src", "./src-tauri", "./dist", "./dist-rust"]
+watch = [
+  "frontend-rs/index.html",
+  "frontend-rs/Cargo.toml",
+  "frontend-rs/Cargo.lock",
+  "frontend-rs/src",
+]
 
 [serve]
 port = 1430
