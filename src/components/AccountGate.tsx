@@ -186,7 +186,12 @@ export const AccountGate: ParentComponent = (props) => {
                     </button>
                   </form>
                 </Show>
-                <div id="clerk-captcha" />
+                <div
+                  id="clerk-captcha"
+                  data-cl-theme="auto"
+                  data-cl-size="flexible"
+                  data-cl-language="auto"
+                />
               </div>
             </Show>
           </Show>
