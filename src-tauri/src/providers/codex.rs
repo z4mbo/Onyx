@@ -7,8 +7,8 @@ use super::{
     process::{JsonProcess, ProcessOutput, find_executable, platform_command},
 };
 use crate::model::{
-    AccessMode, ContextUsage, InteractionMode, ProviderId, ProviderModelOption, ProviderUsage,
-    ReasoningEffort, SpeedMode, UsageWindow,
+    AccessMode, ApprovalDecision, ContextUsage, InteractionMode, ProviderId, ProviderModelOption,
+    ProviderUsage, ReasoningEffort, SpeedMode, UsageWindow,
 };
 use serde_json::{Value, json};
 use std::{
@@ -94,6 +94,7 @@ impl CodexSession {
         prompt: &str,
         cancellation: &CancellationToken,
         events: &mpsc::Sender<ProviderEvent>,
+        mut steer: mpsc::UnboundedReceiver<String>,
     ) -> Result<(), String> {
         let request_id = self.take_request_id();
         self.process
@@ -104,31 +105,77 @@ impl CodexSession {
                 &self.config,
             ))
             .await?;
-        let mut turn_id = None;
+        let mut turn_id: Option<String> = None;
         let mut streamed_items = HashSet::new();
         let mut pending_error = None;
+        let mut steer_open = true;
+        // `turn/steer` requires the active turn id, which only arrives with the
+        // `turn/start` response; messages sent before that are queued here.
+        let mut queued_steers: Vec<String> = Vec::new();
+        let mut steer_requests: HashSet<u64> = HashSet::new();
 
         loop {
-            let value = tokio::select! {
+            enum TurnInput {
+                Steer(Option<String>),
+                Output(ProcessOutput),
+            }
+            let input = tokio::select! {
                 _ = cancellation.cancelled() => {
                     self.process.shutdown().await;
                     return Err("Turn cancelled".to_string());
                 }
-                output = self.process.next_stdout() => {
-                    match output? {
-                        ProcessOutput::Stdout(line) => serde_json::from_str::<Value>(&line)
-                            .map_err(|error| format!("Codex app-server returned invalid JSON: {error}"))?,
-                        ProcessOutput::Exited(status) => {
-                            let detail = self.process.stderr_tail();
-                            return Err(if detail.is_empty() {
-                                format!("Codex app-server exited with {status}")
-                            } else {
-                                format!("Codex app-server exited with {status}: {detail}")
-                            });
+                message = steer.recv(), if steer_open => TurnInput::Steer(message),
+                output = self.process.next_stdout() => TurnInput::Output(output?),
+            };
+            let value = match input {
+                TurnInput::Steer(Some(text)) => {
+                    match turn_id.as_deref() {
+                        Some(turn) => {
+                            let id = self.take_request_id();
+                            steer_requests.insert(id);
+                            let request = turn_steer_request(id, &self.thread_id, turn, &text);
+                            self.process.send_json(&request).await?;
                         }
+                        None => queued_steers.push(text),
                     }
+                    continue;
+                }
+                TurnInput::Steer(None) => {
+                    steer_open = false;
+                    continue;
+                }
+                TurnInput::Output(ProcessOutput::Stdout(line)) => {
+                    serde_json::from_str::<Value>(&line).map_err(|error| {
+                        format!("Codex app-server returned invalid JSON: {error}")
+                    })?
+                }
+                TurnInput::Output(ProcessOutput::Exited(status)) => {
+                    let detail = self.process.stderr_tail();
+                    return Err(if detail.is_empty() {
+                        format!("Codex app-server exited with {status}")
+                    } else {
+                        format!("Codex app-server exited with {status}: {detail}")
+                    });
                 }
             };
+
+            if let Some(steer_id) = steer_requests
+                .iter()
+                .copied()
+                .find(|id| is_client_response(&value, *id))
+            {
+                steer_requests.remove(&steer_id);
+                if let Err(error) = response_result(&value) {
+                    send_event(
+                        events,
+                        ProviderEvent::Activity(ProviderActivity::error(format!(
+                            "Codex could not apply the steering message: {error}"
+                        ))),
+                    )
+                    .await?;
+                }
+                continue;
+            }
 
             if is_client_response(&value, request_id) {
                 let result = response_result(&value)?;
@@ -136,6 +183,14 @@ impl CodexSession {
                     .pointer("/turn/id")
                     .and_then(Value::as_str)
                     .map(str::to_string);
+                if let Some(turn) = turn_id.as_deref() {
+                    for text in queued_steers.drain(..) {
+                        let id = self.take_request_id();
+                        steer_requests.insert(id);
+                        let request = turn_steer_request(id, &self.thread_id, turn, &text);
+                        self.process.send_json(&request).await?;
+                    }
+                }
                 continue;
             }
 
@@ -287,15 +342,15 @@ impl CodexSession {
             }),
         )
         .await?;
-        let approved = tokio::select! {
+        let decision = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.process.shutdown().await;
                 return Err("Turn cancelled".to_string());
             }
-            result = receiver => result.unwrap_or(false),
+            result = receiver => result.unwrap_or(ApprovalDecision::Deny),
         };
         self.process
-            .send_json(&approval_response(method, response_id, approved, &params))
+            .send_json(&approval_response(method, response_id, decision, &params))
             .await
     }
 
@@ -345,15 +400,21 @@ impl ProviderSession for CodexSession {
         Some(self.thread_id.clone())
     }
 
+    fn supports_steering(&self) -> bool {
+        true
+    }
+
     fn run_turn<'a>(
         &'a mut self,
         prompt: &'a str,
         cancellation: &'a CancellationToken,
         events: mpsc::Sender<ProviderEvent>,
+        steer: mpsc::UnboundedReceiver<String>,
     ) -> DriverFuture<'a, Result<(), String>> {
         Box::pin(async move {
             send_event(&events, ProviderEvent::Continuation(self.thread_id.clone())).await?;
-            self.run_turn_inner(prompt, cancellation, &events).await
+            self.run_turn_inner(prompt, cancellation, &events, steer)
+                .await
         })
     }
 
@@ -435,7 +496,7 @@ fn turn_start_request(
         params["model"] = json!(model);
     }
     if let Some(reasoning) = config.reasoning {
-        params["effort"] = json!(reasoning.as_str());
+        params["effort"] = json!(reasoning.clamped_str());
     }
     if let Some(service_tier) = config.speed_mode.as_service_tier() {
         params["serviceTier"] = json!(service_tier);
@@ -445,7 +506,7 @@ fn turn_start_request(
             "mode": if config.interaction_mode == InteractionMode::Plan { "plan" } else { "default" },
             "settings": {
                 "model": model,
-                "reasoning_effort": config.reasoning.unwrap_or_default().as_str(),
+                "reasoning_effort": config.reasoning.unwrap_or_default().clamped_str(),
                 "developer_instructions": if config.interaction_mode == InteractionMode::Plan {
                     "Create and explain a concrete implementation plan. Do not modify files or run mutation commands until the user switches to Build mode."
                 } else {
@@ -458,6 +519,18 @@ fn turn_start_request(
         "id": id,
         "method": "turn/start",
         "params": params
+    })
+}
+
+fn turn_steer_request(id: u64, thread_id: &str, turn_id: &str, text: &str) -> Value {
+    json!({
+        "id": id,
+        "method": "turn/steer",
+        "params": {
+            "threadId": thread_id,
+            "expectedTurnId": turn_id,
+            "input": [{ "type": "text", "text": text }]
+        }
     })
 }
 
@@ -652,13 +725,16 @@ pub async fn account_usage() -> Result<ProviderUsage, String> {
     Ok(usage)
 }
 
-fn approval_response(method: &str, id: Value, approved: bool, params: &Value) -> Value {
+fn approval_response(method: &str, id: Value, decision: ApprovalDecision, params: &Value) -> Value {
+    let approved = decision.allowed();
     let result = match method {
         "applyPatchApproval" | "execCommandApproval" => json!({
-            "decision": if approved {
-                json!("approved")
-            } else {
-                json!({ "denied": { "rejection": "User denied the request in Onyx" } })
+            "decision": match decision {
+                ApprovalDecision::AllowSession => json!("approved_for_session"),
+                ApprovalDecision::Allow => json!("approved"),
+                ApprovalDecision::Deny => {
+                    json!({ "denied": { "rejection": "User denied the request in Onyx" } })
+                }
             }
         }),
         "item/permissions/requestApproval" => json!({
@@ -783,10 +859,12 @@ async fn send_event(
 mod tests {
     use super::{
         approval_response, initialize_request, is_client_response, item_activity, thread_request,
-        turn_start_request,
+        turn_start_request, turn_steer_request,
     };
     use crate::{
-        model::{AccessMode, InteractionMode, ProviderId, SpeedMode},
+        model::{
+            AccessMode, ApprovalDecision, InteractionMode, ProviderId, ReasoningEffort, SpeedMode,
+        },
         providers::driver::ProviderSessionConfig,
     };
     use serde_json::json;
@@ -800,17 +878,39 @@ mod tests {
             model: Some("gpt-5.4".to_string()),
             workspace: PathBuf::from("/tmp/project"),
             continuation: Some("thread-1".to_string()),
-            reasoning: None,
-            speed_mode: SpeedMode::Standard,
-            interaction_mode: InteractionMode::Build,
-            access_mode: AccessMode::AutoAcceptEdits,
+            reasoning: Some(ReasoningEffort::High),
+            speed_mode: SpeedMode::Fast,
+            interaction_mode: InteractionMode::Plan,
+            access_mode: AccessMode::FullAccess,
         };
         let request = thread_request(2, &config);
         assert_eq!(request["method"], "thread/resume");
-        assert_eq!(request["params"]["approvalPolicy"], "on-request");
-        assert_eq!(request["params"]["sandbox"], "workspace-write");
+        assert_eq!(request["params"]["model"], "gpt-5.4");
+        assert_eq!(request["params"]["approvalPolicy"], "never");
+        assert_eq!(request["params"]["sandbox"], "danger-full-access");
+        assert_eq!(request["params"]["serviceTier"], "fast");
         let turn = turn_start_request(3, "thread-1", "hello", &config);
         assert_eq!(turn["params"]["input"][0]["type"], "text");
+        assert_eq!(turn["params"]["model"], "gpt-5.4");
+        assert_eq!(turn["params"]["effort"], "high");
+        assert_eq!(turn["params"]["serviceTier"], "fast");
+        assert_eq!(turn["params"]["approvalPolicy"], "never");
+        assert_eq!(turn["params"]["sandboxPolicy"]["type"], "dangerFullAccess");
+        assert_eq!(turn["params"]["collaborationMode"]["mode"], "plan");
+        assert_eq!(
+            turn["params"]["collaborationMode"]["settings"]["reasoning_effort"],
+            "high"
+        );
+    }
+
+    #[test]
+    fn steer_request_targets_the_active_turn() {
+        let request = turn_steer_request(7, "thread-1", "turn-9", "focus on the tests");
+        assert_eq!(request["method"], "turn/steer");
+        assert_eq!(request["params"]["threadId"], "thread-1");
+        assert_eq!(request["params"]["expectedTurnId"], "turn-9");
+        assert_eq!(request["params"]["input"][0]["type"], "text");
+        assert_eq!(request["params"]["input"][0]["text"], "focus on the tests");
     }
 
     #[test]
@@ -819,7 +919,7 @@ mod tests {
             approval_response(
                 "item/commandExecution/requestApproval",
                 json!("approval-7"),
-                true,
+                ApprovalDecision::Allow,
                 &json!({})
             ),
             json!({"id":"approval-7","result":{"decision":"accept"}})
@@ -828,7 +928,7 @@ mod tests {
             approval_response(
                 "item/fileChange/requestApproval",
                 json!(8),
-                false,
+                ApprovalDecision::Deny,
                 &json!({})
             )["result"]["decision"],
             "decline"
@@ -837,14 +937,33 @@ mod tests {
 
     #[test]
     fn legacy_approval_denial_matches_current_review_decision_schema() {
-        let response = approval_response("execCommandApproval", json!(3), false, &json!({}));
+        let response = approval_response(
+            "execCommandApproval",
+            json!(3),
+            ApprovalDecision::Deny,
+            &json!({}),
+        );
         assert_eq!(
             response["result"]["decision"],
             json!({ "denied": { "rejection": "User denied the request in Onyx" } })
         );
         assert_eq!(
-            approval_response("applyPatchApproval", json!(4), true, &json!({}))["result"]["decision"],
+            approval_response(
+                "applyPatchApproval",
+                json!(4),
+                ApprovalDecision::Allow,
+                &json!({})
+            )["result"]["decision"],
             "approved"
+        );
+        assert_eq!(
+            approval_response(
+                "execCommandApproval",
+                json!(5),
+                ApprovalDecision::AllowSession,
+                &json!({})
+            )["result"]["decision"],
+            "approved_for_session"
         );
     }
 
@@ -873,7 +992,7 @@ mod tests {
         let response = approval_response(
             "item/permissions/requestApproval",
             json!(9),
-            true,
+            ApprovalDecision::Allow,
             &json!({"permissions": permissions}),
         );
         assert_eq!(response["result"]["scope"], "turn");
@@ -882,8 +1001,12 @@ mod tests {
 
     #[test]
     fn mcp_elicitation_response_includes_required_metadata() {
-        let response =
-            approval_response("mcpServer/elicitation/request", json!(10), true, &json!({}));
+        let response = approval_response(
+            "mcpServer/elicitation/request",
+            json!(10),
+            ApprovalDecision::Allow,
+            &json!({}),
+        );
         assert_eq!(response["result"]["action"], "accept");
         assert!(response["result"]["content"].is_null());
         assert!(response["result"]["_meta"].is_null());

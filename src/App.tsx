@@ -10,6 +10,7 @@ import {
   type Component,
 } from "solid-js"
 import { Gauge, GitBranch, TimerReset } from "lucide-solid"
+import { listen } from "@tauri-apps/api/event"
 import { openUrl } from "@tauri-apps/plugin-opener"
 import { api } from "./lib/api"
 import {
@@ -26,6 +27,7 @@ import {
   workspaceName,
 } from "./lib/providers"
 import { deriveWorkspaceGitActions } from "./lib/workspace-actions"
+import { fetchUpdate, installUpdate } from "./lib/updater"
 import {
   applySessionEvent,
   mergeCommandSession,
@@ -37,6 +39,7 @@ import type {
   AgentSession,
   ApprovalRequest,
   EditorTarget,
+  NativeVoicePermissions,
   OpenRouterModel,
   OpenRouterStatus,
   OpenAiStatus,
@@ -50,13 +53,12 @@ import type {
   SessionEvent,
 } from "./lib/types"
 import { Composer } from "./components/Composer"
-import { ChatView } from "./components/ChatView"
 import { HomeView } from "./components/HomeView"
 import { SettingsDialog, type ColorScheme } from "./components/SettingsDialog"
 import { Titlebar, type TitlebarTab } from "./components/Titlebar"
 import { Transcript } from "./components/Transcript"
 import { VoiceHistoryView } from "./components/VoiceHistoryView"
-import { ZaiWordmark } from "./components/ZaiWordmark"
+import { applyDocumentTheme, storedColorScheme } from "./lib/theme"
 import {
   BottomTerminalPanel,
   GitCommitDialog,
@@ -73,7 +75,7 @@ import {
   type WorkspaceTerminal,
 } from "./components/workspace-panels"
 
-type Page = "home" | "draft" | "session" | "chat" | "voice"
+type Page = "home" | "draft" | "session" | "voice"
 const DRAFT_TAB_ID = "onyx:draft"
 const LAST_WORKSPACE_KEY = "onyx.last-workspace"
 const PREFERRED_EDITOR_KEY = "onyx.preferred-editor"
@@ -114,11 +116,6 @@ const emptyWorkspaceUi = (): SessionWorkspaceUi => ({
   terminalHeight: 280,
 })
 
-function storedColorScheme(): ColorScheme {
-  const value = localStorage.getItem("onyx.color-scheme") ?? localStorage.getItem("zai.color-scheme")
-  return value === "light" || value === "dark" ? value : "system"
-}
-
 function storedWorkspace(): string {
   return localStorage.getItem(LAST_WORKSPACE_KEY)?.trim() ?? ""
 }
@@ -149,6 +146,8 @@ const App: Component = () => {
   const [approvalBusy, setApprovalBusy] = createSignal(false)
   const [notice, setNotice] = createSignal<string | null>(null)
   const [noticeKind, setNoticeKind] = createSignal<"error" | "success">("error")
+  const [availableUpdate, setAvailableUpdate] = createSignal<Awaited<ReturnType<typeof fetchUpdate>>>(null)
+  const [installingUpdate, setInstallingUpdate] = createSignal(false)
   const [colorScheme, setColorScheme] = createSignal<ColorScheme>(storedColorScheme())
   const [workspaceUiBySession, setWorkspaceUiBySession] = createSignal<Record<string, SessionWorkspaceUi>>({})
   const [repoSummary, setRepoSummary] = createSignal<RepoSummary | null>(null)
@@ -163,6 +162,16 @@ const App: Component = () => {
   const current = createMemo(() => sessions().find((session) => session.id === currentId()) ?? null)
   const draftSelectedModel = createMemo(() =>
     modelsForBrand(newBrand(), providerModels(), openRouterModels()).find((model) => model.id === newModel()),
+  )
+  const currentSelectedModel = createMemo(() => {
+    const session = current()
+    return session
+      ? modelsForBrand(session.providerBrand, providerModels(), openRouterModels())
+        .find((model) => model.id === session.model)
+      : undefined
+  })
+  const currentContextLimit = createMemo(() =>
+    current()?.contextUsage?.maxTokens ?? currentSelectedModel()?.contextLength ?? null,
   )
   const activeApproval = createMemo(() => approvals().find((request) => request.sessionId === currentId()) ?? null)
   const activeWorkspaceUi = createMemo(() => {
@@ -181,12 +190,7 @@ const App: Component = () => {
 
   const applyTheme = () => {
     const scheme = colorScheme()
-    const resolved = scheme === "system"
-      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
-      : scheme
-    document.documentElement.dataset.colorScheme = resolved
-    document.documentElement.dataset.theme = "oc-2"
-    document.body.dataset.newLayout = ""
+    applyDocumentTheme(scheme)
   }
 
   createEffect(() => {
@@ -334,17 +338,42 @@ const App: Component = () => {
   }
 
   onMount(() => {
+    // Game-launcher style updates: quietly ask the release feed once the app
+    // is settled, and surface a one-click install banner when a build exists.
+    const updateTimer = window.setTimeout(() => {
+      void fetchUpdate()
+        .then((update) => update && setAvailableUpdate(() => update))
+        .catch(() => undefined)
+    }, 5000)
+    onCleanup(() => window.clearTimeout(updateTimer))
+
     let disposed = false
     let unlisten: () => void = () => undefined
 
     void (async () => {
       try {
+        const disposePermissionNudge = await listen<NativeVoicePermissions>(
+          "onyx://native-permissions",
+          (event) => {
+            const missing = [
+              !event.payload.inputMonitoring && "Input Monitoring (hold-to-dictate shortcuts)",
+              !event.payload.accessibility && "Accessibility (pasting the transcript)",
+            ].filter(Boolean)
+            if (!missing.length) return
+            showError(new Error(
+              `Voice needs macOS permissions: ${missing.join(" and ")}. Enable Onyx in System Settings → Privacy & Security, then relaunch. Settings → Voice has an Enable button.`,
+            ))
+          },
+        )
         const disposeEvents = await api.listen(
           handleSessionEvent,
           (request) => setApprovals((items) =>
             items.some((item) => item.id === request.id) ? items : [...items, request],
           ),
-        )
+        ).catch((error) => {
+          disposePermissionNudge()
+          throw error
+        })
         let disposeTerminal: () => void
         let disposeTerminalViewport: () => void = () => undefined
         try {
@@ -369,12 +398,14 @@ const App: Component = () => {
           disposeEvents()
           disposeTerminal()
           disposeTerminalViewport()
+          disposePermissionNudge()
           return
         }
         unlisten = () => {
           disposeTerminal()
           disposeTerminalViewport()
           disposeEvents()
+          disposePermissionNudge()
         }
         await load()
       } catch (error) {
@@ -589,11 +620,22 @@ const App: Component = () => {
     }
   }
 
+  const steerSession = async (content: string) => {
+    const session = current()
+    if (!session) return
+    try {
+      mergeReturnedSession(await api.steerTurn(session.id, content))
+    } catch (error) {
+      showError(error)
+      throw error
+    }
+  }
+
   const updateCurrentOptions = async (patch: Partial<Pick<AgentSession, "provider" | "providerBrand" | "model" | "reasoning" | "speedMode" | "interactionMode" | "accessMode">>) => {
     const session = current()
     if (!session) return
     try {
-      mergeReturnedSession(await api.updateSessionOptions({
+      const updated = await api.updateSessionOptions({
         id: session.id,
         provider: patch.provider ?? session.provider,
         providerBrand: patch.providerBrand ?? session.providerBrand,
@@ -602,7 +644,9 @@ const App: Component = () => {
         speedMode: patch.speedMode ?? session.speedMode,
         interactionMode: patch.interactionMode ?? session.interactionMode,
         accessMode: patch.accessMode ?? session.accessMode,
-      }))
+      })
+      mergeReturnedSession(updated)
+      showNotice("Session options saved. The native provider runtime will reconnect with them on the next turn.", "success")
     } catch (error) { showError(error) }
   }
 
@@ -612,12 +656,12 @@ const App: Component = () => {
     try { await api.cancelTurn(session.id) } catch (error) { showError(error) }
   }
 
-  const respondApproval = async (allow: boolean) => {
+  const respondApproval = async (allow: boolean, forSession = false) => {
     const request = activeApproval()
     if (!request) return
     setApprovalBusy(true)
     try {
-      await api.respondApproval(request.id, allow)
+      await api.respondApproval(request.id, allow, forSession)
       setApprovals((items) => items.filter((item) => item.id !== request.id))
     } catch (error) {
       showError(error)
@@ -648,6 +692,21 @@ const App: Component = () => {
       }
     } finally {
       if (!background) setRepoLoading(false)
+    }
+  }
+
+  const initializeCurrentGit = async () => {
+    const session = current()
+    if (!session || repoSummary()?.isRepo) {
+      await refreshRepo(true)
+      return
+    }
+    try {
+      const result = await api.initGit(session.workspace)
+      showNotice(result.message, "success")
+      await refreshRepo()
+    } catch (error) {
+      showError(error)
     }
   }
 
@@ -708,7 +767,15 @@ const App: Component = () => {
     if (!session) return
     try {
       let resourceId: string | undefined
-      let title = kind === "browser" ? "Browser" : kind === "terminal" ? "Terminal" : kind === "files" ? "Files" : "Diff"
+      let title = kind === "chat"
+        ? "Chat"
+        : kind === "browser"
+          ? "Browser"
+          : kind === "terminal"
+            ? "Terminal"
+            : kind === "files"
+              ? "Files"
+              : "Diff"
       if (kind === "terminal") {
         const terminal = await api.terminalOpen(session.workspace, 100, 30, selectedWslDistribution())
         resourceId = terminal.id
@@ -731,6 +798,31 @@ const App: Component = () => {
     } catch (error) {
       showError(error)
     }
+  }
+
+  const openChatPanel = () => {
+    const session = current() ?? sessions()[0]
+    if (!session) {
+      openDraft()
+      showNotice("Start a coding session first, then Chat will stay in its right panel.", "error")
+      return
+    }
+    if (currentId() !== session.id || page() !== "session") openSession(session.id)
+    updateWorkspaceUi(session.id, (ui) => {
+      const existing = ui.surfaces.find((surface) => surface.kind === "chat")
+      if (existing) return { ...ui, rightPanelOpen: true, activeSurfaceId: existing.id }
+      const surface: WorkspaceSurface = {
+        id: crypto.randomUUID(),
+        kind: "chat",
+        title: "Chat",
+      }
+      return {
+        ...ui,
+        rightPanelOpen: true,
+        surfaces: [...ui.surfaces, surface],
+        activeSurfaceId: surface.id,
+      }
+    })
   }
 
   const closeRightSurface = (surfaceId: string) => {
@@ -812,6 +904,18 @@ const App: Component = () => {
     if (ui.terminals.length === 0) await newBottomTerminal()
   }
 
+  const openBottomPanelFromChrome = () => {
+    const session = current() ?? sessions()[0]
+    if (!session) {
+      showNotice("Start a coding session before opening the terminal drawer.", "error")
+      return
+    }
+    if (currentId() !== session.id || page() !== "session") openSession(session.id)
+    const ui = workspaceUiBySession()[session.id] ?? emptyWorkspaceUi()
+    updateWorkspaceUi(session.id, (value) => ({ ...value, bottomPanelOpen: true }))
+    if (ui.terminals.length === 0) queueMicrotask(() => void newBottomTerminal())
+  }
+
   const choosePreferredEditor = (target: string) => {
     setPreferredEditor(target)
     localStorage.setItem(PREFERRED_EDITOR_KEY, target)
@@ -883,7 +987,13 @@ const App: Component = () => {
         sessions={sessions().filter((session) => !openSessionIds().includes(session.id)).map((session) => ({ id: session.id, label: session.title, project: workspaceName(session.workspace) }))}
         onOpenSession={openSession}
         onHome={() => setPage("home")}
-        onChat={() => setPage("chat")}
+        showLayoutControls={page() !== "session"}
+        bottomPanelOpen={page() === "session" && activeWorkspaceUi().bottomPanelOpen}
+        rightPanelOpen={page() === "session" && activeWorkspaceUi().rightPanelOpen}
+        bottomPanelAvailable={sessions().length > 0}
+        rightPanelAvailable={sessions().length > 0}
+        onToggleBottomPanel={openBottomPanelFromChrome}
+        onToggleRightPanel={openChatPanel}
         onOpenSettings={() => setSettingsOpen(true)}
         profile={account().profile}
         onSignOut={() => signOut().catch(showError)}
@@ -900,19 +1010,8 @@ const App: Component = () => {
               onDelete={(id) => void removeSession(id)}
               onChooseWorkspace={chooseDraftWorkspace}
               onSettings={() => setSettingsOpen(true)}
-              onChat={() => setPage("chat")}
+              onChat={openChatPanel}
               onVoice={() => setPage("voice")}
-            />
-          </Match>
-
-          <Match when={page() === "chat"}>
-            <ChatView
-              providers={providers()}
-              providerModels={providerModels()}
-              openRouterModels={openRouterModels()}
-              openAi={openAi()}
-              profile={account().profile}
-              onOpenSettings={() => setSettingsOpen(true)}
             />
           </Match>
 
@@ -991,11 +1090,11 @@ const App: Component = () => {
                           providers={providers()}
                           providerModels={providerModels()}
                           openRouterModels={openRouterModels()}
-                          contextUsage={current()!.contextUsage}
-                          providerUsage={currentProviderUsage()}
+                          locked={current()!.status === "running" || current()!.status === "waiting_approval"}
                           hero={false}
                           placeholder="Ask anything…"
                           running={current()!.status === "running" || current()!.status === "waiting_approval"}
+                          steerable={current()!.provider === "claude" || current()!.provider === "codex"}
                           approval={activeApproval()}
                           approvalBusy={approvalBusy()}
                           onBrand={(brand) => {
@@ -1014,9 +1113,52 @@ const App: Component = () => {
                           onWorkspace={() => undefined}
                           onAttach={api.chooseFiles}
                           onSubmit={continueSession}
+                          onSteer={steerSession}
                           onCancel={cancel}
                           onApproval={respondApproval}
                         />
+                        <div
+                          class="zai-new-session__workspace-row zai-session-statusbar"
+                          title={`${current()!.provider} · ${current()!.model ?? "default"} · ${current()!.reasoning ?? "provider default"} reasoning · ${current()!.speedMode} · ${current()!.interactionMode} · ${current()!.accessMode}. Changes reconnect or resume the provider runtime before the next turn.`}
+                        >
+                          <button onClick={openWorkspace} title={current()!.workspace}>
+                            <span class="zai-project-avatar">
+                              {workspaceName(current()!.workspace).slice(0, 1).toUpperCase()}
+                            </span>
+                            <span>{workspaceName(current()!.workspace)}</span>
+                            <span class="zai-workspace-chevron">⌄</span>
+                          </button>
+                          <span class="zai-workspace-divider">/</span>
+                          <button
+                            class="zai-git-status"
+                            onClick={() => void initializeCurrentGit()}
+                            title={repoSummary()?.isRepo ? "Git repository ready" : "Initialize a Git repository"}
+                          >
+                            <GitBranch size={14} />
+                            {repoSummary()?.isRepo ? (repoSummary()?.branch ?? "Git") : "No Git"}
+                          </button>
+                          <span class="zai-workspace-divider">/</span>
+                          <span>
+                            <Gauge aria-hidden="true" />
+                            Context{" "}
+                            <Show
+                              when={currentContextLimit()}
+                              fallback="not reported"
+                            >
+                              {compactTokens(current()!.contextUsage?.usedTokens ?? 0)} / {compactTokens(currentContextLimit()!)}
+                            </Show>
+                          </span>
+                          <span class="zai-workspace-divider">/</span>
+                          <span>
+                            <TimerReset aria-hidden="true" />
+                            <Show
+                              when={currentProviderUsage()?.windows?.length}
+                              fallback="Usage not reported"
+                            >
+                              {currentProviderUsage()!.windows.map((window) => `${window.label} ${Math.round(window.usedPercent)}%`).join(" · ")}
+                            </Show>
+                          </span>
+                        </div>
                       </div>
                     </section>
 
@@ -1031,7 +1173,12 @@ const App: Component = () => {
                       onAddSurface={(kind) => void addRightSurface(kind)}
                       onClosePanel={() => updateActiveWorkspaceUi((ui) => ({ ...ui, rightPanelOpen: false }))}
                       renderSurface={(surface) => (
-                        <WorkspaceSurfaceView surface={surface} workspace={current()!.workspace} onError={showError} />
+                        <WorkspaceSurfaceView
+                          surface={surface}
+                          workspace={current()!.workspace}
+                          suspended={settingsOpen() || commitOpen()}
+                          onError={showError}
+                        />
                       )}
                     />
                   </div>
@@ -1058,7 +1205,6 @@ const App: Component = () => {
             <section class="zai-new-session">
               <div class="zai-new-session__stage">
                 <div class="zai-new-session__content">
-                  <ZaiWordmark aria-label="Onyx" />
                   <div class="zai-new-session__composer">
                     <Composer
                       provider={newProvider()}
@@ -1148,6 +1294,27 @@ const App: Component = () => {
         onCommit={commitWorkspace}
       />
       <Show when={notice()}><div class="zai-toast" data-kind={noticeKind()} role="status">{notice()}</div></Show>
+      <Show when={availableUpdate()} keyed>
+        {(update) => (
+          <div class="zai-update-banner" role="status">
+            <span><strong>Onyx {update.version}</strong> is ready to install.</span>
+            <button
+              class="zai-neutral-button zai-update-install"
+              disabled={installingUpdate()}
+              onClick={() => {
+                setInstallingUpdate(true)
+                void installUpdate(update).catch((error) => {
+                  setInstallingUpdate(false)
+                  showError(error)
+                })
+              }}
+            >
+              {installingUpdate() ? "Installing…" : "Update & restart"}
+            </button>
+            <button class="zai-update-dismiss" onClick={() => setAvailableUpdate(null)} aria-label="Dismiss update">✕</button>
+          </div>
+        )}
+      </Show>
     </div>
   )
 }

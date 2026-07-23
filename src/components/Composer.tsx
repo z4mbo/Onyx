@@ -4,7 +4,6 @@ import {
   BrainCircuit,
   Check,
   ChevronDown,
-  Gauge,
   LoaderCircle,
   Lock,
   LockOpen,
@@ -12,7 +11,6 @@ import {
   PencilRuler,
   Plus,
   ShieldAlert,
-  TimerReset,
   Zap,
 } from "lucide-solid"
 import {
@@ -24,14 +22,12 @@ import {
 import type {
   AccessMode,
   ApprovalRequest,
-  ContextUsage,
   InteractionMode,
   OpenRouterModel,
   ProviderBrand,
   ProviderId,
   ProviderModelOption,
   ProviderStatus,
-  ProviderUsage,
   ReasoningEffort,
   SpeedMode,
 } from "../lib/types"
@@ -50,10 +46,10 @@ export interface ComposerProps {
   providers: ProviderStatus[]
   providerModels: Partial<Record<ProviderId, ProviderModelOption[]>>
   openRouterModels: OpenRouterModel[]
-  contextUsage?: ContextUsage | null
-  providerUsage?: ProviderUsage | null
   locked?: boolean
   running?: boolean
+  /** Whether the provider transport accepts user messages mid-turn. */
+  steerable?: boolean
   hero?: boolean
   approval?: ApprovalRequest | null
   approvalBusy?: boolean
@@ -68,14 +64,9 @@ export interface ComposerProps {
   onWorkspace: (workspace: string) => void
   onAttach?: () => Promise<string[]>
   onSubmit: (content: string) => Promise<void>
+  onSteer?: (content: string) => Promise<void>
   onCancel?: () => void | Promise<void>
-  onApproval?: (allow: boolean) => void | Promise<void>
-}
-
-function compactTokenCount(tokens: number) {
-  if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(1))}M`
-  if (tokens >= 1_000) return `${Number((tokens / 1_000).toFixed(0))}K`
-  return `${tokens}`
+  onApproval?: (allow: boolean, forSession?: boolean) => void | Promise<void>
 }
 
 function titleCase(value: string) {
@@ -87,7 +78,6 @@ export const Composer: Component<ComposerProps> = (props) => {
   const [content, setContent] = createSignal("")
   const [submitting, setSubmitting] = createSignal(false)
   const [respondingApproval, setRespondingApproval] = createSignal(false)
-  const [usageOpen, setUsageOpen] = createSignal(false)
   let textarea: HTMLTextAreaElement | undefined
 
   const hero = createMemo(() => props.hero ?? !props.locked)
@@ -99,15 +89,14 @@ export const Composer: Component<ComposerProps> = (props) => {
   const speedOptions = createMemo(() => selectedModel()?.speeds ?? ["standard"])
   const selectedAccess = createMemo(() => accessModes.find((item) => item.id === props.accessMode) ?? accessModes[0])
   const accessIcon = createMemo(() => props.accessMode === "full_access" ? LockOpen : props.accessMode === "auto_accept_edits" ? PenLine : Lock)
-  const contextLimit = createMemo(() => props.contextUsage?.maxTokens ?? selectedModel()?.contextLength ?? null)
-  const contextPercent = createMemo(() => {
-    const limit = contextLimit()
-    return limit ? Math.min(100, Math.max(0, ((props.contextUsage?.usedTokens ?? 0) / limit) * 100)) : 0
+  const canSteer = createMemo(() => !!props.running && !!props.steerable && !!props.onSteer && !props.approval)
+  const placeholder = createMemo(() => {
+    if (canSteer()) return "Steer the agent — your message lands mid-run…"
+    return props.placeholder?.trim() || (props.workspace ? "Tell Onyx what to build…" : "Choose a project, then tell Onyx what to build…")
   })
-  const placeholder = createMemo(() => props.placeholder?.trim() || (props.workspace ? "Tell Onyx what to build…" : "Choose a project, then tell Onyx what to build…"))
   const approvalPending = createMemo(() => props.approvalBusy || respondingApproval())
   const sendDisabled = createMemo(() =>
-    !content().trim() || submitting() || props.running || !!props.approval ||
+    !content().trim() || submitting() || (props.running && !canSteer()) || !!props.approval ||
     providerStatus()?.available === false || !props.model,
   )
 
@@ -122,7 +111,8 @@ export const Composer: Component<ComposerProps> = (props) => {
     if (!value || sendDisabled()) return
     setSubmitting(true)
     try {
-      await props.onSubmit(value)
+      if (canSteer()) await props.onSteer!(value)
+      else await props.onSubmit(value)
       setContent("")
       queueMicrotask(resize)
     } finally {
@@ -130,11 +120,11 @@ export const Composer: Component<ComposerProps> = (props) => {
     }
   }
 
-  const decideApproval = async (allow: boolean) => {
+  const decideApproval = async (allow: boolean, forSession = false) => {
     if (!props.approval || !props.onApproval || approvalPending()) return
     setRespondingApproval(true)
     try {
-      await props.onApproval(allow)
+      await props.onApproval(allow, forSession)
     } finally {
       setRespondingApproval(false)
     }
@@ -185,7 +175,7 @@ export const Composer: Component<ComposerProps> = (props) => {
                   if (event.key === "Escape" && props.running && props.onCancel) { event.preventDefault(); void props.onCancel(); return }
                   if (event.key !== "Enter" || event.shiftKey || event.isComposing) return
                   event.preventDefault()
-                  if (!event.repeat && !props.running) void submit()
+                  if (!event.repeat && (!props.running || canSteer())) void submit()
                 }}
               />
             </div>
@@ -254,30 +244,6 @@ export const Composer: Component<ComposerProps> = (props) => {
               </div>
 
               <div class="zai-composer__primary-actions">
-                <div class="zai-context-popover-wrap">
-                  <button type="button" class="zai-composer__context-meter" style={{ "--context-progress": `${contextPercent() * 3.6}deg` }} aria-label="Context and usage" aria-expanded={usageOpen()} onClick={() => setUsageOpen((value) => !value)}>
-                    <Gauge aria-hidden="true" size={15} />
-                  </button>
-                  <button type="button" class="zai-composer__usage-meter" aria-label="Subscription usage limits" aria-expanded={usageOpen()} onClick={() => setUsageOpen((value) => !value)}>
-                    <TimerReset aria-hidden="true" size={13} />
-                    <span>{props.providerUsage?.windows?.[0] ? `${props.providerUsage.windows[0].label} ${Math.round(props.providerUsage.windows[0].usedPercent)}%` : "Usage —"}</span>
-                  </button>
-                  <Show when={usageOpen()}>
-                    <div class="zai-context-popover" role="dialog" aria-label="Context and usage limits">
-                      <div class="zai-context-popover__header"><strong>Context & usage</strong><span>{props.providerUsage?.plan ?? selectedBrand().name}</span></div>
-                      <div class="zai-context-popover__row"><span>Context window</span><strong>{props.contextUsage ? `${compactTokenCount(props.contextUsage.usedTokens)} / ${contextLimit() ? compactTokenCount(contextLimit()!) : "—"}` : contextLimit() ? `0 / ${compactTokenCount(contextLimit()!)}` : "Not reported"}</strong></div>
-                      <Show when={props.providerUsage?.windows?.length} fallback={<p>Usage limits are shown only when the connected subscription reports them.</p>}>
-                        <For each={props.providerUsage!.windows}>{(window) => (
-                          <div class="zai-usage-window">
-                            <div><span>{window.label}</span><strong>{Math.round(window.usedPercent)}%</strong></div>
-                            <i><b style={{ width: `${Math.min(100, window.usedPercent)}%` }} /></i>
-                          </div>
-                        )}</For>
-                      </Show>
-                    </div>
-                  </Show>
-                </div>
-
                 <Show when={props.running} fallback={
                   <button type="submit" class="zai-composer__submit" disabled={sendDisabled()} aria-label="Send message" title="Send (Enter)">
                     <Show when={submitting()} fallback={<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>}>
@@ -285,6 +251,13 @@ export const Composer: Component<ComposerProps> = (props) => {
                     </Show>
                   </button>
                 }>
+                  <Show when={canSteer()}>
+                    <button type="submit" class="zai-composer__submit zai-composer__steer" disabled={sendDisabled()} aria-label="Steer the running turn" title="Steer (Enter) — the agent sees this without restarting">
+                      <Show when={submitting()} fallback={<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M2.5 7H11M11 7L7.5 3.5M11 7L7.5 10.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>}>
+                        <LoaderCircle aria-hidden="true" class="zai-composer__spinner" size={15} />
+                      </Show>
+                    </button>
+                  </Show>
                   <button type="button" class="zai-composer__submit zai-composer__stop" disabled={!props.onCancel} onClick={() => void props.onCancel?.()} aria-label="Stop generation" title="Stop (Esc)"><svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><rect x="2" y="2" width="8" height="8" rx="1.5" /></svg></button>
                 </Show>
               </div>
@@ -301,6 +274,7 @@ export const Composer: Component<ComposerProps> = (props) => {
               </div>
               <div class="zai-composer__permission-tray"><span class="zai-composer__permission-risk">{approval.risk}</span><div class="zai-composer__permission-actions">
                 <button type="button" class="zai-composer__permission-button" disabled={!props.onApproval || approvalPending()} onClick={() => void decideApproval(false)}>Deny</button>
+                <button type="button" class="zai-composer__permission-button" title="Allow and remember this kind of action for the rest of the session" disabled={!props.onApproval || approvalPending()} onClick={() => void decideApproval(true, true)}>Allow for session</button>
                 <button type="button" class="zai-composer__permission-button zai-composer__permission-button--allow" disabled={!props.onApproval || approvalPending()} onClick={() => void decideApproval(true)}><Show when={approvalPending()} fallback={<><Check size={14} /> Allow once</>}><LoaderCircle class="zai-composer__spinner" size={14} /> Responding…</Show></button>
               </div></div>
             </div>

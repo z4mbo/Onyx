@@ -48,6 +48,9 @@ pub enum ReasoningEffort {
     High,
     Xhigh,
     Max,
+    /// t3code-style pseudo-level: engines receive xhigh plus an `ultracode`
+    /// settings flag (Claude Code only).
+    Ultracode,
 }
 
 impl ReasoningEffort {
@@ -60,6 +63,15 @@ impl ReasoningEffort {
             Self::High => "high",
             Self::Xhigh => "xhigh",
             Self::Max => "max",
+            Self::Ultracode => "ultracode",
+        }
+    }
+
+    /// The effort value engines that lack the ultracode pseudo-level accept.
+    pub fn clamped_str(self) -> &'static str {
+        match self {
+            Self::Ultracode => "xhigh",
+            other => other.as_str(),
         }
     }
 }
@@ -96,6 +108,21 @@ pub enum AccessMode {
     ApprovalRequired,
     AutoAcceptEdits,
     FullAccess,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecision {
+    Deny,
+    Allow,
+    /// Allow and let the provider remember the grant for the rest of the session.
+    AllowSession,
+}
+
+impl ApprovalDecision {
+    pub fn allowed(self) -> bool {
+        !matches!(self, Self::Deny)
+    }
 }
 
 impl ProviderId {
@@ -412,7 +439,7 @@ impl Default for VoiceSettings {
             overlay_position: OverlayPosition::BottomCenter,
             overlay_margin: 18,
             transcription_provider: "openrouter".into(),
-            transcription_model: "openai/whisper-large-v3".into(),
+            transcription_model: "openai/whisper-large-v3-turbo".into(),
             agent_provider: ProviderId::Openrouter,
             agent_model: "openrouter/auto".into(),
             web_provider: ProviderId::Openrouter,

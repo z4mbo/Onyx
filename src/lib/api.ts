@@ -11,6 +11,7 @@ import type {
   ChatRequest,
   EditorTarget,
   GitActionResult,
+  NativeVoicePermissions,
   OpenRouterModel,
   OpenRouterStatus,
   OpenAiStatus,
@@ -178,6 +179,10 @@ export const api = {
     tauri
       ? invoke<AgentSession>("send_message", { input: { sessionId, content } })
       : sendMockMessage(sessionId, content),
+  steerTurn: (sessionId: string, content: string) =>
+    tauri
+      ? invoke<AgentSession>("steer_turn", { input: { sessionId, content } })
+      : Promise.reject(new Error("Steering needs the desktop build.")),
   cancelTurn: (sessionId: string) => {
     if (tauri) return invoke<void>("cancel_turn", { sessionId })
     mockTurns.set(sessionId, (mockTurns.get(sessionId) ?? 0) + 1)
@@ -310,7 +315,7 @@ export const api = {
       ? invoke<VoiceSettings>("get_voice_settings")
       : Promise.resolve<VoiceSettings>({
           dictationShortcut: "Ctrl+Shift (hold)", agentShortcut: "Ctrl+Alt (hold)", overlayPosition: "bottom_center",
-          overlayMargin: 18, transcriptionProvider: "openrouter", transcriptionModel: "openai/whisper-large-v3",
+          overlayMargin: 18, transcriptionProvider: "openrouter", transcriptionModel: "openai/whisper-large-v3-turbo",
           agentProvider: "openrouter", agentModel: "openrouter/auto",
           webProvider: "openrouter", webModel: "openrouter/auto",
           filesProvider: "codex", filesModel: "default",
@@ -320,6 +325,16 @@ export const api = {
         }),
   applyVoiceSettings: (settings: VoiceSettings) =>
     tauri ? invoke<VoiceSettings>("apply_voice_settings", { settings }) : Promise.resolve(settings),
+  requestMicrophonePermission: () =>
+    tauri ? invoke<string>("request_microphone_permission") : Promise.resolve("webview"),
+  nativeVoicePermissions: () =>
+    tauri
+      ? invoke<NativeVoicePermissions>("native_voice_permissions")
+      : Promise.resolve({ inputMonitoring: true, accessibility: true }),
+  requestNativeVoicePermissions: () =>
+    tauri
+      ? invoke<NativeVoicePermissions>("request_native_voice_permissions")
+      : Promise.resolve({ inputMonitoring: true, accessibility: true }),
   transcribeAudio: (audioBase64: string, format: string) =>
     tauri
       ? invoke<TranscriptionReply>("transcribe_audio", { request: { audioBase64, format } })
@@ -332,16 +347,12 @@ export const api = {
     ? invoke<ActiveAppContext>("active_app_context")
     : Promise.resolve({ name: "Browser preview", process: "browser", accent: "#7c6ff2", symbol: "O" }),
   setAgentExpanded: (expanded: boolean) => tauri ? invoke<void>("set_agent_expanded", { expanded }) : Promise.resolve(),
+  setAgentOverlayMode: (mode: "inactive" | "listening" | "expanded") =>
+    tauri ? invoke<void>("set_agent_overlay_mode", { mode }) : Promise.resolve(),
   hideWindow: (label: string) => tauri ? invoke<void>("hide_window", { label }) : Promise.resolve(),
   showMainWindow: () => tauri ? invoke<void>("show_main_window") : Promise.resolve(),
-  openProviderWeb: (provider: "chatgpt" | "claude" | "gemini" | "grok") => tauri
-    ? invoke<void>("open_provider_web", { provider })
-    : Promise.resolve(window.open(({
-        chatgpt: "https://chatgpt.com/",
-        claude: "https://claude.ai/new",
-        gemini: "https://gemini.google.com/app",
-        grok: "https://grok.com/",
-      } as const)[provider], "_blank", "noopener,noreferrer")).then(() => undefined),
+  openProviderWeb: (_provider: "chatgpt" | "claude" | "gemini" | "grok") =>
+    Promise.reject(new Error("Official provider chats now open inside the session sidebar.")),
   platform: () => tauri ? invoke<string>("platform") : Promise.resolve("browser"),
   chatSend: (request: ChatRequest) => tauri
     ? invoke<ChatReply>("chat_send", { request })
@@ -353,8 +364,8 @@ export const api = {
     ? invoke<VideoJob>("start_video", { request: { model, prompt, aspectRatio } })
     : Promise.resolve({ id: crypto.randomUUID(), status: "completed", pollingUrl: "", contentUrl: null, error: null }),
   pollVideo: (id: string) => tauri ? invoke<VideoJob>("poll_video", { id }) : Promise.resolve({ id, status: "completed" as const, pollingUrl: "", contentUrl: null, error: null }),
-  respondApproval: (id: string, allow: boolean) =>
-    tauri ? invoke<void>("respond_approval", { id, allow }) : Promise.resolve(),
+  respondApproval: (id: string, allow: boolean, forSession = false) =>
+    tauri ? invoke<void>("respond_approval", { id, allow, forSession }) : Promise.resolve(),
 
   listen: async (
     onSession: (event: SessionEvent) => void,

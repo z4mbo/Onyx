@@ -1,6 +1,6 @@
 export type ProviderId = "claude" | "codex" | "gemini" | "kimi" | "openrouter"
 export type ProviderBrand = "openai" | "anthropic" | "google" | "xai" | "moonshot" | "openrouter"
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode"
 export type SpeedMode = "standard" | "fast"
 export type InteractionMode = "build" | "plan"
 export type AccessMode = "approval_required" | "auto_accept_edits" | "full_access"
@@ -219,6 +219,11 @@ export interface VoiceHistoryItem {
 export interface TranscriptionReply {
   text: string
   model: string
+}
+
+export interface NativeVoicePermissions {
+  inputMonitoring: boolean
+  accessibility: boolean
 }
 
 export interface ActiveAppContext {

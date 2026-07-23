@@ -8,7 +8,10 @@ use super::{
     },
 };
 use crate::{
-    model::{ApprovalRequest, Message, MessageKind, MessageRole, ProviderId, SessionEvent},
+    model::{
+        ApprovalDecision, ApprovalRequest, Message, MessageKind, MessageRole, ProviderId,
+        SessionEvent,
+    },
     openrouter::ApprovalRegistry,
 };
 use chrono::Utc;
@@ -66,6 +69,9 @@ struct SessionSlot {
 pub struct ProviderRuntime {
     drivers: HashMap<ProviderId, Arc<dyn ProviderDriver>>,
     sessions: ParkingMutex<HashMap<String, Arc<SessionSlot>>>,
+    /// Live steering channels for sessions whose transport accepts mid-turn
+    /// user messages; entries exist only while a turn is running.
+    steerers: ParkingMutex<HashMap<String, mpsc::UnboundedSender<String>>>,
 }
 
 impl ProviderRuntime {
@@ -86,7 +92,24 @@ impl ProviderRuntime {
         Self {
             drivers,
             sessions: ParkingMutex::new(HashMap::new()),
+            steerers: ParkingMutex::new(HashMap::new()),
         }
+    }
+
+    /// Queues a user message into the running turn of this session. Fails when
+    /// no turn is active or the provider transport cannot steer mid-turn.
+    pub fn steer(&self, session_id: &str, text: String) -> Result<(), String> {
+        let sender = self
+            .steerers
+            .lock()
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| {
+                "This session has no running turn that accepts steering messages".to_string()
+            })?;
+        sender
+            .send(text)
+            .map_err(|_| "The running turn stopped accepting steering messages".to_string())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -123,8 +146,14 @@ impl ProviderRuntime {
             return Err("Provider runtime returned the wrong session adapter".to_string());
         }
         let (sender, mut receiver) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+        let (steer_sender, steer_receiver) = mpsc::unbounded_channel();
+        if session.supports_steering() {
+            self.steerers
+                .lock()
+                .insert(session_id.clone(), steer_sender);
+        }
         let mut accumulator = TurnAccumulator::new(session.continuation());
-        let mut turn = session.run_turn(&prompt, &cancellation, sender);
+        let mut turn = session.run_turn(&prompt, &cancellation, sender, steer_receiver);
         let mut events_open = true;
 
         let mut result = loop {
@@ -151,6 +180,7 @@ impl ProviderRuntime {
             }
         };
         drop(turn);
+        self.steerers.lock().remove(&session_id);
 
         if result.is_ok() {
             while let Ok(event) = receiver.try_recv() {
@@ -196,6 +226,7 @@ impl ProviderRuntime {
     }
 
     pub async fn remove_session(&self, session_id: &str) {
+        self.steerers.lock().remove(session_id);
         let slot = self.sessions.lock().remove(session_id);
         if let Some(slot) = slot {
             slot.session.lock().await.shutdown().await;
@@ -413,7 +444,7 @@ async fn relay_approval(
     };
     if let Err(error) = app.emit("onyx://approval", request) {
         approvals.lock().remove(&id);
-        let _ = responder.send(false);
+        let _ = responder.send(ApprovalDecision::Deny);
         return Err(error.to_string());
     }
 
@@ -421,14 +452,14 @@ async fn relay_approval(
         _ = cancellation.cancelled() => Err("Turn cancelled".to_string()),
         result = timeout(APPROVAL_TIMEOUT, receiver) => {
             match result {
-                Ok(Ok(allow)) => Ok(allow),
+                Ok(Ok(decision)) => Ok(decision),
                 Ok(Err(_)) => Err("Approval request was closed".to_string()),
                 Err(_) => Err("Approval request timed out".to_string()),
             }
         }
     };
     approvals.lock().remove(&id);
-    let _ = responder.send(decision.as_ref().copied().unwrap_or(false));
+    let _ = responder.send(*decision.as_ref().unwrap_or(&ApprovalDecision::Deny));
     decision.map(|_| ())
 }
 

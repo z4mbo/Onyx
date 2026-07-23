@@ -5,7 +5,7 @@ use reqwest::{
     multipart::{Form, Part},
 };
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::{sync::LazyLock, time::Duration};
 
 const SERVICE: &str = "com.z4mbo.onyx";
 const ACCOUNT: &str = "openai-api";
@@ -15,6 +15,15 @@ const MAX_AUDIO_BYTES: usize = 24 * 1024 * 1024;
 const MAX_IMAGE_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SPEECH_BYTES: usize = 24 * 1024 * 1024;
 const MAX_ERROR_BYTES: usize = 16 * 1024;
+static TRANSCRIPTION_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
+    LazyLock::new(|| Client::builder().timeout(Duration::from_secs(180)).build());
+
+fn transcription_client() -> Result<&'static Client, String> {
+    match &*TRANSCRIPTION_CLIENT {
+        Ok(client) => Ok(client),
+        Err(error) => Err(error.to_string()),
+    }
+}
 
 pub async fn status() -> OpenAiStatus {
     OpenAiStatus {
@@ -124,11 +133,13 @@ pub async fn transcribe(
         return Err("The recording is empty or exceeds the 24 MiB limit".to_string());
     }
     let extension = match request.format.as_str() {
+        "wav" => "wav",
         "mp4" => "mp4",
         "ogg" => "ogg",
         _ => "webm",
     };
     let mime = match extension {
+        "wav" => "audio/wav",
         "mp4" => "audio/mp4",
         "ogg" => "audio/ogg",
         _ => "audio/webm",
@@ -144,7 +155,7 @@ pub async fn transcribe(
         form = form.text("language", language.to_string());
     }
     let key = read_key().await?;
-    let response = client(Duration::from_secs(180))?
+    let response = transcription_client()?
         .post(format!("{API_BASE}/audio/transcriptions"))
         .bearer_auth(key)
         .multipart(form)

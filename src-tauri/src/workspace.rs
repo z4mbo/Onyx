@@ -577,7 +577,8 @@ pub async fn commit(workspace: String, message: Option<String>) -> Result<GitAct
     if !before.has_changes() {
         return Err("There are no workspace changes to commit".to_string());
     }
-    let message = normalized_commit_message(message, &before)?;
+    let wants_generated = message.as_deref().map(str::trim).is_none_or(str::is_empty);
+    let mut message = normalized_commit_message(message, &before)?;
     let add = run_command(
         &git,
         &workspace,
@@ -587,6 +588,9 @@ pub async fn commit(workspace: String, message: Option<String>) -> Result<GitAct
     )
     .await?;
     checked("Stage workspace changes", add)?;
+    if wants_generated && let Some(generated) = generated_commit_message(&git, &workspace).await {
+        message = generated;
+    }
 
     let commit = run_command_owned(
         &git,
@@ -937,6 +941,66 @@ fn validate_relative_path(path: &Path) -> Result<(), String> {
         return Err("Workspace file paths cannot escape the selected workspace".to_string());
     }
     Ok(())
+}
+
+/// Drafts a commit message for the staged changes with `claude -p`, mirroring
+/// t3code's text-generation flow. Any failure falls back to the caller's
+/// heuristic message, so this never blocks a commit.
+async fn generated_commit_message(git: &Path, workspace: &Path) -> Option<String> {
+    const MAX_PROMPT_DIFF_BYTES: usize = 24 * 1024;
+    let claude = find_executable("claude")?;
+    let stat = run_command(
+        git,
+        workspace,
+        &["diff", "--cached", "--stat"],
+        "Summarize staged changes",
+        Duration::from_secs(30),
+    )
+    .await
+    .ok()
+    .filter(|result| result.success)?;
+    let diff = run_command(
+        git,
+        workspace,
+        &["diff", "--cached", "--unified=1"],
+        "Read staged changes",
+        Duration::from_secs(60),
+    )
+    .await
+    .ok()
+    .filter(|result| result.success)?;
+    let prompt = format!(
+        "Write a git commit message for the staged changes below. Reply with only the commit message: an imperative subject line of at most 72 characters, optionally followed by a blank line and a short body.\n\n{}\n\n{}",
+        stat.stdout.trim(),
+        tail_chars(diff.stdout.trim(), MAX_PROMPT_DIFF_BYTES),
+    );
+    let result = run_command_owned(
+        &claude,
+        workspace,
+        vec![
+            "-p".to_string(),
+            prompt,
+            "--output-format".to_string(),
+            "json".to_string(),
+        ],
+        "Generate commit message",
+        Duration::from_secs(45),
+    )
+    .await
+    .ok()
+    .filter(|result| result.success)?;
+    let value: serde_json::Value = serde_json::from_str(result.stdout.trim()).ok()?;
+    let message = value
+        .get("result")
+        .and_then(serde_json::Value::as_str)?
+        .trim()
+        .trim_matches('`')
+        .trim_matches('"')
+        .trim();
+    if message.is_empty() || message.len() > 16 * 1024 || message.contains('\0') {
+        return None;
+    }
+    Some(message.to_string())
 }
 
 fn normalized_commit_message(

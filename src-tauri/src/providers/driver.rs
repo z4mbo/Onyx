@@ -1,5 +1,6 @@
 use crate::model::{
-    AccessMode, ContextUsage, InteractionMode, MessageKind, ProviderId, ReasoningEffort, SpeedMode,
+    AccessMode, ApprovalDecision, ContextUsage, InteractionMode, MessageKind, ProviderId,
+    ReasoningEffort, SpeedMode,
 };
 use std::{future::Future, path::PathBuf, pin::Pin};
 use tokio::sync::{mpsc, oneshot};
@@ -50,7 +51,7 @@ pub struct ProviderApproval {
     pub title: String,
     pub detail: String,
     pub risk: String,
-    pub responder: oneshot::Sender<bool>,
+    pub responder: oneshot::Sender<ApprovalDecision>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,11 +94,18 @@ pub trait ProviderSession: Send {
 
     fn continuation(&self) -> Option<String>;
 
+    /// Whether the live transport can accept additional user messages while a
+    /// turn is running (Claude Code stream-json input, Codex `turn/steer`).
+    fn supports_steering(&self) -> bool {
+        false
+    }
+
     fn run_turn<'a>(
         &'a mut self,
         prompt: &'a str,
         cancellation: &'a CancellationToken,
         events: mpsc::Sender<ProviderEvent>,
+        steer: mpsc::UnboundedReceiver<String>,
     ) -> DriverFuture<'a, Result<(), String>>;
 
     fn shutdown<'a>(&'a mut self) -> DriverFuture<'a, ()>;

@@ -65,8 +65,10 @@ impl StreamNormalizer {
                             }
                             Some("tool_use") => {
                                 let name = string_at(block, &["name"]).unwrap_or("tool");
-                                events
-                                    .push(activity(format!("Running {name}"), block.get("input")));
+                                events.push(activity(
+                                    tool_title(name, block.get("input")),
+                                    block.get("input"),
+                                ));
                             }
                             _ => {}
                         }
@@ -165,7 +167,10 @@ impl StreamNormalizer {
                 let name = string_at(value, &["name"])
                     .or_else(|| string_at(value, &["tool_name"]))
                     .unwrap_or("tool");
-                events.push(activity(format!("Running {name}"), value.get("input")));
+                events.push(activity(
+                    tool_title(name, value.get("input")),
+                    value.get("input"),
+                ));
             }
             Some("tool_result") => {
                 events.push(activity(
@@ -235,6 +240,42 @@ impl StreamNormalizer {
             _ => {}
         }
         events
+    }
+}
+
+/// Builds a one-line title that shows what a tool call actually does —
+/// "Running Bash · cargo test" instead of an opaque "Running Bash".
+fn tool_title(name: &str, input: Option<&Value>) -> String {
+    const MAX_SNIPPET: usize = 96;
+    let snippet = input.and_then(|input| {
+        [
+            "command",
+            "file_path",
+            "path",
+            "pattern",
+            "query",
+            "url",
+            "prompt",
+            "description",
+        ]
+        .iter()
+        .find_map(|key| input.get(*key).and_then(Value::as_str))
+    });
+    match snippet {
+        Some(snippet) => {
+            let line = snippet.lines().next().unwrap_or_default().trim();
+            let mut end = line.len().min(MAX_SNIPPET);
+            while end > 0 && !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            let ellipsis = if end < line.len() || snippet.lines().count() > 1 {
+                "…"
+            } else {
+                ""
+            };
+            format!("Running {name} · {}{ellipsis}", &line[..end])
+        }
+        None => format!("Running {name}"),
     }
 }
 
@@ -319,6 +360,29 @@ mod tests {
                 .as_slice(),
             [NormalizedEvent::Text(value)] if value == "done"
         ));
+    }
+
+    #[test]
+    fn claude_tool_use_titles_show_the_command() {
+        let mut parser = StreamNormalizer::new(ProviderId::Claude);
+        let events = parser.parse(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test --workspace"}}]}}"#,
+        );
+        let [NormalizedEvent::Activity(message)] = events.as_slice() else {
+            panic!("expected one activity");
+        };
+        let title = message.content.lines().next().unwrap();
+        assert_eq!(title, "Running Bash · cargo test --workspace");
+
+        let long = format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"Bash","input":{{"command":"{}"}}}}]}}}}"#,
+            "x".repeat(200)
+        );
+        let events = parser.parse(&long);
+        let [NormalizedEvent::Activity(message)] = events.as_slice() else {
+            panic!("expected one activity");
+        };
+        assert!(message.content.lines().next().unwrap().ends_with('…'));
     }
 
     #[test]

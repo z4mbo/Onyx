@@ -28,8 +28,8 @@
         "label": "hud",
         "url": "index.html?window=hud",
         "title": "Onyx Dictation",
-        "width": 236,
-        "height": 58,
+        "width": 200,
+        "height": 48,
         "visible": false,
         "transparent": true,
         "decorations": false,
@@ -42,24 +42,33 @@
         "label": "agent",
         "url": "index.html?window=agent",
         "title": "Onyx Agent",
-        "width": 268,
-        "height": 66,
+        "width": 180,
+        "height": 18,
         "visible": false,
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "resizable": false,
-        "shadow": true
+        "shadow": false
       }
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost https://openrouter.ai wss://*.convex.cloud https://*.convex.cloud; frame-src 'self' http: https:; img-src 'self' asset: data: blob: https:; media-src 'self' asset: data: blob: https:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/z4mbo/Onyx/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI4NERBMjg3QzM1MUU1RUEKUldUcTVWSERoNkpOdUtwaEVDNHJjSlJVV3A3MW91QmZaWTdPSDZueFRvdDhwQUxDVGRRL1JNUkIK"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "resources": {
       "../LICENSE": "LICENSE",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
@@ -78,7 +87,7 @@
     "macOS": {
       "minimumSystemVersion": "11.0",
       "infoPlist": "Info.plist",
-      "entitlements": null,
+      "entitlements": "Entitlements.plist",
       "signingIdentity": "-"
     },
     "windows": {

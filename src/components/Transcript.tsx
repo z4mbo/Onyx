@@ -1,7 +1,15 @@
 import { createEffect, createMemo, For, onCleanup, Show, type Component, type JSX } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { AlertCircle, ChevronRight, Circle, TerminalSquare } from "lucide-solid"
+import { tokenizeCode } from "../lib/highlight"
 import type { AgentSession, Message } from "../lib/types"
+
+/** Renders code as inert highlighted spans, or plain text when unknown. */
+function highlightCode(code: string, hint?: string): JSX.Element {
+  const tokens = tokenizeCode(code, hint)
+  if (!tokens) return code
+  return tokens.map((token) => (token.type ? <span class={`syn-${token.type}`}>{token.text}</span> : token.text))
+}
 
 type MarkdownBlock =
   | { kind: "paragraph"; content: string }
@@ -31,8 +39,12 @@ function startsBlock(line: string) {
  * Parses the Markdown subset used in transcripts without ever creating raw
  * HTML. Provider-supplied tags therefore stay inert text in the DOM.
  */
-function parseMarkdown(source: string): MarkdownBlock[] {
-  const lines = source.replace(/\r\n?/g, "\n").split("\n")
+function safeText(value: unknown) {
+  return typeof value === "string" ? value : value == null ? "" : String(value)
+}
+
+function parseMarkdown(source: unknown): MarkdownBlock[] {
+  const lines = safeText(source).replace(/\r\n?/g, "\n").split("\n")
   const blocks: MarkdownBlock[] = []
 
   for (let index = 0; index < lines.length;) {
@@ -195,7 +207,7 @@ function MarkdownBlockView(props: { block: MarkdownBlock }) {
           }
           case "code": {
             const block = props.block as Extract<MarkdownBlock, { kind: "code" }>
-            return <pre><code data-language={block.language}>{block.content}</code></pre>
+            return <pre><code data-language={block.language}>{highlightCode(block.content, block.language)}</code></pre>
           }
           case "quote": {
             const block = props.block as Extract<MarkdownBlock, { kind: "quote" }>
@@ -224,7 +236,7 @@ function MarkdownBlockView(props: { block: MarkdownBlock }) {
   )
 }
 
-function MessageContent(props: { content: string }) {
+export function MarkdownContent(props: { content: unknown }) {
   const blocks = createMemo(() => parseMarkdown(props.content))
   return (
     <div class="zai-message-markdown">
@@ -233,17 +245,65 @@ function MessageContent(props: { content: string }) {
   )
 }
 
+function toolTitle(message: Message) {
+  return safeText(message.content).split("\n", 1)[0] || "Tool activity"
+}
+
 function ToolMessage(props: { message: Message }) {
-  const lines = () => props.message.content.split("\n")
+  const lines = () => safeText(props.message.content).split("\n")
   return (
     <details class="zai-tool-event">
       <summary>
         <TerminalSquare aria-hidden="true" size={14} />
-        <span>{lines()[0] || "Tool activity"}</span>
+        <span>{toolTitle(props.message)}</span>
         <ChevronRight aria-hidden="true" class="zai-tool-chevron" size={13} />
       </summary>
-      <Show when={lines().length > 1}><pre>{lines().slice(1).join("\n")}</pre></Show>
+      <Show when={lines().length > 1}><pre>{highlightCode(lines().slice(1).join("\n"))}</pre></Show>
     </details>
+  )
+}
+
+type TranscriptItem =
+  | { kind: "single"; message: Message }
+  | { kind: "tools"; id: string; messages: Message[] }
+
+/**
+ * Collapses consecutive tool activities into one group so a long agent run
+ * reads as "N steps" instead of an endless list of command rows.
+ */
+function groupMessages(messages: Message[]): TranscriptItem[] {
+  const items: TranscriptItem[] = []
+  for (const message of messages) {
+    const last = items.at(-1)
+    if (message.kind === "tool") {
+      if (last?.kind === "tools") last.messages.push(message)
+      else items.push({ kind: "tools", id: message.id, messages: [message] })
+    } else {
+      items.push({ kind: "single", message })
+    }
+  }
+  return items
+}
+
+function ToolGroup(props: { messages: Message[] }) {
+  const latest = () => props.messages[props.messages.length - 1]
+  return (
+    <Show
+      when={props.messages.length > 1}
+      fallback={<ToolMessage message={props.messages[0]} />}
+    >
+      <details class="zai-tool-group">
+        <summary>
+          <TerminalSquare aria-hidden="true" size={14} />
+          <span class="zai-tool-group__count">{props.messages.length} steps</span>
+          <span class="zai-tool-group__latest">{toolTitle(latest())}</span>
+          <ChevronRight aria-hidden="true" class="zai-tool-chevron" size={13} />
+        </summary>
+        <div class="zai-tool-group__list">
+          <For each={props.messages}>{(message) => <ToolMessage message={message} />}</For>
+        </div>
+      </details>
+    </Show>
   )
 }
 
@@ -251,6 +311,7 @@ export const Transcript: Component<{ session: AgentSession }> = (props) => {
   let scroller: HTMLDivElement | undefined
   let pinned = true
   let scrollFrame: number | undefined
+  const items = createMemo(() => groupMessages(props.session.messages))
 
   const cancelScheduledScroll = () => {
     if (scrollFrame === undefined) return
@@ -259,7 +320,7 @@ export const Transcript: Component<{ session: AgentSession }> = (props) => {
   }
 
   createEffect(() => {
-    props.session.messages.map((message) => message.content).join("")
+    props.session.messages.map((message) => safeText(message.content)).join("")
     cancelScheduledScroll()
     if (!pinned) return
     scrollFrame = requestAnimationFrame(() => {
@@ -273,7 +334,7 @@ export const Transcript: Component<{ session: AgentSession }> = (props) => {
   return (
     <div
       ref={scroller}
-      class="zai-transcript"
+      classList={{ "zai-transcript": true, "zai-transcript--running": props.session.status === "running" }}
       role="log"
       aria-label="Conversation"
       aria-live="polite"
@@ -291,20 +352,28 @@ export const Transcript: Component<{ session: AgentSession }> = (props) => {
           when={props.session.messages.length > 0}
           fallback={<div class="zai-transcript__empty">Start a conversation with {props.session.provider}.</div>}
         >
-          <For each={props.session.messages}>
-            {(message) => (
-              <Show when={message.kind !== "tool"} fallback={<ToolMessage message={message} />}>
-                <article
-                  class={`zai-message zai-message--${message.role} zai-message--${message.kind}`}
-                  data-component={message.role === "user" ? "user-message" : "assistant-message"}
-                >
-                  <Show when={message.kind === "error"}>
-                    <AlertCircle aria-hidden="true" class="zai-message__alert" size={15} />
-                  </Show>
-                  <div class="zai-message__content" data-slot={message.role === "user" ? "user-message-text" : undefined}>
-                    <MessageContent content={message.content} />
-                  </div>
-                </article>
+          <For each={items()}>
+            {(item) => (
+              <Show
+                when={item.kind === "single"}
+                fallback={<ToolGroup messages={(item as Extract<TranscriptItem, { kind: "tools" }>).messages} />}
+              >
+                {(() => {
+                  const message = (item as Extract<TranscriptItem, { kind: "single" }>).message
+                  return (
+                    <article
+                      class={`zai-message zai-message--${message.role} zai-message--${message.kind}`}
+                      data-component={message.role === "user" ? "user-message" : "assistant-message"}
+                    >
+                      <Show when={message.kind === "error"}>
+                        <AlertCircle aria-hidden="true" class="zai-message__alert" size={15} />
+                      </Show>
+                      <div class="zai-message__content" data-slot={message.role === "user" ? "user-message-text" : undefined}>
+                        <MarkdownContent content={message.content} />
+                      </div>
+                    </article>
+                  )
+                })()}
               </Show>
             )}
           </For>

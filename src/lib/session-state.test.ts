@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { applySessionEvent, mergeCommandSession, replaceSession, sortSessions } from "./session-state"
+import { applySessionEvent, mergeCommandSession, normalizeSession, replaceSession, sortSessions } from "./session-state"
 import type { AgentSession, Message } from "./types"
 
 const at = (second: number) => `2026-07-22T18:00:${second.toString().padStart(2, "0")}.000Z`
@@ -66,5 +66,25 @@ describe("session state", () => {
       ["assistant", "streamed response"],
       ["tool", "checked files"],
     ])
+  })
+
+  it("normalizes malformed persisted and streamed message content", () => {
+    const malformed = {
+      ...session("a"),
+      messages: [
+        { ...message("missing", "ignored"), content: undefined },
+        { ...message("numeric", "ignored"), content: 42 },
+      ],
+    } as unknown as AgentSession
+    const normalized = normalizeSession(malformed)
+    expect(normalized.messages.map((item) => item.content)).toEqual(["", "42"])
+
+    const streamed = applySessionEvent([malformed], {
+      type: "delta",
+      sessionId: "a",
+      messageId: "missing",
+      delta: "safe",
+    })
+    expect(streamed[0].messages[0].content).toBe("safe")
   })
 })

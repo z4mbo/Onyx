@@ -23,10 +23,37 @@ import {
   signOut,
   subscribeAccount,
 } from "../lib/account"
-import type { AgentSession, DesktopPreferences, OpenAiStatus, OpenRouterModel, OpenRouterStatus, ProviderId, ProviderModelOption, ProviderStatus, VoiceSettings } from "../lib/types"
+import { requestMicrophoneAccess } from "../lib/audio"
+import { fetchUpdate, installUpdate, type UpdateProgress } from "../lib/updater"
+import type { AgentSession, DesktopPreferences, NativeVoicePermissions, OpenAiStatus, OpenRouterModel, OpenRouterStatus, ProviderId, ProviderModelOption, ProviderStatus, VoiceSettings } from "../lib/types"
 import { ProviderBadge } from "./ProviderBadge"
 
 export type ColorScheme = "system" | "light" | "dark"
+
+// Dedicated speech-to-text models: Onyx routes these through OpenRouter's
+// /audio/transcriptions endpoint. They never appear in the chat-model
+// catalog, so the picker always lists them explicitly.
+const OPENROUTER_SPEECH_TO_TEXT_MODELS = [
+  { id: "openai/whisper-large-v3-turbo", name: "Whisper Large V3 Turbo" },
+  { id: "openai/whisper-large-v3", name: "Whisper Large V3" },
+  { id: "openai/gpt-4o-mini-transcribe", name: "GPT-4o mini Transcribe" },
+  { id: "openai/gpt-4o-transcribe", name: "GPT-4o Transcribe" },
+]
+
+// Audio-capable chat models transcribe through chat completions; this curated
+// list backs the picker until the live catalog loads.
+const FALLBACK_AUDIO_TRANSCRIPTION_MODELS = [
+  { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+  { id: "google/gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite" },
+  { id: "openai/gpt-audio-mini", name: "GPT Audio Mini" },
+  { id: "mistralai/voxtral-small-24b-2507", name: "Voxtral Small 24B" },
+]
+
+const OPENAI_TRANSCRIPTION_MODELS = [
+  { id: "gpt-4o-mini-transcribe", name: "GPT-4o mini Transcribe" },
+  { id: "gpt-4o-transcribe", name: "GPT-4o Transcribe" },
+  { id: "whisper-1", name: "Whisper" },
+]
 type SettingsPage = "general" | "shortcuts" | "providers" | "models" | "voice" | "account"
 
 const navItems: Array<{ page: SettingsPage; label: string; icon: typeof SlidersHorizontal }> = [
@@ -60,6 +87,10 @@ export const SettingsDialog: Component<{
   const [saving, setSaving] = createSignal(false)
   const [message, setMessage] = createSignal<string | null>(null)
   const [voice, setVoice] = createSignal<VoiceSettings | null>(null)
+  const [microphoneStatus, setMicrophoneStatus] = createSignal<"idle" | "checking" | "ready" | "blocked">("idle")
+  const [microphoneMessage, setMicrophoneMessage] = createSignal("")
+  const [nativePermissions, setNativePermissions] = createSignal<NativeVoicePermissions | null>(null)
+  const [nativePermissionMessage, setNativePermissionMessage] = createSignal("")
   const [account, setAccount] = createSignal(accountSnapshot())
   const [platform, setPlatform] = createSignal("unknown")
   const [wslDistributions, setWslDistributions] = createSignal<string[]>([])
@@ -67,9 +98,44 @@ export const SettingsDialog: Component<{
     try { return JSON.parse(localStorage.getItem("onyx.desktop-preferences.v1") ?? "null") as DesktopPreferences ?? { wslMode: "off", wslDistribution: "" } }
     catch { return { wslMode: "off", wslDistribution: "" } }
   })())
+  const [updateState, setUpdateState] = createSignal<"idle" | "checking" | "current" | "available" | "installing" | "failed">("idle")
+  const [updateMessage, setUpdateMessage] = createSignal("")
+  const [updateProgress, setUpdateProgress] = createSignal<UpdateProgress | null>(null)
+  let pendingUpdate: Awaited<ReturnType<typeof fetchUpdate>> = null
   let dialogElement: HTMLElement | undefined
   let returnFocus: HTMLElement | null = null
   let wasOpen = false
+
+  const checkUpdates = async () => {
+    setUpdateState("checking")
+    setUpdateMessage("")
+    try {
+      pendingUpdate = await fetchUpdate()
+      if (pendingUpdate) {
+        setUpdateState("available")
+        setUpdateMessage(`Onyx ${pendingUpdate.version} is ready to install.`)
+      } else {
+        setUpdateState("current")
+        setUpdateMessage("You are on the latest version.")
+      }
+    } catch (error) {
+      setUpdateState("failed")
+      setUpdateMessage(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const applyUpdate = async () => {
+    if (!pendingUpdate) return
+    setUpdateState("installing")
+    setUpdateMessage("Downloading update…")
+    try {
+      await installUpdate(pendingUpdate, setUpdateProgress)
+    } catch (error) {
+      setUpdateState("failed")
+      setUpdateProgress(null)
+      setUpdateMessage(error instanceof Error ? error.message : String(error))
+    }
+  }
 
   const unsubscribeAccount = subscribeAccount(setAccount)
   void initializeAccount()
@@ -78,6 +144,11 @@ export const SettingsDialog: Component<{
   createEffect(() => {
     if (!props.open || voice()) return
     void api.getVoiceSettings().then(setVoice).catch((error) => setMessage(String(error)))
+  })
+
+  createEffect(() => {
+    if (!props.open) return
+    void api.nativeVoicePermissions().then(setNativePermissions).catch(() => setNativePermissions(null))
   })
 
   void api.platform().then((value) => {
@@ -270,9 +341,56 @@ export const SettingsDialog: Component<{
     }
   }
 
+  const testMicrophone = async () => {
+    setMicrophoneStatus("checking")
+    setMicrophoneMessage("")
+    try {
+      await api.requestMicrophonePermission()
+      await requestMicrophoneAccess()
+      setMicrophoneStatus("ready")
+      setMicrophoneMessage("Microphone access is ready in macOS and Onyx.")
+    } catch (error) {
+      setMicrophoneStatus("blocked")
+      setMicrophoneMessage(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const requestNativeAccess = async () => {
+    setNativePermissionMessage("")
+    try {
+      const status = await api.requestNativeVoicePermissions()
+      setNativePermissions(status)
+      setNativePermissionMessage(
+        status.accessibility && status.inputMonitoring
+          ? "Global shortcuts and text insertion are ready."
+          : "macOS opened Privacy & Security. Enable Onyx in both Accessibility and Input Monitoring, then relaunch Onyx once.",
+      )
+    } catch (error) {
+      setNativePermissionMessage(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   type VoiceProviderKey = "agentProvider" | "webProvider" | "filesProvider" | "imageProvider"
   type VoiceModelKey = "agentModel" | "webModel" | "filesModel" | "imageModel"
   const voiceProviderOptions = () => props.providers.filter((provider) => provider.available)
+  const transcriptionModelOptions = () => {
+    const settings = voice()
+    const options = (settings?.transcriptionProvider ?? "openrouter") === "openai"
+      ? [...OPENAI_TRANSCRIPTION_MODELS]
+      : (() => {
+          const audio = (props.openRouterModels ?? [])
+            .filter((model) => model.inputModalities?.includes("audio"))
+            .map((model) => ({ id: model.id, name: model.name }))
+          const chat = audio.length ? audio : [...FALLBACK_AUDIO_TRANSCRIPTION_MODELS]
+          return [
+            ...OPENROUTER_SPEECH_TO_TEXT_MODELS,
+            ...chat.filter((model) => !OPENROUTER_SPEECH_TO_TEXT_MODELS.some((dedicated) => dedicated.id === model.id)),
+          ]
+        })()
+    const current = settings?.transcriptionModel
+    if (current && !options.some((option) => option.id === current)) options.unshift({ id: current, name: current })
+    return options
+  }
   const voiceModels = (provider: ProviderId, imageOnly = false) => {
     if (provider === "openrouter") {
       return (props.openRouterModels ?? [])
@@ -428,6 +546,41 @@ export const SettingsDialog: Component<{
                   </section>
                 </Show>
 
+                <h1>Updates</h1>
+                <section class="zai-settings-card">
+                  <div class="zai-setting-row">
+                    <div>
+                      <strong>App version</strong>
+                      <span>
+                        {updateMessage() || "Onyx checks GitHub releases for signed updates"}
+                      </span>
+                    </div>
+                    <div class="zai-setting-route__controls">
+                      <Show when={updateState() === "available"}>
+                        <button class="zai-neutral-button zai-update-install" onClick={() => void applyUpdate()}>
+                          Install & restart
+                        </button>
+                      </Show>
+                      <Show when={updateState() === "installing"} fallback={
+                        <button class="zai-neutral-button" disabled={updateState() === "checking"} onClick={() => void checkUpdates()}>
+                          <Show when={updateState() === "checking"} fallback={<><RefreshCw size={13} /> Check for updates</>}>
+                            <LoaderCircle class="spin" size={13} /> Checking…
+                          </Show>
+                        </button>
+                      }>
+                        <span class="zai-setting-value">
+                          <LoaderCircle class="spin" size={13} />{" "}
+                          {(() => {
+                            const progress = updateProgress()
+                            if (!progress?.total) return "Downloading…"
+                            return `${Math.min(100, Math.round((progress.downloaded / progress.total) * 100))}%`
+                          })()}
+                        </span>
+                      </Show>
+                    </div>
+                  </div>
+                </section>
+
                 <h1>Appearance</h1>
                 <section class="zai-settings-card">
                   <div class="zai-setting-row">
@@ -457,7 +610,7 @@ export const SettingsDialog: Component<{
               <div class="zai-settings-page">
                 <h1 id="zai-settings-page-title">Shortcuts</h1>
                 <section class="zai-settings-card">
-                  <For each={[["New session", platform() === "macos" ? "⌘ N" : "Ctrl N"], ["Settings", platform() === "macos" ? "⌘ ," : "Ctrl ,"], ["Bottom terminal", platform() === "macos" ? "⌘ J" : "Ctrl J"], ["Right panel", platform() === "macos" ? "⌘ ⇧ J" : "Ctrl Shift J"], ["Send message", "↵"], ["New line", "⇧ ↵"], ["Stop agent", "Esc"], ["Hold to dictate", "Ctrl Shift"], ["Hold for voice agent", "Ctrl Alt"]]}>
+                  <For each={[["New session", platform() === "macos" ? "⌘ N" : "Ctrl N"], ["Settings", platform() === "macos" ? "⌘ ," : "Ctrl ,"], ["Bottom terminal", platform() === "macos" ? "⌘ J" : "Ctrl J"], ["Right panel", platform() === "macos" ? "⌘ ⇧ J" : "Ctrl Shift J"], ["Send message", "↵"], ["New line", "⇧ ↵"], ["Stop agent", "Esc"], ["Hold to dictate", platform() === "macos" ? "Control Shift" : "Ctrl Shift"], ["Hold for voice agent", platform() === "macos" ? "Control Option" : "Ctrl Alt"]]}>
                     {(shortcut) => <div class="zai-setting-row"><strong>{shortcut[0]}</strong><kbd>{shortcut[1]}</kbd></div>}
                   </For>
                 </section>
@@ -575,9 +728,31 @@ export const SettingsDialog: Component<{
                 <div class="zai-settings-title-row"><h1 id="zai-settings-page-title">Voice</h1><button class="zai-neutral-button" disabled={!voice() || saving()} onClick={() => void saveVoice()}><Show when={saving()} fallback="Save"><LoaderCircle class="spin" size={14} /></Show></button></div>
                 <p class="zai-settings-intro">Dictation and the voice agent stay available from the tray even while the editor is closed.</p>
                 <section class="zai-settings-card">
-                  <div class="zai-setting-row"><div><strong>Dictation</strong><span>Hold anywhere, release to transcribe and paste</span></div><kbd>{voice()?.dictationShortcut ?? "Ctrl Shift"}</kbd></div>
-                  <div class="zai-setting-row"><div><strong>Agentic voice</strong><span>Hold anywhere to ask Onyx about the active app</span></div><kbd>{voice()?.agentShortcut ?? "Ctrl Alt"}</kbd></div>
-                  <div class="zai-setting-row"><div><strong>Dictation model</strong><span>Use OpenRouter or a separately billed OpenAI API key</span></div><div class="zai-setting-route__controls"><label class="zai-setting-select"><select value={voice()?.transcriptionProvider ?? "openrouter"} onChange={(event) => setVoice((current) => current ? { ...current, transcriptionProvider: event.currentTarget.value as VoiceSettings["transcriptionProvider"], transcriptionModel: event.currentTarget.value === "openai" ? "gpt-4o-mini-transcribe" : "openai/whisper-large-v3" } : current)}><option value="openrouter">OpenRouter</option><option value="openai" disabled={!props.openAi.connected}>OpenAI API</option></select><ChevronDown size={13} /></label><input class="zai-settings-inline-input" value={voice()?.transcriptionModel ?? ""} onInput={(event) => setVoice((current) => current ? { ...current, transcriptionModel: event.currentTarget.value } : current)} /></div></div>
+                  <div class="zai-setting-row">
+                    <div>
+                      <strong>Microphone access</strong>
+                      <span>{microphoneMessage() || "Grant and test access from the focused Onyx window before using global hold shortcuts."}</span>
+                    </div>
+                    <button class="zai-neutral-button" disabled={microphoneStatus() === "checking"} onClick={() => void testMicrophone()}>
+                      <Show when={microphoneStatus() === "checking"} fallback={<><Show when={microphoneStatus() === "ready"}><Check size={13} /></Show>{microphoneStatus() === "ready" ? "Ready" : "Enable & test"}</>}>
+                        <LoaderCircle class="spin" size={13} />
+                      </Show>
+                    </button>
+                  </div>
+                  <div class="zai-setting-row">
+                    <div>
+                      <strong>Global shortcuts & text insertion</strong>
+                      <span>{nativePermissionMessage() || "macOS needs Input Monitoring for hold shortcuts and Accessibility to insert dictated text."}</span>
+                    </div>
+                    <button class="zai-neutral-button" onClick={() => void requestNativeAccess()}>
+                      <Show when={nativePermissions()?.accessibility && nativePermissions()?.inputMonitoring}><Check size={13} /></Show>
+                      {nativePermissions()?.accessibility && nativePermissions()?.inputMonitoring ? "Ready" : "Enable"}
+                    </button>
+                  </div>
+                  <div class="zai-setting-row"><div><strong>Dictation</strong><span>Hold anywhere, release to transcribe and paste</span></div><kbd>{platform() === "macos" ? "Control Shift" : voice()?.dictationShortcut ?? "Ctrl Shift"}</kbd></div>
+                  <div class="zai-setting-row"><div><strong>Agentic voice</strong><span>Hold anywhere to ask Onyx about the active app</span></div><kbd>{platform() === "macos" ? "Control Option" : voice()?.agentShortcut ?? "Ctrl Alt"}</kbd></div>
+                  <div class="zai-setting-row"><div><strong>Dictation model</strong><span>Fast multilingual transcription with automatic language detection</span></div><div class="zai-setting-route__controls"><label class="zai-setting-select"><select value={voice()?.transcriptionProvider ?? "openrouter"} onChange={(event) => setVoice((current) => current ? { ...current, transcriptionProvider: event.currentTarget.value as VoiceSettings["transcriptionProvider"], transcriptionModel: event.currentTarget.value === "openai" ? "gpt-4o-mini-transcribe" : "openai/whisper-large-v3-turbo", language: null } : current)}><option value="openrouter">OpenRouter</option><option value="openai" disabled={!props.openAi.connected}>OpenAI API</option></select><ChevronDown size={13} /></label><label class="zai-setting-select"><select value={voice()?.transcriptionModel ?? ""} onChange={(event) => setVoice((current) => current ? { ...current, transcriptionModel: event.currentTarget.value } : current)}><For each={transcriptionModelOptions()}>{(option) => <option value={option.id}>{option.name}</option>}</For></select><ChevronDown size={13} /></label></div></div>
+                  <div class="zai-setting-row"><div><strong>Spoken language</strong><span>Onyx detects the language independently for every dictation</span></div><span class="zai-setting-value">Automatic</span></div>
                   {voiceRoute("General agent", "Answer voice questions with OpenRouter or an authenticated CLI subscription", "agentProvider", "agentModel")}
                   {voiceRoute("Web research", "Used automatically for current information and source requests", "webProvider", "webModel")}
                   {voiceRoute("File tasks", "Preferred coding subscription when a voice request becomes a workspace task", "filesProvider", "filesModel")}

@@ -1,5 +1,6 @@
 mod active_app;
 mod clerk_oauth;
+mod microphone;
 mod model;
 mod modifier_hold;
 mod openai;
@@ -12,17 +13,18 @@ mod workspace;
 
 use crate::{
     model::{
-        ActiveAppContext, AgentSession, ChatReply, ChatRequest, CreateSessionInput,
-        MediaGenerationRequest, Message, MessageKind, MessageRole, OpenAiStatus, OpenRouterModel,
-        OpenRouterStatus, ProviderBrand, ProviderId, ProviderModelOption, ProviderStatus,
-        ProviderUsage, SendMessageInput, SessionEvent, SessionStatus, TranscriptionReply,
-        TranscriptionRequest, UpdateSessionOptionsInput, VideoJob, VoiceSettings, WorkspaceEntry,
+        ActiveAppContext, AgentSession, ApprovalDecision, ChatReply, ChatRequest,
+        CreateSessionInput, MediaGenerationRequest, Message, MessageKind, MessageRole,
+        OpenAiStatus, OpenRouterModel, OpenRouterStatus, ProviderBrand, ProviderId,
+        ProviderModelOption, ProviderStatus, ProviderUsage, SendMessageInput, SessionEvent,
+        SessionStatus, TranscriptionReply, TranscriptionRequest, UpdateSessionOptionsInput,
+        VideoJob, VoiceSettings, WorkspaceEntry,
     },
     openrouter::ApprovalRegistry,
     storage::SessionStore,
 };
 use chrono::Utc;
-use enigo::{Enigo, Keyboard, Settings as EnigoSettings};
+use enigo::{Direction, Enigo, Key, Keyboard, Settings as EnigoSettings};
 use parking_lot::{Mutex, RwLock};
 use std::{
     collections::HashMap,
@@ -34,7 +36,7 @@ use std::{
     time::Duration,
 };
 use tauri::{
-    AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, State, WindowEvent,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -63,10 +65,12 @@ fn load_voice_settings(path: &Path) -> VoiceSettings {
     if !metadata.is_file() || metadata.len() > VOICE_SETTINGS_MAX_BYTES {
         return VoiceSettings::default();
     }
-    std::fs::read(path)
+    let mut settings: VoiceSettings = std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    settings.language = None;
+    settings
 }
 
 fn persist_voice_settings(path: &Path, settings: &VoiceSettings) -> Result<(), String> {
@@ -101,6 +105,21 @@ async fn provider_usage(provider: ProviderId) -> Result<Option<ProviderUsage>, S
         ProviderId::Codex => providers::codex::account_usage().await.map(Some),
         _ => Ok(None),
     }
+}
+
+#[tauri::command]
+async fn request_microphone_permission() -> Result<String, String> {
+    microphone::request_access().await
+}
+
+#[tauri::command]
+fn native_voice_permissions() -> modifier_hold::NativeVoicePermissions {
+    modifier_hold::permission_status()
+}
+
+#[tauri::command]
+fn request_native_voice_permissions() -> modifier_hold::NativeVoicePermissions {
+    modifier_hold::request_permissions()
 }
 
 #[tauri::command]
@@ -190,6 +209,39 @@ fn cancel_turn(session_id: String, state: State<'_, AppState>) -> Result<(), Str
         .ok_or_else(|| "No turn is running for this session".to_string())?;
     token.cancel();
     Ok(())
+}
+
+#[tauri::command]
+fn steer_turn(
+    app: AppHandle,
+    input: SendMessageInput,
+    state: State<'_, AppState>,
+) -> Result<AgentSession, String> {
+    let content = input.content.trim().to_string();
+    if content.is_empty() {
+        return Err("Write a message first".to_string());
+    }
+    if content.len() > 24 * 1024 {
+        return Err("Steering messages are limited to 24 KiB".to_string());
+    }
+    if !state.running.lock().contains_key(&input.session_id) {
+        return Err("No turn is running for this session".to_string());
+    }
+    // Deliver to the live transport first: when that fails the transcript must
+    // not record a message the agent never saw.
+    state.providers.steer(&input.session_id, content.clone())?;
+    let message = Message::new(MessageRole::User, MessageKind::Text, content);
+    let session = state
+        .store
+        .append_user_message(&input.session_id, message.clone())?;
+    let _ = app.emit(
+        "onyx://session",
+        SessionEvent::Activity {
+            session_id: input.session_id,
+            message,
+        },
+    );
+    Ok(session)
 }
 
 #[tauri::command]
@@ -377,7 +429,7 @@ fn get_voice_settings(state: State<'_, AppState>) -> VoiceSettings {
 #[tauri::command]
 fn apply_voice_settings(
     app: AppHandle,
-    settings: VoiceSettings,
+    mut settings: VoiceSettings,
     state: State<'_, AppState>,
 ) -> Result<VoiceSettings, String> {
     if settings.overlay_margin > 160 || !(0.5..=2.0).contains(&settings.voice_rate) {
@@ -393,6 +445,7 @@ fn apply_voice_settings(
     {
         return Err("A voice model identifier is too long".into());
     }
+    settings.language = None;
     persist_voice_settings(&state.voice_settings_path, &settings)?;
     *state.voice_settings.write() = settings.clone();
     windowing::position_saved_windows(&app)?;
@@ -458,11 +511,69 @@ fn inject_text(text: String) -> Result<(), String> {
     if text.trim().is_empty() || text.len() > 100_000 {
         return Err("Text is empty or exceeds the 100,000 character limit".into());
     }
+    #[cfg(target_os = "macos")]
+    {
+        // Copy first so the transcript survives even when the paste keystroke
+        // is blocked by a missing Accessibility grant.
+        copy_text_macos(&text)?;
+        if !modifier_hold::permission_status().accessibility {
+            // Fires the macOS grant dialog (no-op if it was already shown) so
+            // the fix is one click instead of a trip through System Settings.
+            modifier_hold::request_permissions();
+            return Err(
+                "Transcript copied — press ⌘V to paste it. Allow Onyx under Privacy & Security → Accessibility for automatic pasting, then relaunch Onyx."
+                    .into(),
+            );
+        }
+        return paste_text_macos();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut enigo = Enigo::new(&EnigoSettings::default())
+            .map_err(|error| format!("Native input is unavailable: {error}"))?;
+        enigo
+            .text(&text)
+            .map_err(|error| format!("Unable to insert text in the active app: {error}"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn copy_text_macos(text: &str) -> Result<(), String> {
+    use std::io::Write as _;
+
+    let mut clipboard = std::process::Command::new("/usr/bin/pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Unable to open the macOS pasteboard: {error}"))?;
+    clipboard
+        .stdin
+        .take()
+        .ok_or_else(|| "The macOS pasteboard did not accept input".to_string())?
+        .write_all(text.as_bytes())
+        .map_err(|error| format!("Unable to copy the transcript: {error}"))?;
+    let status = clipboard
+        .wait()
+        .map_err(|error| format!("Unable to finish copying the transcript: {error}"))?;
+    if !status.success() {
+        return Err("macOS did not accept the transcript on the pasteboard".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn paste_text_macos() -> Result<(), String> {
     let mut enigo = Enigo::new(&EnigoSettings::default())
         .map_err(|error| format!("Native input is unavailable: {error}"))?;
-    enigo.text(&text).map_err(|error| format!(
-        "Unable to insert text. On macOS, enable Onyx under Privacy & Security → Accessibility. On Windows, the target cannot run as administrator. Details: {error}"
-    ))
+    enigo
+        .key(Key::Meta, Direction::Press)
+        .map_err(|error| format!("Unable to begin pasting the transcript: {error}"))?;
+    let paste = enigo.key(Key::Unicode('v'), Direction::Click);
+    let release = enigo.key(Key::Meta, Direction::Release);
+    paste.map_err(|error| {
+        format!("The transcript is on the clipboard, but pasting failed: {error}")
+    })?;
+    release.map_err(|error| format!("Unable to release the paste shortcut: {error}"))
 }
 
 #[tauri::command]
@@ -473,6 +584,11 @@ fn active_app_context() -> ActiveAppContext {
 #[tauri::command]
 fn set_agent_expanded(app: AppHandle, expanded: bool) -> Result<(), String> {
     windowing::set_agent_expanded(&app, expanded)
+}
+
+#[tauri::command]
+fn set_agent_overlay_mode(app: AppHandle, mode: String) -> Result<(), String> {
+    windowing::set_agent_mode(&app, &mode)
 }
 
 #[tauri::command]
@@ -489,37 +605,6 @@ fn hide_window(app: AppHandle, label: String) -> Result<(), String> {
 #[tauri::command]
 fn show_main_window(app: AppHandle) -> Result<(), String> {
     windowing::show_main(&app)
-}
-
-#[tauri::command]
-fn open_provider_web(app: AppHandle, provider: String) -> Result<(), String> {
-    let (label, title, url) = match provider.as_str() {
-        "chatgpt" => ("provider-chatgpt", "ChatGPT · Onyx", "https://chatgpt.com/"),
-        "claude" => ("provider-claude", "Claude · Onyx", "https://claude.ai/new"),
-        "gemini" => (
-            "provider-gemini",
-            "Gemini · Onyx",
-            "https://gemini.google.com/app",
-        ),
-        "grok" => ("provider-grok", "Grok · Onyx", "https://grok.com/"),
-        _ => return Err("Unknown provider web app".to_string()),
-    };
-    if let Some(window) = app.get_webview_window(label) {
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-    let external = url
-        .parse()
-        .map_err(|error| format!("Invalid provider URL: {error}"))?;
-    WebviewWindowBuilder::new(&app, label, WebviewUrl::External(external))
-        .title(title)
-        .inner_size(1180.0, 820.0)
-        .min_inner_size(720.0, 520.0)
-        .center()
-        .build()
-        .map_err(|error| error.to_string())?;
-    Ok(())
 }
 
 #[tauri::command]
@@ -595,8 +680,20 @@ async fn poll_video(id: String) -> Result<VideoJob, String> {
 }
 
 #[tauri::command]
-fn respond_approval(id: String, allow: bool, state: State<'_, AppState>) -> Result<(), String> {
-    openrouter::respond_to_approval(&state.approvals, &id, allow)
+fn respond_approval(
+    id: String,
+    allow: bool,
+    for_session: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let decision = if !allow {
+        ApprovalDecision::Deny
+    } else if for_session.unwrap_or(false) {
+        ApprovalDecision::AllowSession
+    } else {
+        ApprovalDecision::Allow
+    };
+    openrouter::respond_to_approval(&state.approvals, &id, decision)
 }
 
 #[tauri::command]
@@ -805,15 +902,21 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             list_providers,
             list_provider_models,
             provider_usage,
+            request_microphone_permission,
+            native_voice_permissions,
+            request_native_voice_permissions,
             list_sessions,
             create_session,
             update_session_options,
             delete_session,
             send_message,
+            steer_turn,
             cancel_turn,
             openrouter_status,
             openrouter_save_key,
@@ -829,9 +932,9 @@ pub fn run() {
             inject_text,
             active_app_context,
             set_agent_expanded,
+            set_agent_overlay_mode,
             hide_window,
             show_main_window,
-            open_provider_web,
             platform,
             chat_send,
             generate_image,
@@ -878,6 +981,20 @@ pub fn run() {
             });
             modifier_hold::start(app.handle().clone());
             let _ = windowing::position_saved_windows(app.handle());
+            let _ = windowing::show_agent(app.handle());
+            #[cfg(target_os = "macos")]
+            {
+                // Rebuilt binaries lose TCC grants silently; tell the UI so the
+                // hold shortcuts do not just appear dead.
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    let status = modifier_hold::permission_status();
+                    if !status.input_monitoring || !status.accessibility {
+                        let _ = handle.emit("onyx://native-permissions", &status);
+                    }
+                });
+            }
             setup_tray(app)?;
             if let Some(window) = app.get_webview_window("main") {
                 let window_for_event = window.clone();

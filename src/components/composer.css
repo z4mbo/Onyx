@@ -38,16 +38,10 @@
   border: 1px solid rgb(0 0 0 / 12%);
   border-radius: 24px;
   background: color-mix(in srgb, var(--v2-background-bg-base) 20%, transparent);
-  box-shadow:
-    0 18px 48px -20px rgb(0 0 0 / 28%),
-    0 4px 14px -7px rgb(0 0 0 / 22%);
+  box-shadow: none;
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
   transition: background-color 200ms ease, border-color 200ms ease;
-}
-
-.t3-composer .zai-composer__surface:has(:focus-visible) {
-  border-color: color-mix(in srgb, var(--v2-text-text-base) 40%, transparent);
 }
 
 [data-color-scheme="dark"] .t3-composer {
@@ -58,13 +52,7 @@
 [data-color-scheme="dark"] .t3-composer .zai-composer__permission {
   border-color: rgb(255 255 255 / 12%);
   background: color-mix(in srgb, var(--v2-background-bg-base) 45%, transparent);
-  box-shadow:
-    0 18px 48px -20px rgb(0 0 0 / 60%),
-    0 4px 14px -7px rgb(0 0 0 / 40%);
-}
-
-[data-color-scheme="dark"] .t3-composer .zai-composer__surface:has(:focus-visible) {
-  border-color: color-mix(in srgb, var(--v2-text-text-base) 40%, transparent);
+  box-shadow: none;
 }
 
 .t3-composer .zai-composer__editor-region {
@@ -166,8 +154,7 @@
 
 .t3-composer .zai-composer__control:focus-visible,
 .t3-composer .zai-composer__control:has(select:focus-visible) {
-  outline: 2px solid var(--v2-border-border-focus);
-  outline-offset: 1px;
+  outline: none;
 }
 
 .t3-composer .zai-composer__control:has(select:disabled) {
@@ -279,141 +266,6 @@
   max-width: 172px;
 }
 
-.zai-context-popover-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.t3-composer .zai-composer__context-meter {
-  display: inline-flex;
-  width: 30px;
-  height: 30px;
-  flex: 0 0 30px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  color: color-mix(in srgb, var(--v2-text-text-muted) 58%, transparent);
-  border: 0;
-  background:
-    radial-gradient(circle, var(--v2-background-bg-base) 55%, transparent 58%),
-    conic-gradient(var(--t3-composer-primary) var(--context-progress), color-mix(in srgb, var(--v2-text-text-muted) 13%, transparent) 0);
-  cursor: pointer;
-}
-
-.t3-composer .zai-composer__context-meter:hover {
-  color: color-mix(in srgb, var(--v2-text-text-muted) 78%, transparent);
-  filter: brightness(.96);
-}
-
-.t3-composer .zai-composer__usage-meter {
-  display: inline-flex;
-  height: 30px;
-  max-width: 112px;
-  align-items: center;
-  gap: 5px;
-  border: 0;
-  border-radius: 999px;
-  padding: 0 9px;
-  background: color-mix(in srgb, var(--v2-text-text-muted) 8%, transparent);
-  color: color-mix(in srgb, var(--v2-text-text-muted) 68%, transparent);
-  font-size: 10px;
-  white-space: nowrap;
-}
-
-.t3-composer .zai-composer__usage-meter:hover {
-  background: color-mix(in srgb, var(--v2-text-text-muted) 12%, transparent);
-  color: var(--v2-text-text-muted);
-}
-
-.t3-composer .zai-composer__context-meter svg {
-  width: 16px;
-  height: 16px;
-  overflow: visible;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-}
-
-.t3-composer .zai-composer__context-meter circle {
-  stroke-width: 3;
-  opacity: 0.34;
-}
-
-.t3-composer .zai-composer__context-meter path {
-  stroke-width: 3;
-  opacity: 0.74;
-}
-
-.zai-context-popover {
-  position: absolute;
-  z-index: 60;
-  right: -42px;
-  bottom: 42px;
-  width: 284px;
-  border: 1px solid color-mix(in srgb, var(--v2-border-border-base) 78%, transparent);
-  border-radius: 14px;
-  padding: 14px;
-  background: color-mix(in srgb, var(--v2-background-bg-base) 96%, transparent);
-  box-shadow: var(--v2-elevation-overlay);
-  color: var(--v2-text-text-base);
-  -webkit-backdrop-filter: blur(22px);
-  backdrop-filter: blur(22px);
-}
-
-.zai-context-popover__header,
-.zai-context-popover__row,
-.zai-usage-window > div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.zai-context-popover__header {
-  margin-bottom: 13px;
-  font-size: 12px;
-}
-
-.zai-context-popover__header span,
-.zai-context-popover__row span,
-.zai-usage-window span {
-  color: var(--v2-text-text-faint);
-}
-
-.zai-context-popover__row,
-.zai-usage-window > div {
-  font-size: 11px;
-}
-
-.zai-context-popover p {
-  margin: 13px 0 0;
-  color: var(--v2-text-text-faint);
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.zai-usage-window {
-  margin-top: 13px;
-}
-
-.zai-usage-window i {
-  display: block;
-  height: 5px;
-  margin-top: 7px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--v2-text-text-muted) 12%, transparent);
-}
-
-.zai-usage-window b {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #6f9df7, #8b78eb);
-}
-
 .t3-composer .zai-composer__submit {
   display: inline-flex;
   width: 38px;
@@ -466,15 +318,6 @@
     max-width: 136px;
   }
 
-  .t3-composer .zai-composer__usage-meter {
-    width: 30px;
-    padding: 0;
-    justify-content: center;
-  }
-
-  .t3-composer .zai-composer__usage-meter span {
-    display: none;
-  }
 }
 
 .t3-composer .zai-composer__submit:hover:not(:disabled) {
@@ -494,6 +337,10 @@
   color: var(--t3-composer-primary-foreground);
   cursor: default;
   opacity: 0.3;
+}
+
+.t3-composer .zai-composer__steer:disabled {
+  opacity: 0.35;
 }
 
 .t3-composer .zai-composer__stop {

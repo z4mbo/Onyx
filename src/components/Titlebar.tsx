@@ -1,7 +1,8 @@
 import { createSignal, For, onCleanup, onMount, Show, type Component, type JSX } from "solid-js"
 import { Icon } from "@opencode-ai/ui/v2/icon"
-import { LogOut, MessageSquare, Settings, UserRound } from "lucide-solid"
+import { LogOut, Settings, UserRound } from "lucide-solid"
 import type { AccountProfile } from "../lib/types"
+import { PanelLayoutControls } from "./workspace-panels/PanelLayoutControls"
 import { ZaiAppIcon } from "./ZaiAppIcon"
 
 /** The presentation-only tab shape consumed by the Onyx desktop titlebar. */
@@ -36,8 +37,13 @@ export interface TitlebarProps {
   onOpenSession?: (id: string) => void
   /** Open the project/session home view. */
   onHome: () => void
-  /** Open general chat, images, and video. */
-  onChat: () => void
+  showLayoutControls?: boolean
+  bottomPanelOpen?: boolean
+  rightPanelOpen?: boolean
+  bottomPanelAvailable?: boolean
+  rightPanelAvailable?: boolean
+  onToggleBottomPanel?: () => void
+  onToggleRightPanel?: () => void
   /** Open Onyx settings. */
   onOpenSettings: () => void
   /** Signed-in Clerk profile rendered in the always-visible account control. */
@@ -406,16 +412,18 @@ export const Titlebar: Component<TitlebarProps> = (props) => {
 
         <div class="zai-titlebar__drag-space" data-tauri-drag-region style={{ flex: "1", height: "100%" }} />
 
-        <button
-          type="button"
-          class="zai-titlebar__control zai-titlebar__destination zai-titlebar__chat"
-          style={{ ...CONTROL_RESET, display: "inline-flex", "align-items": "center", "justify-content": "center", width: "28px", height: "28px", "min-width": "28px", "border-radius": "6px", background: "transparent" }}
-          onClick={props.onChat}
-          aria-label="Chat, images, and video"
-          title="Chat, images, and video"
-        >
-          <MessageSquare size={15} stroke-width={1.7} />
-        </button>
+        <Show when={props.showLayoutControls}>
+          <PanelLayoutControls
+            bottomPanelOpen={props.bottomPanelOpen ?? false}
+            rightPanelOpen={props.rightPanelOpen ?? false}
+            bottomPanelAvailable={props.bottomPanelAvailable}
+            rightPanelAvailable={props.rightPanelAvailable}
+            bottomPanelShortcut="⌘J"
+            rightPanelShortcut="⌘⇧J"
+            onToggleBottomPanel={() => props.onToggleBottomPanel?.()}
+            onToggleRightPanel={() => props.onToggleRightPanel?.()}
+          />
+        </Show>
         <div class="zai-titlebar__profile-wrap">
           <button
             ref={profileButton}

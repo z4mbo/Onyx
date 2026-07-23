@@ -4,7 +4,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const cargoExecutable = process.platform === "win32" ? "cargo.exe" : "cargo";
 const pathEntries = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
@@ -66,6 +66,26 @@ const environment = {
   ...process.env,
   PATH: [cargoDirectory, ...pathEntries].join(delimiter),
 };
+
+if (
+  process.platform === "darwin"
+  && process.argv.slice(2).includes("build")
+  && !environment.APPLE_SIGNING_IDENTITY
+) {
+  const identities = spawnSync(
+    "/usr/bin/security",
+    ["find-identity", "-v", "-p", "codesigning"],
+    { encoding: "utf8" },
+  );
+  const available = [...(identities.stdout ?? "").matchAll(/"((?:Developer ID Application|Apple Development):[^"]+)"/g)]
+    .map((match) => match[1]);
+  const identity = available.find((value) => value.startsWith("Developer ID Application:"))
+    ?? available.find((value) => value.startsWith("Apple Development:"));
+  if (identity) {
+    environment.APPLE_SIGNING_IDENTITY = identity;
+    console.info(`Signing this macOS build with ${identity}`);
+  }
+}
 
 const child = spawn(process.execPath, [tauriCli, ...process.argv.slice(2)], {
   env: environment,

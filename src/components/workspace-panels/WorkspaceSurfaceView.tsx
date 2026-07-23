@@ -6,6 +6,7 @@ import {
   File,
   Folder,
   Globe2,
+  MessageSquare,
   RefreshCw,
 } from "lucide-solid"
 import {
@@ -16,11 +17,22 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  onCleanup,
   onMount,
   type Component,
 } from "solid-js"
 import { api } from "../../lib/api"
+import {
+  boundsForProviderSidebar,
+  focusProviderSidebar,
+  hideProviderSidebar,
+  officialProviders,
+  positionProviderSidebar,
+  showProviderSidebar,
+  type OfficialProviderId,
+} from "../../lib/provider-sidebar"
 import type { WorkspaceEntry, WorkspaceFile } from "../../lib/types"
+import { ProviderBadge } from "../ProviderBadge"
 import { normalizeBrowserUrl } from "./browser-url"
 import { TerminalViewport } from "./TerminalViewport"
 import type { WorkspaceSurface } from "./types"
@@ -28,10 +40,135 @@ import "./surface-views.css"
 
 const browserState = new Map<string, { entries: string[]; index: number }>()
 const selectedFiles = new Map<string, string>()
-
 function displayPath(workspace: string, path: string) {
   const prefix = workspace.endsWith("/") ? workspace : `${workspace}/`
   return path.startsWith(prefix) ? path.slice(prefix.length) : path
+}
+
+const ChatSurface: Component<{ suspended?: boolean; onError?: (error: unknown) => void }> = (props) => {
+  const stored = localStorage.getItem("onyx.official-provider")
+  const initial = officialProviders.some((provider) => provider.id === stored)
+    ? stored as OfficialProviderId
+    : null
+  const [selected, setSelected] = createSignal<OfficialProviderId | null>(initial)
+  const [loading, setLoading] = createSignal(false)
+  let host: HTMLDivElement | undefined
+  let resizeObserver: ResizeObserver | undefined
+  let frame = 0
+  let disposed = false
+  let previousSuspended = props.suspended ?? false
+
+  const bounds = () => host ? boundsForProviderSidebar(host) : null
+  const syncBounds = () => {
+    window.cancelAnimationFrame(frame)
+    frame = window.requestAnimationFrame(() => {
+      const provider = selected()
+      const next = bounds()
+      if (provider && next && next.width > 1 && next.height > 1) {
+        void positionProviderSidebar(provider, next).catch((error) => props.onError?.(error))
+      }
+    })
+  }
+
+  const open = async (provider: OfficialProviderId) => {
+    setSelected(provider)
+    localStorage.setItem("onyx.official-provider", provider)
+    setLoading(true)
+    try {
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+      if (disposed || props.suspended) return
+      const next = bounds()
+      if (!next) throw new Error("The provider sidebar is not ready.")
+      await showProviderSidebar(provider, next)
+      await focusProviderSidebar(provider)
+    } catch (error) {
+      props.onError?.(error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  onMount(() => {
+    if (host) {
+      resizeObserver = new ResizeObserver(syncBounds)
+      resizeObserver.observe(host)
+    }
+    window.addEventListener("resize", syncBounds)
+    window.addEventListener("scroll", syncBounds, true)
+    const visibility = () => {
+      const provider = selected()
+      if (document.hidden) void hideProviderSidebar(provider ?? undefined)
+      else if (provider && !props.suspended) void open(provider)
+    }
+    document.addEventListener("visibilitychange", visibility)
+    const provider = selected()
+    if (provider && !props.suspended) void open(provider)
+    onCleanup(() => {
+      disposed = true
+      window.cancelAnimationFrame(frame)
+      resizeObserver?.disconnect()
+      window.removeEventListener("resize", syncBounds)
+      window.removeEventListener("scroll", syncBounds, true)
+      document.removeEventListener("visibilitychange", visibility)
+      void hideProviderSidebar(selected() ?? undefined).catch(() => undefined)
+    })
+  })
+
+  createEffect(() => {
+    const suspended = props.suspended ?? false
+    if (suspended === previousSuspended) return
+    previousSuspended = suspended
+    const provider = selected()
+    if (suspended) void hideProviderSidebar(provider ?? undefined)
+    else if (provider && !disposed) void open(provider)
+  })
+
+  return (
+    <div class="zai-provider-sidebar">
+      <nav aria-label="Official chat provider">
+        <For each={officialProviders}>
+          {(provider) => (
+            <button
+              type="button"
+              data-active={selected() === provider.id ? "true" : "false"}
+              aria-pressed={selected() === provider.id}
+              title={provider.name}
+              onClick={() => void open(provider.id)}
+            >
+              <ProviderBadge brand={provider.brand} size="sm" />
+              <span>{provider.name}</span>
+            </button>
+          )}
+        </For>
+      </nav>
+      <div ref={host} class="zai-provider-sidebar__host">
+        <Show
+          when={selected()}
+          fallback={
+            <div class="zai-provider-sidebar__empty">
+              <MessageSquare aria-hidden="true" />
+              <strong>Choose an official chat</strong>
+              <span>It will stay inside this sidebar and reuse its signed-in session.</span>
+            </div>
+          }
+        >
+          {(providerId) => {
+            const provider = () => officialProviders.find((item) => item.id === providerId())
+            return (
+              <div class="zai-provider-sidebar__loading">
+                <ProviderBadge brand={provider()!.brand} />
+                <strong>{loading() ? `Opening ${provider()!.name}…` : provider()!.name}</strong>
+                <span>{provider()!.detail}</span>
+              </div>
+            )
+          }}
+        </Show>
+      </div>
+      <footer>
+        Official provider site · account and subscription stay with the provider
+      </footer>
+    </div>
+  )
 }
 
 const BrowserSurface: Component<{ surface: WorkspaceSurface; onError?: (error: unknown) => void }> = (props) => {
@@ -288,12 +425,16 @@ const DiffSurface: Component<{ workspace: string; onError?: (error: unknown) => 
 export interface WorkspaceSurfaceViewProps {
   surface: WorkspaceSurface
   workspace: string
+  suspended?: boolean
   onError?: (error: unknown) => void
 }
 
 /** Functional renderer for each tab kind accepted by RightWorkspacePanel. */
 export const WorkspaceSurfaceView: Component<WorkspaceSurfaceViewProps> = (props) => (
   <Switch>
+    <Match when={props.surface.kind === "chat"}>
+      <ChatSurface suspended={props.suspended} onError={props.onError} />
+    </Match>
     <Match when={props.surface.kind === "browser"}>
       <BrowserSurface surface={props.surface} onError={props.onError} />
     </Match>

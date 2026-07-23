@@ -1,8 +1,9 @@
 import { createSignal, For, onCleanup, onMount, type Component } from "solid-js"
 import { listen } from "@tauri-apps/api/event"
 import { api } from "../lib/api"
-import { SpeechCapture } from "../lib/audio"
+import { SpeechCapture, withDeadline } from "../lib/audio"
 import { appendVoiceHistory } from "../lib/voice-history"
+import { applyDocumentTheme } from "../lib/theme"
 import type { ActiveAppContext, HoldPayload } from "../lib/types"
 import { OnyxOrb } from "./OnyxOrb"
 import "./overlay.css"
@@ -18,6 +19,7 @@ export const Hud: Component = () => {
 
   const start = async () => {
     if (starting || finishing || capture.isRecording) return
+    applyDocumentTheme()
     starting = true
     pendingStop = false
     setPhase("Starting microphone")
@@ -29,7 +31,7 @@ export const Hud: Component = () => {
       shouldFinish = pendingStop
     } catch (error) {
       setPhase(error instanceof Error ? error.message : String(error))
-      window.setTimeout(() => void api.hideWindow("hud"), 3500)
+      window.setTimeout(() => void api.hideWindow("hud"), 6500)
     } finally {
       starting = false
     }
@@ -43,14 +45,15 @@ export const Hud: Component = () => {
     setPhase("Transcribing")
     try {
       const audio = await capture.stop()
-      const result = await api.transcribeAudio(audio.audioBase64, audio.format)
-      await api.injectText(result.text)
+      const result = await withDeadline(api.transcribeAudio(audio.audioBase64, audio.format), 75, "Transcription")
       appendVoiceHistory({ id: crypto.randomUUID(), createdAt: new Date().toISOString(), kind: "dictation", text: result.text, appName: app().name, model: result.model })
+      await withDeadline(api.injectText(result.text), 15, "Inserting the transcript")
       setPhase("Inserted")
       window.setTimeout(() => void api.hideWindow("hud"), 650)
     } catch (error) {
-      setPhase(error instanceof Error ? error.message : String(error))
-      window.setTimeout(() => void api.hideWindow("hud"), 3500)
+      const message = error instanceof Error ? error.message : String(error)
+      setPhase(message.length > 140 ? `${message.slice(0, 140)}…` : message)
+      window.setTimeout(() => void api.hideWindow("hud"), 6500)
     } finally {
       finishing = false
     }

@@ -28,6 +28,7 @@ const CALLBACK_PATH: &str = "/callback";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(12);
 const MAX_REQUEST_BYTES: usize = 16 * 1024;
 const MAX_RESPONSE_BYTES: usize = 512 * 1024;
 
@@ -472,17 +473,21 @@ fn jwt_expires_after(token: &str, seconds: i64) -> bool {
 }
 
 async fn read_credentials() -> Result<Option<StoredCredentials>, String> {
-    tokio::task::spawn_blocking(|| {
-        let entry = keyring::Entry::new(SERVICE, ACCOUNT).map_err(|error| error.to_string())?;
-        match entry.get_password() {
-            Ok(value) => serde_json::from_str(&value)
-                .map(Some)
-                .map_err(|_| "The stored Onyx account session is invalid".to_string()),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => Err(error.to_string()),
-        }
-    })
+    tokio::time::timeout(
+        KEYCHAIN_TIMEOUT,
+        tokio::task::spawn_blocking(|| {
+            let entry = keyring::Entry::new(SERVICE, ACCOUNT).map_err(|error| error.to_string())?;
+            match entry.get_password() {
+                Ok(value) => serde_json::from_str(&value)
+                    .map(Some)
+                    .map_err(|_| "The stored Onyx account session is invalid".to_string()),
+                Err(keyring::Error::NoEntry) => Ok(None),
+                Err(error) => Err(error.to_string()),
+            }
+        }),
+    )
     .await
+    .map_err(|_| "Timed out while waiting for macOS Keychain access".to_string())?
     .map_err(|error| error.to_string())?
 }
 

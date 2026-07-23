@@ -75,9 +75,9 @@ function namedModel(id: string, name: string, overrides: Partial<ProviderModelOp
 export const fallbackModels: Record<Exclude<ProviderId, "openrouter">, ProviderModelOption[]> = {
   codex: [namedModel("default", "Codex default", { isDefault: true })],
   claude: [
-    namedModel("fable", "Claude Fable", { isDefault: true, reasoning: ["low", "medium", "high", "xhigh", "max"] }),
-    namedModel("opus", "Claude Opus", { reasoning: ["low", "medium", "high", "xhigh", "max"] }),
-    namedModel("sonnet", "Claude Sonnet", { reasoning: ["low", "medium", "high", "xhigh", "max"] }),
+    namedModel("fable", "Claude Fable", { isDefault: true, reasoning: ["low", "medium", "high", "xhigh", "max", "ultracode"] }),
+    namedModel("opus", "Claude Opus", { reasoning: ["low", "medium", "high", "xhigh", "max", "ultracode"] }),
+    namedModel("sonnet", "Claude Sonnet", { reasoning: ["low", "medium", "high", "xhigh", "max", "ultracode"] }),
     namedModel("haiku", "Claude Haiku", { reasoning: ["low", "medium", "high"] }),
   ],
   gemini: [

@@ -155,6 +155,27 @@ impl SessionStore {
         Ok(result)
     }
 
+    /// Records a steering message the user sent while a turn was running.
+    /// The session stays in its running state; only the transcript grows.
+    pub fn append_user_message(&self, id: &str, message: Message) -> Result<AgentSession, String> {
+        let mut state = self.state.write();
+        let mut next = state.clone();
+        let session = next
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == id)
+            .ok_or_else(|| "Session not found".to_string())?;
+        if session.status != SessionStatus::Running {
+            return Err("This session has no running turn to steer".to_string());
+        }
+        session.messages.push(message);
+        session.updated_at = Utc::now();
+        let result = session.clone();
+        self.persist_state(&next)?;
+        *state = next;
+        Ok(result)
+    }
+
     pub fn finish_turn(
         &self,
         id: &str,

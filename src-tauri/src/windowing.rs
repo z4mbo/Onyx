@@ -4,7 +4,7 @@ use crate::{AppState, model::OverlayPosition};
 
 pub fn position_saved_windows(app: &AppHandle) -> Result<(), String> {
     position_hud(app)?;
-    position_agent(app, 18)
+    position_agent(app, 0)
 }
 
 pub fn position_hud(app: &AppHandle) -> Result<(), String> {
@@ -36,7 +36,7 @@ pub fn show_hud(app: &AppHandle) -> Result<(), String> {
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub fn show_agent(app: &AppHandle) -> Result<(), String> {
-    set_agent_expanded(app, false)?;
+    set_agent_mode(app, "inactive")?;
     app.get_webview_window("agent")
         .ok_or_else(|| "Overlay agente non disponibile.".to_string())?
         .show()
@@ -44,22 +44,27 @@ pub fn show_agent(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn set_agent_expanded(app: &AppHandle, expanded: bool) -> Result<(), String> {
+    set_agent_mode(app, if expanded { "expanded" } else { "inactive" })
+}
+
+pub fn set_agent_mode(app: &AppHandle, mode: &str) -> Result<(), String> {
     let window = app
         .get_webview_window("agent")
         .ok_or_else(|| "Overlay agente non disponibile.".to_string())?;
-    let size = if expanded {
-        LogicalSize::new(420.0, 620.0)
-    } else {
-        LogicalSize::new(268.0, 66.0)
+    let (size, focusable, ignore_cursor) = match mode {
+        "inactive" => (LogicalSize::new(180.0, 18.0), false, false),
+        "listening" => (LogicalSize::new(260.0, 50.0), false, true),
+        "expanded" => (LogicalSize::new(410.0, 460.0), true, false),
+        _ => return Err("Unknown agent overlay mode".to_string()),
     };
     window.set_size(size).map_err(|error| error.to_string())?;
     window
-        .set_focusable(expanded)
+        .set_focusable(focusable)
         .map_err(|error| error.to_string())?;
     window
-        .set_ignore_cursor_events(!expanded)
+        .set_ignore_cursor_events(ignore_cursor)
         .map_err(|error| error.to_string())?;
-    position_agent(app, 14)
+    position_agent(app, 0)
 }
 
 fn position_agent(app: &AppHandle, margin: u32) -> Result<(), String> {

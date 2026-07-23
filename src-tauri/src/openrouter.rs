@@ -1,7 +1,7 @@
 use crate::model::{
-    AccessMode, AgentSession, ApprovalRequest, ChatMedia, ChatMessageInput, ChatReply, Message,
-    MessageKind, MessageRole, OpenRouterModel, OpenRouterStatus, SessionEvent, TranscriptionReply,
-    TranscriptionRequest, VideoJob,
+    AccessMode, AgentSession, ApprovalDecision, ApprovalRequest, ChatMedia, ChatMessageInput,
+    ChatReply, Message, MessageKind, MessageRole, OpenRouterModel, OpenRouterStatus, SessionEvent,
+    TranscriptionReply, TranscriptionRequest, VideoJob,
 };
 #[cfg(windows)]
 use crate::providers::process::WindowsJob;
@@ -19,7 +19,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 use tauri::{AppHandle, Emitter};
@@ -70,6 +70,15 @@ const FILE_SEARCH_TIMEOUT: Duration = Duration::from_secs(45);
 
 const SYSTEM_PROMPT: &str = "You are Onyx, a coding agent working in the user's selected workspace. Inspect files before editing. Use tools when needed, make focused changes, and explain the result. Follow the selected access policy and never claim a tool succeeded until its result is returned.";
 const TRUNCATION_MARKER: &str = "\n...[truncated by Onyx safety limit]";
+static TRANSCRIPTION_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
+    LazyLock::new(|| Client::builder().timeout(Duration::from_secs(180)).build());
+
+fn transcription_client() -> Result<&'static Client, String> {
+    match &*TRANSCRIPTION_CLIENT {
+        Ok(client) => Ok(client),
+        Err(error) => Err(error.to_string()),
+    }
+}
 
 #[derive(Debug)]
 struct ParsedToolCall {
@@ -79,7 +88,7 @@ struct ParsedToolCall {
     arguments: Value,
 }
 
-pub type ApprovalRegistry = Arc<ParkingMutex<HashMap<String, oneshot::Sender<bool>>>>;
+pub type ApprovalRegistry = Arc<ParkingMutex<HashMap<String, oneshot::Sender<ApprovalDecision>>>>;
 
 pub struct OpenRouterRunResult {
     pub content: String,
@@ -557,14 +566,14 @@ fn utf8_prefix(value: &str, max_bytes: usize) -> &str {
 pub fn respond_to_approval(
     registry: &ApprovalRegistry,
     id: &str,
-    allow: bool,
+    decision: ApprovalDecision,
 ) -> Result<(), String> {
     let sender = registry
         .lock()
         .remove(id)
         .ok_or_else(|| "Approval request is no longer active".to_string())?;
     sender
-        .send(allow)
+        .send(decision)
         .map_err(|_| "Approval request was cancelled".to_string())
 }
 
@@ -597,6 +606,57 @@ pub(crate) async fn read_key() -> Result<String, String> {
     .map_err(|error| error.to_string())?
 }
 
+/// Speech-to-text-only models (Whisper, GPT-4o Transcribe) must use the
+/// dedicated `/audio/transcriptions` endpoint; audio-capable chat models
+/// (for example google/gemini-2.5-flash) go through chat completions.
+fn uses_transcription_endpoint(model: &str) -> bool {
+    model.contains("whisper") || model.contains("transcribe")
+}
+
+fn transcription_endpoint_payload(
+    model: &str,
+    language: Option<&str>,
+    request: &TranscriptionRequest,
+) -> Value {
+    let mut payload = json!({
+        "model": model,
+        "input_audio": { "data": request.audio_base64, "format": request.format },
+        "temperature": 0
+    });
+    // The endpoint rejects `"language": null` — the field must be absent.
+    if let Some(language) = language.filter(|value| !value.trim().is_empty()) {
+        payload["language"] = json!(language);
+    }
+    payload
+}
+
+fn transcription_chat_payload(
+    model: &str,
+    language: Option<&str>,
+    request: &TranscriptionRequest,
+) -> Value {
+    let mut instruction = String::from(
+        "Transcribe this audio recording verbatim in the language spoken. Reply with only the transcribed text with natural punctuation - no commentary, no quotes, no labels.",
+    );
+    if let Some(language) = language.filter(|value| !value.trim().is_empty()) {
+        instruction.push_str(&format!(" The speaker's language is {language}."));
+    }
+    json!({
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                { "type": "text", "text": instruction },
+                {
+                    "type": "input_audio",
+                    "input_audio": { "data": request.audio_base64, "format": request.format }
+                }
+            ]
+        }],
+        "temperature": 0
+    })
+}
+
 pub async fn transcribe(
     model: &str,
     language: Option<&str>,
@@ -608,20 +668,24 @@ pub async fn transcribe(
     if model.is_empty() || model.len() > MAX_MODEL_ID_BYTES {
         return Err("The transcription model is invalid".into());
     }
+    let dedicated = uses_transcription_endpoint(model);
+    let (path, payload) = if dedicated {
+        (
+            "/audio/transcriptions",
+            transcription_endpoint_payload(model, language, request),
+        )
+    } else {
+        (
+            "/chat/completions",
+            transcription_chat_payload(model, language, request),
+        )
+    };
     let key = read_key().await?;
-    let response = Client::builder()
-        .timeout(Duration::from_secs(180))
-        .build()
-        .map_err(|error| error.to_string())?
-        .post(format!("{API_BASE}/audio/transcriptions"))
+    let response = transcription_client()?
+        .post(format!("{API_BASE}{path}"))
         .bearer_auth(key)
         .header("X-OpenRouter-Title", "Onyx")
-        .json(&json!({
-            "model": model,
-            "input_audio": { "data": request.audio_base64, "format": request.format },
-            "language": language,
-            "temperature": 0
-        }))
+        .json(&payload)
         .send()
         .await
         .map_err(safe_http_error)?;
@@ -640,12 +704,22 @@ pub async fn transcribe(
     }
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|_| "OpenRouter returned invalid transcription data".to_string())?;
-    let text = value
-        .get("text")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    if let Some(message) = value.pointer("/error/message").and_then(Value::as_str) {
+        return Err(
+            truncate_utf8_with_marker(message, MAX_ERROR_MESSAGE_BYTES, TRUNCATION_MARKER)
+                .to_string(),
+        );
+    }
+    let text = if dedicated {
+        extract_content_limited(value.get("text"), MAX_ASSISTANT_CONTENT_BYTES)?
+    } else {
+        extract_content_limited(
+            value.pointer("/choices/0/message/content"),
+            MAX_ASSISTANT_CONTENT_BYTES,
+        )?
+    }
+    .trim()
+    .to_string();
     if text.is_empty() {
         return Err("No understandable speech was detected".into());
     }
@@ -1270,7 +1344,7 @@ async fn request_approval(
         result = timeout(Duration::from_secs(600), receiver) => {
             approvals.lock().remove(&id);
             match result {
-                Ok(Ok(allow)) => Ok(allow),
+                Ok(Ok(decision)) => Ok(decision.allowed()),
                 Ok(Err(_)) => Err("Approval request was closed".to_string()),
                 Err(_) => Err("Approval request timed out".to_string()),
             }
@@ -1909,11 +1983,74 @@ mod tests {
         MAX_TOOL_CALLS_PER_ROUND, MAX_TOOL_NAME_BYTES, MAX_TURN_CONTEXT_GROWTH_BYTES,
         TRUNCATION_MARKER, bounded_activity_detail, build_initial_messages,
         extract_content_limited, parse_tool_calls, push_turn_context_message, read_workspace_text,
-        run_shell_command, safe_path, secure_write, truncate_utf8_with_marker,
+        run_shell_command, safe_path, secure_write, transcription_chat_payload,
+        transcription_endpoint_payload, truncate_utf8_with_marker, uses_transcription_endpoint,
     };
-    use crate::model::{Message, MessageKind, MessageRole};
+    use crate::model::{Message, MessageKind, MessageRole, TranscriptionRequest};
     use serde_json::json;
     use std::fs;
+
+    #[test]
+    fn transcription_builds_an_audio_chat_completion() {
+        let request = TranscriptionRequest {
+            audio_base64: "audio".into(),
+            format: "wav".into(),
+        };
+        let unset = transcription_chat_payload("model", None, &request);
+        assert_eq!(unset.get("model"), Some(&json!("model")));
+        assert_eq!(
+            unset.pointer("/messages/0/content/1/input_audio"),
+            Some(&json!({ "data": "audio", "format": "wav" }))
+        );
+        let instruction = |payload: &serde_json::Value| {
+            payload
+                .pointer("/messages/0/content/0/text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap()
+                .to_string()
+        };
+        assert!(!instruction(&unset).contains("speaker's language"));
+        assert!(
+            !instruction(&transcription_chat_payload("model", Some("  "), &request))
+                .contains("speaker's language")
+        );
+        assert!(
+            instruction(&transcription_chat_payload("model", Some("it"), &request))
+                .contains("language is it")
+        );
+    }
+
+    #[test]
+    fn speech_to_text_models_route_to_the_transcription_endpoint() {
+        assert!(uses_transcription_endpoint("openai/whisper-large-v3"));
+        assert!(uses_transcription_endpoint("openai/whisper-large-v3-turbo"));
+        assert!(uses_transcription_endpoint("openai/gpt-4o-mini-transcribe"));
+        assert!(!uses_transcription_endpoint("google/gemini-2.5-flash"));
+        assert!(!uses_transcription_endpoint("openai/gpt-audio-mini"));
+    }
+
+    #[test]
+    fn transcription_endpoint_payload_omits_null_language() {
+        let request = TranscriptionRequest {
+            audio_base64: "audio".into(),
+            format: "wav".into(),
+        };
+        // The endpoint 400s on `"language": null`; the field must be absent.
+        let unset = transcription_endpoint_payload("openai/whisper-large-v3", None, &request);
+        assert!(unset.get("language").is_none());
+        assert_eq!(
+            unset.get("input_audio"),
+            Some(&json!({ "data": "audio", "format": "wav" }))
+        );
+        let italian =
+            transcription_endpoint_payload("openai/whisper-large-v3", Some("it"), &request);
+        assert_eq!(italian.get("language"), Some(&json!("it")));
+        assert!(
+            transcription_endpoint_payload("openai/whisper-large-v3", Some(" "), &request)
+                .get("language")
+                .is_none()
+        );
+    }
 
     #[test]
     fn workspace_paths_reject_parent_traversal() {

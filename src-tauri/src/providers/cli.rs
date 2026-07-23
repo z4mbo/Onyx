@@ -133,7 +133,10 @@ impl ProviderSession for CliSession {
         prompt: &'a str,
         cancellation: &'a CancellationToken,
         events: mpsc::Sender<ProviderEvent>,
+        steer: mpsc::UnboundedReceiver<String>,
     ) -> DriverFuture<'a, Result<(), String>> {
+        // One-shot CLI transports cannot accept mid-turn input.
+        drop(steer);
         Box::pin(async move {
             if let Some(detail) = self.startup_activity.take() {
                 send_event(
@@ -365,10 +368,20 @@ fn build_args(
                 args.push("--dangerously-skip-permissions".to_string());
             }
             if let Some(reasoning) = config.reasoning {
-                args.extend(["--effort".to_string(), reasoning.as_str().to_string()]);
+                args.extend(["--effort".to_string(), reasoning.clamped_str().to_string()]);
             }
+            let mut settings = serde_json::Map::new();
             if config.speed_mode == crate::model::SpeedMode::Fast {
-                args.extend(["--settings".to_string(), r#"{"fastMode":true}"#.to_string()]);
+                settings.insert("fastMode".into(), serde_json::Value::Bool(true));
+            }
+            if config.reasoning == Some(crate::model::ReasoningEffort::Ultracode) {
+                settings.insert("ultracode".into(), serde_json::Value::Bool(true));
+            }
+            if !settings.is_empty() {
+                args.extend([
+                    "--settings".to_string(),
+                    serde_json::Value::Object(settings).to_string(),
+                ]);
             }
             if let Some(id) = provider_session_id {
                 args.extend(["--resume".to_string(), id.to_string()]);
@@ -399,7 +412,7 @@ fn build_args(
                 if let Some(reasoning) = config.reasoning {
                     args.extend([
                         "-c".to_string(),
-                        format!("model_reasoning_effort=\"{}\"", reasoning.as_str()),
+                        format!("model_reasoning_effort=\"{}\"", reasoning.clamped_str()),
                     ]);
                 }
                 if let Some(tier) = config.speed_mode.as_service_tier() {
@@ -420,7 +433,7 @@ fn build_args(
                 if let Some(reasoning) = config.reasoning {
                     args.extend([
                         "-c".to_string(),
-                        format!("model_reasoning_effort=\"{}\"", reasoning.as_str()),
+                        format!("model_reasoning_effort=\"{}\"", reasoning.clamped_str()),
                     ]);
                 }
                 if let Some(tier) = config.speed_mode.as_service_tier() {
@@ -542,6 +555,47 @@ mod tests {
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--approval-mode", "auto_edit"])
+        );
+    }
+
+    #[test]
+    fn gemini_maps_plan_permissions_model_and_resume() {
+        let mut selected = config(ProviderId::Gemini);
+        selected.model = Some("gemini-pro".to_string());
+        selected.interaction_mode = InteractionMode::Plan;
+        selected.access_mode = AccessMode::FullAccess;
+        let args = build_args(&selected, Some("session-1"), "inspect");
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--approval-mode", "yolo"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--resume", "session-1"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--model", "gemini-pro"])
+        );
+        assert!(args.iter().any(|arg| arg.starts_with("Plan the work")));
+    }
+
+    #[test]
+    fn kimi_maps_plan_permissions_model_and_resume() {
+        let mut selected = config(ProviderId::Kimi);
+        selected.model = Some("kimi-latest".to_string());
+        selected.interaction_mode = InteractionMode::Plan;
+        selected.access_mode = AccessMode::FullAccess;
+        let args = build_args(&selected, Some("session-1"), "inspect");
+        assert!(args.iter().any(|arg| arg == "--auto"));
+        assert!(args.iter().any(|arg| arg == "--plan"));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--session", "session-1"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--model", "kimi-latest"])
         );
     }
 }

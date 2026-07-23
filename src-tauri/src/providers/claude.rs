@@ -7,7 +7,9 @@ use super::{
     normalize::{NormalizedEvent, StreamNormalizer},
     process::{JsonProcess, ProcessOutput, find_executable, platform_command},
 };
-use crate::model::{AccessMode, ContextUsage, InteractionMode, ProviderId, SpeedMode};
+use crate::model::{
+    AccessMode, ApprovalDecision, ContextUsage, InteractionMode, MessageKind, ProviderId, SpeedMode,
+};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::{sync::mpsc, time::timeout};
@@ -45,46 +47,61 @@ struct ClaudeSession {
     continuation: Option<String>,
 }
 
+fn persistent_args(config: &ProviderSessionConfig) -> Vec<String> {
+    let mut args = vec![
+        "--print".to_string(),
+        "--verbose".to_string(),
+        "--input-format".to_string(),
+        "stream-json".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--include-partial-messages".to_string(),
+        "--permission-prompt-tool".to_string(),
+        "stdio".to_string(),
+        "--permission-mode".to_string(),
+        match (config.interaction_mode, config.access_mode) {
+            (InteractionMode::Plan, _) => "plan",
+            (_, AccessMode::ApprovalRequired) => "manual",
+            (_, AccessMode::AutoAcceptEdits) => "acceptEdits",
+            (_, AccessMode::FullAccess) => "bypassPermissions",
+        }
+        .to_string(),
+    ];
+    if config.access_mode == AccessMode::FullAccess
+        && config.interaction_mode != InteractionMode::Plan
+    {
+        args.push("--dangerously-skip-permissions".to_string());
+    }
+    if let Some(reasoning) = config.reasoning {
+        args.extend(["--effort".to_string(), reasoning.clamped_str().to_string()]);
+    }
+    let mut settings = serde_json::Map::new();
+    if config.speed_mode == SpeedMode::Fast {
+        settings.insert("fastMode".into(), Value::Bool(true));
+    }
+    if config.reasoning == Some(crate::model::ReasoningEffort::Ultracode) {
+        settings.insert("ultracode".into(), Value::Bool(true));
+    }
+    if !settings.is_empty() {
+        args.extend([
+            "--settings".to_string(),
+            Value::Object(settings).to_string(),
+        ]);
+    }
+    if let Some(id) = config.continuation.as_deref() {
+        args.extend(["--resume".to_string(), id.to_string()]);
+    }
+    if let Some(model) = config.model() {
+        args.extend(["--model".to_string(), model.to_string()]);
+    }
+    args
+}
+
 impl ClaudeSession {
     async fn connect(config: ProviderSessionConfig) -> Result<Self, String> {
         let executable = find_executable("claude")
             .ok_or_else(|| "Claude Code is not installed or was not found on PATH".to_string())?;
-        let mut args = vec![
-            "--print".to_string(),
-            "--verbose".to_string(),
-            "--input-format".to_string(),
-            "stream-json".to_string(),
-            "--output-format".to_string(),
-            "stream-json".to_string(),
-            "--include-partial-messages".to_string(),
-            "--permission-prompt-tool".to_string(),
-            "stdio".to_string(),
-            "--permission-mode".to_string(),
-            match (config.interaction_mode, config.access_mode) {
-                (InteractionMode::Plan, _) => "plan",
-                (_, AccessMode::ApprovalRequired) => "manual",
-                (_, AccessMode::AutoAcceptEdits) => "acceptEdits",
-                (_, AccessMode::FullAccess) => "bypassPermissions",
-            }
-            .to_string(),
-        ];
-        if config.access_mode == AccessMode::FullAccess
-            && config.interaction_mode != InteractionMode::Plan
-        {
-            args.push("--dangerously-skip-permissions".to_string());
-        }
-        if let Some(reasoning) = config.reasoning {
-            args.extend(["--effort".to_string(), reasoning.as_str().to_string()]);
-        }
-        if config.speed_mode == SpeedMode::Fast {
-            args.extend(["--settings".to_string(), r#"{"fastMode":true}"#.to_string()]);
-        }
-        if let Some(id) = config.continuation.as_deref() {
-            args.extend(["--resume".to_string(), id.to_string()]);
-        }
-        if let Some(model) = config.model() {
-            args.extend(["--model".to_string(), model.to_string()]);
-        }
+        let args = persistent_args(&config);
         let mut command = platform_command(&executable, &args);
         command
             .current_dir(&config.workspace)
@@ -111,29 +128,48 @@ impl ClaudeSession {
         prompt: &str,
         cancellation: &CancellationToken,
         events: &mpsc::Sender<ProviderEvent>,
+        mut steer: mpsc::UnboundedReceiver<String>,
     ) -> Result<(), String> {
         self.process.send_json(&user_message(prompt)).await?;
         let mut normalizer = StreamNormalizer::new(ProviderId::Claude);
+        let mut steer_open = true;
 
         loop {
-            let value = tokio::select! {
+            // `next_stdout` is a cancel-safe channel read, so losing the race
+            // against a steering message never drops a stdout line.
+            enum TurnInput {
+                Steer(Option<String>),
+                Output(ProcessOutput),
+            }
+            let input = tokio::select! {
                 _ = cancellation.cancelled() => {
                     self.process.shutdown().await;
                     return Err("Turn cancelled".to_string());
                 }
-                output = self.process.next_stdout() => {
-                    match output? {
-                        ProcessOutput::Stdout(line) => serde_json::from_str::<Value>(&line)
-                            .map_err(|error| format!("Claude Code returned invalid stream JSON: {error}"))?,
-                        ProcessOutput::Exited(status) => {
-                            let detail = self.process.stderr_tail();
-                            return Err(if detail.is_empty() {
-                                format!("Claude Code stream transport exited with {status}")
-                            } else {
-                                format!("Claude Code stream transport exited with {status}: {detail}")
-                            });
-                        }
-                    }
+                message = steer.recv(), if steer_open => TurnInput::Steer(message),
+                output = self.process.next_stdout() => TurnInput::Output(output?),
+            };
+            let value = match input {
+                TurnInput::Steer(Some(text)) => {
+                    self.process.send_json(&user_message(&text)).await?;
+                    continue;
+                }
+                TurnInput::Steer(None) => {
+                    steer_open = false;
+                    continue;
+                }
+                TurnInput::Output(ProcessOutput::Stdout(line)) => {
+                    serde_json::from_str::<Value>(&line).map_err(|error| {
+                        format!("Claude Code returned invalid stream JSON: {error}")
+                    })?
+                }
+                TurnInput::Output(ProcessOutput::Exited(status)) => {
+                    let detail = self.process.stderr_tail();
+                    return Err(if detail.is_empty() {
+                        format!("Claude Code stream transport exited with {status}")
+                    } else {
+                        format!("Claude Code stream transport exited with {status}: {detail}")
+                    });
                 }
             };
 
@@ -216,13 +252,63 @@ impl ClaudeSession {
             .get("tool_name")
             .and_then(Value::as_str)
             .unwrap_or("tool");
+        let input = request.get("input").cloned().unwrap_or_else(|| json!({}));
+
+        // Plan mode: capture the proposed plan for review instead of asking the
+        // user to "approve a tool". Denying ends the turn cleanly and the plan
+        // stays visible in the transcript until they switch to Build.
+        if tool_name == "ExitPlanMode" || tool_name == "exit_plan_mode" {
+            if let Some(plan) = input
+                .get("plan")
+                .and_then(Value::as_str)
+                .filter(|plan| !plan.trim().is_empty())
+            {
+                send_event(
+                    events,
+                    ProviderEvent::Text(format!("## Proposed plan\n\n{plan}")),
+                )
+                .await?;
+            }
+            send_event(
+                events,
+                ProviderEvent::Activity(ProviderActivity {
+                    title: "Plan ready for review".to_string(),
+                    detail: Some("Switch the session to Build to run it".to_string()),
+                    kind: MessageKind::Text,
+                }),
+            )
+            .await?;
+            return self
+                .process
+                .send_json(&control_response(
+                    request_id,
+                    permission_deny(
+                        "Onyx captured your proposed plan for the user to review. Stop here and wait for their decision before taking any further action.",
+                    ),
+                ))
+                .await;
+        }
+
+        // Onyx has no interactive multiple-choice prompt, so route questions
+        // through the normal reply where the user can actually answer them.
+        if tool_name == "AskUserQuestion" {
+            return self
+                .process
+                .send_json(&control_response(
+                    request_id,
+                    permission_deny(
+                        "Onyx cannot render interactive question prompts. Ask the user directly in your reply text and end the turn so they can answer.",
+                    ),
+                ))
+                .await;
+        }
+
         let title = request
             .get("title")
             .or_else(|| request.get("display_name"))
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| format!("Allow Claude Code to use {tool_name}?"));
-        let input = request.get("input").cloned().unwrap_or_else(|| json!({}));
         let detail = request
             .get("description")
             .and_then(Value::as_str)
@@ -241,15 +327,22 @@ impl ClaudeSession {
             }),
         )
         .await?;
-        let approved = tokio::select! {
+        let decision = tokio::select! {
             _ = cancellation.cancelled() => {
                 self.process.shutdown().await;
                 return Err("Turn cancelled".to_string());
             }
-            result = receiver => result.unwrap_or(false),
+            result = receiver => result.unwrap_or(ApprovalDecision::Deny),
+        };
+        let permission = match decision {
+            ApprovalDecision::Deny => permission_deny("Denied by user"),
+            ApprovalDecision::Allow => permission_allow(input, None),
+            ApprovalDecision::AllowSession => {
+                permission_allow(input, request.get("suggestions").cloned())
+            }
         };
         self.process
-            .send_json(&control_response(request_id, approved, input))
+            .send_json(&control_response(request_id, permission))
             .await
     }
 }
@@ -303,17 +396,23 @@ impl ProviderSession for ClaudeSession {
         self.continuation.clone()
     }
 
+    fn supports_steering(&self) -> bool {
+        true
+    }
+
     fn run_turn<'a>(
         &'a mut self,
         prompt: &'a str,
         cancellation: &'a CancellationToken,
         events: mpsc::Sender<ProviderEvent>,
+        steer: mpsc::UnboundedReceiver<String>,
     ) -> DriverFuture<'a, Result<(), String>> {
         Box::pin(async move {
             if let Some(id) = self.continuation.clone() {
                 send_event(&events, ProviderEvent::Continuation(id)).await?;
             }
-            self.run_turn_inner(prompt, cancellation, &events).await
+            self.run_turn_inner(prompt, cancellation, &events, steer)
+                .await
         })
     }
 
@@ -377,12 +476,25 @@ async fn wait_for_initialize(process: &mut JsonProcess) -> Result<Option<String>
     }
 }
 
-fn control_response(request_id: &str, approved: bool, input: Value) -> Value {
-    let permission = if approved {
-        json!({ "behavior": "allow", "updatedInput": input })
-    } else {
-        json!({ "behavior": "deny", "message": "Denied by user", "interrupt": false })
-    };
+fn permission_allow(input: Value, suggestions: Option<Value>) -> Value {
+    let mut permission = json!({ "behavior": "allow", "updatedInput": input });
+    // Claude Code persists these permission-rule suggestions for the session,
+    // mirroring the SDK's "accept for session" flow.
+    if let Some(suggestions) = suggestions.filter(|value| {
+        value
+            .as_array()
+            .is_some_and(|suggestions| !suggestions.is_empty())
+    }) {
+        permission["updatedPermissions"] = suggestions;
+    }
+    permission
+}
+
+fn permission_deny(message: &str) -> Value {
+    json!({ "behavior": "deny", "message": message, "interrupt": false })
+}
+
+fn control_response(request_id: &str, permission: Value) -> Value {
     json!({
         "type": "control_response",
         "response": {
@@ -416,8 +528,73 @@ async fn send_event(
 
 #[cfg(test)]
 mod tests {
-    use super::{control_error, control_response, initialize_request, user_message};
+    use super::{
+        control_error, control_response, initialize_request, permission_allow, permission_deny,
+        persistent_args, user_message,
+    };
+    use crate::{
+        model::{AccessMode, InteractionMode, ProviderId, ReasoningEffort, SpeedMode},
+        providers::driver::ProviderSessionConfig,
+    };
     use serde_json::json;
+    use std::path::PathBuf;
+
+    #[test]
+    fn persistent_transport_maps_session_options_to_claude_code() {
+        let args = persistent_args(&ProviderSessionConfig {
+            provider: ProviderId::Claude,
+            model: Some("opus".to_string()),
+            workspace: PathBuf::from("/tmp/project"),
+            continuation: Some("session-1".to_string()),
+            reasoning: Some(ReasoningEffort::High),
+            speed_mode: SpeedMode::Fast,
+            interaction_mode: InteractionMode::Plan,
+            access_mode: AccessMode::FullAccess,
+        });
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--input-format", "stream-json"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--permission-mode", "plan"])
+        );
+        assert!(args.windows(2).any(|pair| pair == ["--effort", "high"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--settings", r#"{"fastMode":true}"#])
+        );
+        let ultracode = persistent_args(&ProviderSessionConfig {
+            provider: ProviderId::Claude,
+            model: None,
+            workspace: PathBuf::from("/tmp/project"),
+            continuation: None,
+            reasoning: Some(ReasoningEffort::Ultracode),
+            speed_mode: SpeedMode::Standard,
+            interaction_mode: InteractionMode::Build,
+            access_mode: AccessMode::AutoAcceptEdits,
+        });
+        assert!(
+            ultracode
+                .windows(2)
+                .any(|pair| pair == ["--effort", "xhigh"])
+        );
+        assert!(
+            ultracode
+                .windows(2)
+                .any(|pair| pair == ["--settings", r#"{"ultracode":true}"#])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--resume", "session-1"])
+        );
+        assert!(args.windows(2).any(|pair| pair == ["--model", "opus"]));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions")
+        );
+    }
 
     #[test]
     fn streaming_user_message_matches_claude_sdk_shape() {
@@ -442,12 +619,35 @@ mod tests {
 
     #[test]
     fn permission_allow_round_trips_original_input() {
-        let response = control_response("request-1", true, json!({"command":"cargo test"}));
+        let response = control_response(
+            "request-1",
+            permission_allow(json!({"command":"cargo test"}), None),
+        );
         assert_eq!(response["response"]["subtype"], "success");
         assert_eq!(
             response["response"]["response"]["updatedInput"]["command"],
             "cargo test"
         );
+        assert!(
+            response["response"]["response"]
+                .get("updatedPermissions")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn session_scope_forwards_permission_suggestions() {
+        let suggestions = json!([{ "type": "addRules", "rules": [{ "toolName": "Bash" }] }]);
+        let allow = permission_allow(json!({}), Some(suggestions.clone()));
+        assert_eq!(allow["updatedPermissions"], suggestions);
+        assert!(
+            permission_allow(json!({}), Some(json!([])))
+                .get("updatedPermissions")
+                .is_none()
+        );
+        let deny = permission_deny("no");
+        assert_eq!(deny["behavior"], "deny");
+        assert_eq!(deny["message"], "no");
     }
 
     #[test]

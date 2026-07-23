@@ -8,6 +8,34 @@ use tauri::Emitter;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use crate::{model::HoldPayload, windowing};
 
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeVoicePermissions {
+    pub input_monitoring: bool,
+    pub accessibility: bool,
+}
+
+pub fn permission_status() -> NativeVoicePermissions {
+    #[cfg(target_os = "macos")]
+    {
+        return macos::permission_status();
+    }
+    #[cfg(not(target_os = "macos"))]
+    NativeVoicePermissions {
+        input_monitoring: true,
+        accessibility: true,
+    }
+}
+
+pub fn request_permissions() -> NativeVoicePermissions {
+    #[cfg(target_os = "macos")]
+    {
+        return macos::request_permissions();
+    }
+    #[cfg(not(target_os = "macos"))]
+    permission_status()
+}
+
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 const ACTIVATION_DELAY: Duration = Duration::from_millis(180);
 
@@ -291,26 +319,18 @@ mod macos {
     }
 
     pub fn start(app: AppHandle) {
-        // Ask up front so the first hold-to-talk and first text injection do
-        // not silently fail. macOS still lets the user revoke either grant in
-        // System Settings at any time.
-        unsafe {
-            if !CGPreflightListenEventAccess() {
-                let _ = CGRequestListenEventAccess();
-            }
-            if !CGPreflightPostEventAccess() {
-                let _ = CGRequestPostEventAccess();
-            }
-        }
         let _ = thread::Builder::new()
             .name("onyx-modifier-listener".into())
             .spawn(move || {
                 let mut machine = HoldMachine::default();
                 loop {
-                    // Combined session state; key codes are left Shift, Control and Option.
-                    let shift = unsafe { CGEventSourceKeyState(0, 56) };
-                    let control = unsafe { CGEventSourceKeyState(0, 59) };
-                    let option = unsafe { CGEventSourceKeyState(0, 58) };
+                    // Treat either side of each modifier as the same shortcut.
+                    let shift =
+                        unsafe { CGEventSourceKeyState(0, 56) || CGEventSourceKeyState(0, 60) };
+                    let control =
+                        unsafe { CGEventSourceKeyState(0, 59) || CGEventSourceKeyState(0, 62) };
+                    let option =
+                        unsafe { CGEventSourceKeyState(0, 58) || CGEventSourceKeyState(0, 61) };
                     machine.modifier(ModifierKey::Shift, shift, &app);
                     machine.modifier(ModifierKey::Control, control, &app);
                     machine.modifier(ModifierKey::Alt, option, &app);
@@ -321,6 +341,26 @@ mod macos {
                     thread::sleep(Duration::from_millis(12));
                 }
             });
+    }
+
+    pub(super) fn permission_status() -> NativeVoicePermissions {
+        NativeVoicePermissions {
+            input_monitoring: unsafe { CGPreflightListenEventAccess() },
+            accessibility: unsafe { CGPreflightPostEventAccess() },
+        }
+    }
+
+    pub(super) fn request_permissions() -> NativeVoicePermissions {
+        let current = permission_status();
+        unsafe {
+            if !current.input_monitoring {
+                let _ = CGRequestListenEventAccess();
+            }
+            if !current.accessibility {
+                let _ = CGRequestPostEventAccess();
+            }
+        }
+        permission_status()
     }
 
     fn other_key_is_down() -> bool {

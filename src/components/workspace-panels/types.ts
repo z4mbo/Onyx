@@ -1,7 +1,7 @@
 import type { JSX } from "solid-js"
 
 /** Surfaces that can live side-by-side as tabs in the workspace inspector. */
-export type WorkspaceSurfaceKind = "browser" | "terminal" | "files" | "diff"
+export type WorkspaceSurfaceKind = "chat" | "browser" | "terminal" | "files" | "diff"
 
 /**
  * Provider-neutral description of a right-panel tab.
@@ -20,6 +20,7 @@ export interface WorkspaceSurface {
 }
 
 export interface WorkspaceSurfaceAvailability {
+  chat: boolean
   browser: boolean
   terminal: boolean
   files: boolean
@@ -46,6 +47,7 @@ export type SurfaceRenderer = (surface: WorkspaceSurface) => JSX.Element
 export type TerminalRenderer = (terminal: WorkspaceTerminal) => JSX.Element
 
 export const ALL_WORKSPACE_SURFACE_KINDS: readonly WorkspaceSurfaceKind[] = [
+  "chat",
   "browser",
   "terminal",
   "files",
@@ -53,6 +55,7 @@ export const ALL_WORKSPACE_SURFACE_KINDS: readonly WorkspaceSurfaceKind[] = [
 ]
 
 export const DEFAULT_SURFACE_AVAILABILITY: WorkspaceSurfaceAvailability = {
+  chat: true,
   browser: true,
   terminal: true,
   files: true,
@@ -63,6 +66,7 @@ export const WORKSPACE_SURFACE_COPY: Record<
   WorkspaceSurfaceKind,
   { label: string; description: string }
 > = {
+  chat: { label: "Chat", description: "Use official, signed-in provider apps." },
   browser: { label: "Browser", description: "Open a local app or URL." },
   terminal: { label: "Terminal", description: "Start a shell in this workspace." },
   files: { label: "Files", description: "Browse and read workspace files." },
