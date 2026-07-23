@@ -1,7 +1,7 @@
 /*
  * Geometry is visually adapted from T3 Code at commit
  * 9a0a07167f0623c3a7db0ffeff2e3939760309df. See PROVENANCE.md.
- * All selectors are zAI-scoped and use zAI/OpenCode theme tokens.
+ * All selectors are legacy-prefixed and use Onyx/OpenCode theme tokens.
  */
 
 :root {

@@ -182,7 +182,7 @@ async fn run_one_shot(
             provider.display_name()
         )
     })?;
-    let args = build_args(provider, continuation, config.model(), prompt);
+    let args = build_args(config, continuation, prompt);
     let mut command = platform_command(&executable, &args);
     if provider == ProviderId::Gemini {
         command.env("GEMINI_CLI_TRUST_WORKSPACE", "true");
@@ -251,12 +251,97 @@ async fn send_event(
         .map_err(|_| "Provider event receiver closed".to_string())
 }
 
-fn build_args(
+pub async fn chat_once(
     provider: ProviderId,
+    model: Option<String>,
+    prompt: String,
+    web_search: bool,
+) -> Result<String, String> {
+    if provider == ProviderId::Openrouter {
+        return Err("OpenRouter chat uses the HTTPS transport".into());
+    }
+    if prompt.trim().is_empty() || prompt.len() > 24 * 1024 {
+        return Err("Chat prompt is empty or exceeds 24 KiB".into());
+    }
+    let workspace = std::env::temp_dir().join("onyx-chat-runtime");
+    tokio::fs::create_dir_all(&workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    let config = ProviderSessionConfig {
+        provider,
+        model,
+        workspace,
+        continuation: None,
+        reasoning: Some(crate::model::ReasoningEffort::Medium),
+        speed_mode: crate::model::SpeedMode::Standard,
+        interaction_mode: crate::model::InteractionMode::Build,
+        access_mode: crate::model::AccessMode::ApprovalRequired,
+    };
+    let capability_guard = if web_search {
+        "You may use your read-only web-search capability when it improves the answer. Do not inspect local files, run mutation commands, or modify the computer."
+    } else {
+        "Do not inspect files, run commands, or modify the computer."
+    };
+    let guarded_prompt = format!(
+        "You are Onyx Chat. Answer as a general conversational assistant. {capability_guard}\n\n{}",
+        prompt.trim()
+    );
+    let (sender, mut receiver) = mpsc::channel(64);
+    let cancellation = CancellationToken::new();
+    let mut continuation = None;
+    let mut turn = Box::pin(run_one_shot(
+        &config,
+        None,
+        &guarded_prompt,
+        &cancellation,
+        &sender,
+        &mut continuation,
+    ));
+    let mut content = String::new();
+    let mut events_open = true;
+    let result = loop {
+        tokio::select! {
+            event = receiver.recv(), if events_open => match event {
+                Some(ProviderEvent::TextDelta(delta)) | Some(ProviderEvent::Text(delta)) => {
+                    if content.len().saturating_add(delta.len()) > 2 * 1024 * 1024 {
+                        cancellation.cancel();
+                        break Err("Chat response exceeded the 2 MiB limit".into());
+                    }
+                    content.push_str(&delta);
+                }
+                Some(_) => {}
+                None => events_open = false,
+            },
+            result = &mut turn => break result,
+        }
+    };
+    drop(turn);
+    result?;
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        Err(format!(
+            "{} returned an empty chat response",
+            provider.display_name()
+        ))
+    } else {
+        Ok(content)
+    }
+}
+
+fn build_args(
+    config: &ProviderSessionConfig,
     provider_session_id: Option<&str>,
-    model: Option<&str>,
     prompt: &str,
 ) -> Vec<String> {
+    let provider = config.provider;
+    let model = config.model();
+    let effective_prompt = if config.interaction_mode == crate::model::InteractionMode::Plan
+        && provider == ProviderId::Gemini
+    {
+        format!("Plan the work without modifying files or running mutation commands.\n\n{prompt}")
+    } else {
+        prompt.to_string()
+    };
     match provider {
         ProviderId::Claude => {
             let mut args = vec![
@@ -266,15 +351,32 @@ fn build_args(
                 "stream-json".to_string(),
                 "--include-partial-messages".to_string(),
                 "--permission-mode".to_string(),
-                "acceptEdits".to_string(),
+                match (config.interaction_mode, config.access_mode) {
+                    (crate::model::InteractionMode::Plan, _) => "plan",
+                    (_, crate::model::AccessMode::ApprovalRequired) => "manual",
+                    (_, crate::model::AccessMode::AutoAcceptEdits) => "acceptEdits",
+                    (_, crate::model::AccessMode::FullAccess) => "bypassPermissions",
+                }
+                .to_string(),
             ];
+            if config.access_mode == crate::model::AccessMode::FullAccess
+                && config.interaction_mode != crate::model::InteractionMode::Plan
+            {
+                args.push("--dangerously-skip-permissions".to_string());
+            }
+            if let Some(reasoning) = config.reasoning {
+                args.extend(["--effort".to_string(), reasoning.as_str().to_string()]);
+            }
+            if config.speed_mode == crate::model::SpeedMode::Fast {
+                args.extend(["--settings".to_string(), r#"{"fastMode":true}"#.to_string()]);
+            }
             if let Some(id) = provider_session_id {
                 args.extend(["--resume".to_string(), id.to_string()]);
             }
             if let Some(model) = model {
                 args.extend(["--model".to_string(), model.to_string()]);
             }
-            args.push(prompt.to_string());
+            args.push(effective_prompt);
             args
         }
         ProviderId::Codex => {
@@ -288,29 +390,62 @@ fn build_args(
                 if let Some(model) = model {
                     args.extend(["--model".to_string(), model.to_string()]);
                 }
-                args.extend([id.to_string(), prompt.to_string()]);
+                args.extend([
+                    "--sandbox".to_string(),
+                    config.sandbox_name().to_string(),
+                    "-c".to_string(),
+                    format!("approval_policy=\"{}\"", config.approval_policy()),
+                ]);
+                if let Some(reasoning) = config.reasoning {
+                    args.extend([
+                        "-c".to_string(),
+                        format!("model_reasoning_effort=\"{}\"", reasoning.as_str()),
+                    ]);
+                }
+                if let Some(tier) = config.speed_mode.as_service_tier() {
+                    args.extend(["-c".to_string(), format!("service_tier=\"{tier}\"")]);
+                }
+                args.extend([id.to_string(), effective_prompt]);
             } else {
                 args.extend([
                     "--json".to_string(),
                     "--sandbox".to_string(),
-                    "workspace-write".to_string(),
+                    config.sandbox_name().to_string(),
                     "--skip-git-repo-check".to_string(),
                 ]);
+                args.extend([
+                    "-c".to_string(),
+                    format!("approval_policy=\"{}\"", config.approval_policy()),
+                ]);
+                if let Some(reasoning) = config.reasoning {
+                    args.extend([
+                        "-c".to_string(),
+                        format!("model_reasoning_effort=\"{}\"", reasoning.as_str()),
+                    ]);
+                }
+                if let Some(tier) = config.speed_mode.as_service_tier() {
+                    args.extend(["-c".to_string(), format!("service_tier=\"{tier}\"")]);
+                }
                 if let Some(model) = model {
                     args.extend(["--model".to_string(), model.to_string()]);
                 }
-                args.push(prompt.to_string());
+                args.push(effective_prompt);
             }
             args
         }
         ProviderId::Gemini => {
             let mut args = vec![
                 "--prompt".to_string(),
-                prompt.to_string(),
+                effective_prompt,
                 "--output-format".to_string(),
                 "stream-json".to_string(),
                 "--approval-mode".to_string(),
-                "auto_edit".to_string(),
+                match config.access_mode {
+                    crate::model::AccessMode::ApprovalRequired => "default",
+                    crate::model::AccessMode::AutoAcceptEdits => "auto_edit",
+                    crate::model::AccessMode::FullAccess => "yolo",
+                }
+                .to_string(),
             ];
             if let Some(id) = provider_session_id {
                 args.extend(["--resume".to_string(), id.to_string()]);
@@ -323,10 +458,18 @@ fn build_args(
         ProviderId::Kimi => {
             let mut args = vec![
                 "--prompt".to_string(),
-                prompt.to_string(),
+                effective_prompt,
                 "--output-format".to_string(),
                 "stream-json".to_string(),
             ];
+            match config.access_mode {
+                crate::model::AccessMode::ApprovalRequired => {}
+                crate::model::AccessMode::AutoAcceptEdits => args.push("--yolo".to_string()),
+                crate::model::AccessMode::FullAccess => args.push("--auto".to_string()),
+            }
+            if config.interaction_mode == crate::model::InteractionMode::Plan {
+                args.push("--plan".to_string());
+            }
             if let Some(id) = provider_session_id {
                 args.extend(["--session".to_string(), id.to_string()]);
             }
@@ -342,17 +485,38 @@ fn build_args(
 #[cfg(test)]
 mod tests {
     use super::build_args;
-    use crate::model::ProviderId;
+    use crate::{
+        model::{AccessMode, InteractionMode, ProviderId, SpeedMode},
+        providers::driver::ProviderSessionConfig,
+    };
+    use std::path::PathBuf;
+
+    fn config(provider: ProviderId) -> ProviderSessionConfig {
+        ProviderSessionConfig {
+            provider,
+            model: None,
+            workspace: PathBuf::from("/tmp/project"),
+            continuation: None,
+            reasoning: None,
+            speed_mode: SpeedMode::Standard,
+            interaction_mode: InteractionMode::Build,
+            access_mode: AccessMode::AutoAcceptEdits,
+        }
+    }
 
     #[test]
     fn codex_fallback_resume_uses_documented_subcommand() {
         assert_eq!(
-            build_args(ProviderId::Codex, Some("thread"), None, "continue"),
+            build_args(&config(ProviderId::Codex), Some("thread"), "continue"),
             [
                 "exec",
                 "resume",
                 "--json",
                 "--skip-git-repo-check",
+                "--sandbox",
+                "workspace-write",
+                "-c",
+                "approval_policy=\"on-request\"",
                 "thread",
                 "continue"
             ]
@@ -367,14 +531,14 @@ mod tests {
             ProviderId::Gemini,
             ProviderId::Kimi,
         ] {
-            let args = build_args(provider, None, None, "hello; rm -rf ignored");
+            let args = build_args(&config(provider), None, "hello; rm -rf ignored");
             assert!(args.iter().any(|arg| arg == "hello; rm -rf ignored"));
         }
     }
 
     #[test]
     fn gemini_headless_mode_allows_edits() {
-        let args = build_args(ProviderId::Gemini, None, None, "fix it");
+        let args = build_args(&config(ProviderId::Gemini), None, "fix it");
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--approval-mode", "auto_edit"])

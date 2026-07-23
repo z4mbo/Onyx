@@ -12,7 +12,13 @@ import {
 import { GitBranch } from "lucide-solid"
 import { openUrl } from "@tauri-apps/plugin-opener"
 import { api } from "./lib/api"
-import { workspaceName } from "./lib/providers"
+import {
+  brandForRuntime,
+  fallbackModels,
+  modelsForBrand,
+  runtimeForBrand,
+  workspaceName,
+} from "./lib/providers"
 import { deriveWorkspaceGitActions } from "./lib/workspace-actions"
 import {
   applySessionEvent,
@@ -27,16 +33,22 @@ import type {
   EditorTarget,
   OpenRouterModel,
   OpenRouterStatus,
+  ProviderBrand,
   ProviderId,
+  ProviderModelOption,
   ProviderStatus,
+  ProviderUsage,
+  ReasoningEffort,
   RepoSummary,
   SessionEvent,
 } from "./lib/types"
 import { Composer } from "./components/Composer"
+import { ChatView } from "./components/ChatView"
 import { HomeView } from "./components/HomeView"
 import { SettingsDialog, type ColorScheme } from "./components/SettingsDialog"
 import { Titlebar, type TitlebarTab } from "./components/Titlebar"
 import { Transcript } from "./components/Transcript"
+import { VoiceHistoryView } from "./components/VoiceHistoryView"
 import { ZaiWordmark } from "./components/ZaiWordmark"
 import {
   BottomTerminalPanel,
@@ -54,10 +66,20 @@ import {
   type WorkspaceTerminal,
 } from "./components/workspace-panels"
 
-type Page = "home" | "draft" | "session"
-const DRAFT_TAB_ID = "zai:draft"
-const LAST_WORKSPACE_KEY = "zai.last-workspace"
-const PREFERRED_EDITOR_KEY = "zai.preferred-editor"
+type Page = "home" | "draft" | "session" | "chat" | "voice"
+const DRAFT_TAB_ID = "onyx:draft"
+const LAST_WORKSPACE_KEY = "onyx.last-workspace"
+const PREFERRED_EDITOR_KEY = "onyx.preferred-editor"
+const DESKTOP_PREFERENCES_KEY = "onyx.desktop-preferences.v1"
+
+function selectedWslDistribution(): string | null {
+  try {
+    const preferences = JSON.parse(localStorage.getItem(DESKTOP_PREFERENCES_KEY) ?? "null") as { wslMode?: string; wslDistribution?: string } | null
+    if (preferences?.wslMode === "default") return ""
+    if (preferences?.wslMode === "distribution" && preferences.wslDistribution?.trim()) return preferences.wslDistribution.trim()
+  } catch { /* native terminal is the safe fallback */ }
+  return null
+}
 
 interface SessionWorkspaceUi {
   rightPanelOpen: boolean
@@ -80,7 +102,7 @@ const emptyWorkspaceUi = (): SessionWorkspaceUi => ({
 })
 
 function storedColorScheme(): ColorScheme {
-  const value = localStorage.getItem("zai.color-scheme")
+  const value = localStorage.getItem("onyx.color-scheme") ?? localStorage.getItem("zai.color-scheme")
   return value === "light" || value === "dark" ? value : "system"
 }
 
@@ -96,7 +118,14 @@ const App: Component = () => {
   const [draftOpen, setDraftOpen] = createSignal(true)
   const [openSessionIds, setOpenSessionIds] = createSignal<string[]>([])
   const [newProvider, setNewProvider] = createSignal<ProviderId>("claude")
-  const [newModel, setNewModel] = createSignal("default")
+  const [newBrand, setNewBrand] = createSignal<ProviderBrand>("anthropic")
+  const [newModel, setNewModel] = createSignal("claude-fable-5")
+  const [newReasoning, setNewReasoning] = createSignal<ReasoningEffort | null>("medium")
+  const [newSpeedMode, setNewSpeedMode] = createSignal<"standard" | "fast">("standard")
+  const [newInteractionMode, setNewInteractionMode] = createSignal<"build" | "plan">("build")
+  const [newAccessMode, setNewAccessMode] = createSignal<"approval_required" | "auto_accept_edits" | "full_access">("auto_accept_edits")
+  const [providerModels, setProviderModels] = createSignal<Partial<Record<ProviderId, ProviderModelOption[]>>>({ ...fallbackModels })
+  const [currentProviderUsage, setCurrentProviderUsage] = createSignal<ProviderUsage | null>(null)
   const [newWorkspace, setNewWorkspace] = createSignal(storedWorkspace())
   const [settingsOpen, setSettingsOpen] = createSignal(false)
   const [openRouter, setOpenRouter] = createSignal<OpenRouterStatus>({ connected: false })
@@ -113,6 +142,7 @@ const App: Component = () => {
   const [preferredEditor, setPreferredEditor] = createSignal(localStorage.getItem(PREFERRED_EDITOR_KEY) ?? "")
   const [gitAction, setGitAction] = createSignal<WorkspaceGitActionName | null>(null)
   const [commitOpen, setCommitOpen] = createSignal(false)
+  const [draftGitReady, setDraftGitReady] = createSignal(false)
 
   const current = createMemo(() => sessions().find((session) => session.id === currentId()) ?? null)
   const activeApproval = createMemo(() => approvals().find((request) => request.sessionId === currentId()) ?? null)
@@ -124,6 +154,7 @@ const App: Component = () => {
   const pendingEvents = new Map<string, SessionEvent[]>()
   let eventsReady = false
   let queuedEvents: SessionEvent[] = []
+  let lastCloudSessionVersion = ""
 
   const applyTheme = () => {
     const scheme = colorScheme()
@@ -142,13 +173,20 @@ const App: Component = () => {
   })
 
   createEffect(() => {
+    const version = sessions().map((session) => `${session.id}:${session.updatedAt}:${session.status}`).join("|")
+    if (!version || version === lastCloudSessionVersion) return
+    lastCloudSessionVersion = version
+    window.dispatchEvent(new Event("onyx:cloud-data-changed"))
+  })
+
+  createEffect(() => {
     const workspace = newWorkspace().trim()
     if (workspace) localStorage.setItem(LAST_WORKSPACE_KEY, workspace)
   })
 
   const changeColorScheme = (scheme: ColorScheme) => {
     setColorScheme(scheme)
-    localStorage.setItem("zai.color-scheme", scheme)
+    localStorage.setItem("onyx.color-scheme", scheme)
   }
 
   const updateWorkspaceUi = (id: string, update: (value: SessionWorkspaceUi) => SessionWorkspaceUi) => {
@@ -211,7 +249,23 @@ const App: Component = () => {
 
   const selectNewProvider = (provider: ProviderId) => {
     setNewProvider(provider)
-    setNewModel(provider === "openrouter" ? (openRouterModels()[0]?.id ?? "") : "default")
+    setNewBrand(brandForRuntime(provider))
+    const models = modelsForBrand(brandForRuntime(provider), providerModels(), openRouterModels())
+    const selected = models.find((model) => model.isDefault) ?? models[0]
+    setNewModel(selected?.id ?? "")
+    setNewReasoning(selected?.defaultReasoning ?? selected?.reasoning[0] ?? null)
+    setNewSpeedMode(selected?.defaultSpeed ?? "standard")
+  }
+
+  const selectNewBrand = (brand: ProviderBrand) => {
+    setNewBrand(brand)
+    const provider = runtimeForBrand(brand)
+    setNewProvider(provider)
+    const models = modelsForBrand(brand, providerModels(), openRouterModels())
+    const selected = models.find((model) => model.isDefault) ?? models[0]
+    setNewModel(selected?.id ?? "")
+    setNewReasoning(selected?.defaultReasoning ?? selected?.reasoning[0] ?? null)
+    setNewSpeedMode(selected?.defaultSpeed ?? "standard")
   }
 
   const showNotice = (message: string, kind: "error" | "success") => {
@@ -243,6 +297,12 @@ const App: Component = () => {
           if (newProvider() === "openrouter" && !newModel()) setNewModel(models[0]?.id ?? "")
         })
         .catch(() => setOpenRouterModels([]))
+    }
+    const codex = providerList.find((provider) => provider.id === "codex" && provider.available)
+    if (codex) {
+      void api.providerModels("codex").then((models) => {
+        if (models.length) setProviderModels((catalogs) => ({ ...catalogs, codex: models }))
+      }).catch(() => undefined)
     }
     const selected = providerList.find((provider) => provider.id === newProvider() && provider.available)
     const available = selected ?? providerList.find((provider) => provider.available)
@@ -304,6 +364,12 @@ const App: Component = () => {
     })()
 
     const newSessionKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === ",") {
+        event.preventDefault()
+        if (commitOpen()) return
+        setSettingsOpen(true)
+        return
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "j") {
         event.preventDefault()
         if (settingsOpen() || commitOpen() || page() !== "session") return
@@ -315,6 +381,11 @@ const App: Component = () => {
         event.preventDefault()
         if (settingsOpen() || commitOpen()) return
         openDraft()
+        return
+      }
+      if (event.key === "Escape" && page() === "session" && current()?.status === "running") {
+        event.preventDefault()
+        void cancel()
       }
     }
     const media = window.matchMedia("(prefers-color-scheme: dark)")
@@ -402,7 +473,7 @@ const App: Component = () => {
 
   const tabs = createMemo<TitlebarTab[]>(() => {
     const result: TitlebarTab[] = []
-    if (draftOpen()) result.push({ id: DRAFT_TAB_ID, label: "New session", active: page() === "draft" })
+    if (draftOpen()) result.push({ id: DRAFT_TAB_ID, label: "New session", active: page() === "draft", projectInitial: newWorkspace() ? workspaceName(newWorkspace()).slice(0, 1).toUpperCase() : "+" })
     for (const id of openSessionIds()) {
       const session = sessions().find((item) => item.id === id)
       if (!session) continue
@@ -411,6 +482,7 @@ const App: Component = () => {
         label: session.title || "Untitled session",
         active: page() === "session" && currentId() === id,
         running: session.status === "running" || session.status === "waiting_approval",
+        projectInitial: workspaceName(session.workspace).slice(0, 1).toUpperCase(),
       })
     }
     return result
@@ -421,10 +493,19 @@ const App: Component = () => {
   const chooseDraftWorkspace = async () => {
     try {
       const workspace = await api.chooseWorkspace()
-      if (workspace) setNewWorkspace(workspace)
+      if (workspace) { setNewWorkspace(workspace); setDraftGitReady(false) }
     } catch (error) {
       showError(error)
     }
+  }
+
+  const initializeDraftGit = async () => {
+    if (!newWorkspace()) return
+    try {
+      const result = await api.initGit(newWorkspace())
+      setDraftGitReady(true)
+      showNotice(result.message, "success")
+    } catch (error) { showError(error) }
   }
 
   const refreshProviders = async () => {
@@ -450,7 +531,16 @@ const App: Component = () => {
         setNewWorkspace(workspace)
       }
       if (newProvider() === "openrouter" && !newModel()) throw new Error("Choose an OpenRouter model first.")
-      const session = await api.createSession(newProvider(), newModel() || null, workspace)
+      const session = await api.createSession({
+        provider: newProvider(),
+        providerBrand: newBrand(),
+        model: newModel() || null,
+        reasoning: newReasoning(),
+        speedMode: newSpeedMode(),
+        interactionMode: newInteractionMode(),
+        accessMode: newAccessMode(),
+        workspace,
+      })
       tombstones.delete(session.id)
       setSessions((items) => replaceSession(items, session))
       setDraftOpen(false)
@@ -473,6 +563,23 @@ const App: Component = () => {
       showError(error)
       throw error
     }
+  }
+
+  const updateCurrentOptions = async (patch: Partial<Pick<AgentSession, "provider" | "providerBrand" | "model" | "reasoning" | "speedMode" | "interactionMode" | "accessMode">>) => {
+    const session = current()
+    if (!session) return
+    try {
+      mergeReturnedSession(await api.updateSessionOptions({
+        id: session.id,
+        provider: patch.provider ?? session.provider,
+        providerBrand: patch.providerBrand ?? session.providerBrand,
+        model: patch.model === undefined ? session.model : patch.model,
+        reasoning: patch.reasoning === undefined ? session.reasoning : patch.reasoning,
+        speedMode: patch.speedMode ?? session.speedMode,
+        interactionMode: patch.interactionMode ?? session.interactionMode,
+        accessMode: patch.accessMode ?? session.accessMode,
+      }))
+    } catch (error) { showError(error) }
   }
 
   const cancel = async () => {
@@ -533,6 +640,24 @@ const App: Component = () => {
     onCleanup(() => window.clearTimeout(timer))
   })
 
+  createEffect(() => {
+    const session = current()
+    if (!session) {
+      setCurrentProviderUsage(null)
+      return
+    }
+    let disposed = false
+    const refresh = () => void api.providerUsage(session.provider)
+      .then((usage) => { if (!disposed && currentId() === session.id) setCurrentProviderUsage(usage) })
+      .catch(() => { if (!disposed && currentId() === session.id) setCurrentProviderUsage(null) })
+    refresh()
+    const timer = window.setInterval(refresh, 60_000)
+    onCleanup(() => {
+      disposed = true
+      window.clearInterval(timer)
+    })
+  })
+
   onMount(() => {
     const refreshAfterExternalWork = () => {
       if (page() === "session" && document.visibilityState === "visible") void refreshRepo(true)
@@ -552,7 +677,7 @@ const App: Component = () => {
       let resourceId: string | undefined
       let title = kind === "browser" ? "Browser" : kind === "terminal" ? "Terminal" : kind === "files" ? "Files" : "Diff"
       if (kind === "terminal") {
-        const terminal = await api.terminalOpen(session.workspace, 100, 30)
+        const terminal = await api.terminalOpen(session.workspace, 100, 30, selectedWslDistribution())
         resourceId = terminal.id
         const count = (workspaceUiBySession()[session.id]?.surfaces ?? [])
           .filter((surface) => surface.kind === "terminal").length + 1
@@ -619,7 +744,7 @@ const App: Component = () => {
     const session = current()
     if (!session) return
     try {
-      const opened = await api.terminalOpen(session.workspace, 120, 24)
+      const opened = await api.terminalOpen(session.workspace, 120, 24, selectedWslDistribution())
       updateWorkspaceUi(session.id, (ui) => {
         const terminal: WorkspaceTerminal = {
           id: opened.id,
@@ -738,7 +863,11 @@ const App: Component = () => {
         onSelect={selectTab}
         onClose={closeTab}
         onNew={() => openDraft()}
+        sessions={sessions().filter((session) => !openSessionIds().includes(session.id)).map((session) => ({ id: session.id, label: session.title, project: workspaceName(session.workspace) }))}
+        onOpenSession={openSession}
         onHome={() => setPage("home")}
+        onChat={() => setPage("chat")}
+        onVoice={() => setPage("voice")}
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
@@ -753,7 +882,22 @@ const App: Component = () => {
               onDelete={(id) => void removeSession(id)}
               onChooseWorkspace={chooseDraftWorkspace}
               onSettings={() => setSettingsOpen(true)}
+              onChat={() => setPage("chat")}
+              onVoice={() => setPage("voice")}
             />
+          </Match>
+
+          <Match when={page() === "chat"}>
+            <ChatView
+              providers={providers()}
+              providerModels={providerModels()}
+              openRouterModels={openRouterModels()}
+              onOpenSettings={() => setSettingsOpen(true)}
+            />
+          </Match>
+
+          <Match when={page() === "voice"}>
+            <VoiceHistoryView onSettings={() => setSettingsOpen(true)} />
           </Match>
 
           <Match when={page() === "session" && current()}>
@@ -817,19 +961,38 @@ const App: Component = () => {
                       <div class="zai-session-composer">
                         <Composer
                           provider={current()!.provider}
+                          brand={current()!.providerBrand}
                           model={current()!.model ?? "default"}
+                          reasoning={current()!.reasoning}
+                          speedMode={current()!.speedMode}
+                          interactionMode={current()!.interactionMode}
+                          accessMode={current()!.accessMode}
                           workspace={current()!.workspace}
                           providers={providers()}
+                          providerModels={providerModels()}
                           openRouterModels={openRouterModels()}
-                          locked
+                          contextUsage={current()!.contextUsage}
+                          providerUsage={currentProviderUsage()}
                           hero={false}
                           placeholder="Ask anything…"
                           running={current()!.status === "running" || current()!.status === "waiting_approval"}
                           approval={activeApproval()}
                           approvalBusy={approvalBusy()}
-                          onProvider={() => undefined}
-                          onModel={() => undefined}
+                          onBrand={(brand) => {
+                            const models = modelsForBrand(brand, providerModels(), openRouterModels())
+                            const model = models.find((item) => item.isDefault) ?? models[0]
+                            void updateCurrentOptions({ provider: runtimeForBrand(brand), providerBrand: brand, model: model?.id ?? null, reasoning: model?.defaultReasoning ?? model?.reasoning[0] ?? null, speedMode: model?.defaultSpeed ?? "standard" })
+                          }}
+                          onModel={(modelId) => {
+                            const model = modelsForBrand(current()!.providerBrand, providerModels(), openRouterModels()).find((item) => item.id === modelId)
+                            void updateCurrentOptions({ model: modelId, reasoning: model?.defaultReasoning ?? model?.reasoning[0] ?? null, speedMode: model?.defaultSpeed ?? "standard" })
+                          }}
+                          onReasoning={(reasoning) => void updateCurrentOptions({ reasoning })}
+                          onSpeedMode={(speedMode) => void updateCurrentOptions({ speedMode })}
+                          onInteractionMode={(interactionMode) => void updateCurrentOptions({ interactionMode })}
+                          onAccessMode={(accessMode) => void updateCurrentOptions({ accessMode })}
                           onWorkspace={() => undefined}
+                          onAttach={api.chooseFiles}
                           onSubmit={continueSession}
                           onCancel={cancel}
                           onApproval={respondApproval}
@@ -875,20 +1038,36 @@ const App: Component = () => {
             <section class="zai-new-session">
               <div class="zai-new-session__stage">
                 <div class="zai-new-session__content">
-                  <ZaiWordmark aria-label="zAI" />
+                  <ZaiWordmark aria-label="Onyx" />
                   <div class="zai-new-session__composer">
                     <Composer
                       provider={newProvider()}
+                      brand={newBrand()}
                       model={newModel()}
+                      reasoning={newReasoning()}
+                      speedMode={newSpeedMode()}
+                      interactionMode={newInteractionMode()}
+                      accessMode={newAccessMode()}
                       workspace={newWorkspace()}
                       providers={providers()}
+                      providerModels={providerModels()}
                       openRouterModels={openRouterModels()}
                       hero
                       autofocus
                       placeholder="Ask anything…"
-                      onProvider={selectNewProvider}
-                      onModel={setNewModel}
+                      onBrand={selectNewBrand}
+                      onModel={(model) => {
+                        setNewModel(model)
+                        const selected = modelsForBrand(newBrand(), providerModels(), openRouterModels()).find((item) => item.id === model)
+                        setNewReasoning(selected?.defaultReasoning ?? selected?.reasoning[0] ?? null)
+                        setNewSpeedMode(selected?.defaultSpeed ?? "standard")
+                      }}
+                      onReasoning={setNewReasoning}
+                      onSpeedMode={setNewSpeedMode}
+                      onInteractionMode={setNewInteractionMode}
+                      onAccessMode={setNewAccessMode}
                       onWorkspace={setNewWorkspace}
+                      onAttach={api.chooseFiles}
                       onSubmit={startSession}
                     />
                   </div>
@@ -901,7 +1080,7 @@ const App: Component = () => {
                       <span class="zai-workspace-chevron">⌄</span>
                     </button>
                     <span class="zai-workspace-divider">/</span>
-                    <span class="zai-git-status"><GitBranch size={14} /> No Git</span>
+                    <button class="zai-git-status" onClick={() => void initializeDraftGit()} title={draftGitReady() ? "Git repository ready" : "Initialize a Git repository"}><GitBranch size={14} /> {draftGitReady() ? "main" : "No Git"}</button>
                   </div>
                 </div>
               </div>
@@ -912,7 +1091,9 @@ const App: Component = () => {
 
       <SettingsDialog
         open={settingsOpen()}
+        sessions={sessions()}
         providers={providers()}
+        providerModels={providerModels()}
         openRouter={openRouter()}
         openRouterModels={openRouterModels()}
         colorScheme={colorScheme()}

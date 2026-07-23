@@ -4,7 +4,7 @@ This file is operational guidance for coding agents working in this repository.
 
 ## Objective
 
-zAI is an independent MIT-licensed Tauri desktop app that presents a consistent
+Onyx is an independent MIT-licensed Tauri desktop app that presents a consistent
 workspace for Claude Code, Codex, Gemini CLI, Kimi Code, and OpenRouter. Keep
 the OpenCode-informed visual language and T3 Code-informed provider separation
 without importing upstream brands, logos, or provider protocol types into the
@@ -17,12 +17,12 @@ UI.
 - `src-tauri/src/providers/` — CLI discovery, lifecycle, and output normalization
 - `src-tauri/src/openrouter.rs` — OpenRouter model catalog and approved tool loop
 - `src-tauri/src/storage.rs` — local session persistence
-- `public/` and `src-tauri/icons/` — zAI-owned visual assets
+- `public/` and `src-tauri/icons/` — Onyx-owned visual assets
 - `licenses/` and `THIRD_PARTY_NOTICES.md` — required upstream notices
 
 ## Invariants
 
-- UI code consumes shared zAI session events, never raw provider protocol
+- UI code consumes shared Onyx session events, never raw provider protocol
   objects.
 - A session has one provider, model, canonical workspace, and at most one
   running turn.

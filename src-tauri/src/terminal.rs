@@ -146,6 +146,7 @@ impl TerminalRegistry {
         workspace: String,
         cols: u16,
         rows: u16,
+        wsl_distribution: Option<String>,
     ) -> Result<TerminalSession, String> {
         validate_size(cols, rows)?;
         let workspace = canonical_workspace(&workspace)?;
@@ -156,6 +157,7 @@ impl TerminalRegistry {
         }
 
         let spawn_workspace = workspace.clone();
+        let requested_wsl = wsl_distribution.clone();
         let spawned = tokio::task::spawn_blocking(move || {
             spawn_pty(
                 &spawn_workspace,
@@ -165,6 +167,7 @@ impl TerminalRegistry {
                     pixel_width: 0,
                     pixel_height: 0,
                 },
+                requested_wsl.as_deref(),
             )
         })
         .await
@@ -312,7 +315,7 @@ impl TerminalRegistry {
         handle: Arc<TerminalHandle>,
     ) -> Result<(), String> {
         std::thread::Builder::new()
-            .name(format!("zai-pty-read-{}", short_id(&session_id)))
+            .name(format!("onyx-pty-read-{}", short_id(&session_id)))
             .spawn(move || {
                 let mut decoder = Utf8StreamDecoder::default();
                 let mut total = 0_usize;
@@ -374,14 +377,14 @@ impl TerminalRegistry {
     ) -> Result<(), String> {
         let registry = self.clone();
         std::thread::Builder::new()
-            .name(format!("zai-pty-wait-{}", short_id(&session_id)))
+            .name(format!("onyx-pty-wait-{}", short_id(&session_id)))
             .spawn(move || {
                 let result = child.wait();
                 registry.sessions.lock().remove(&session_id);
                 match result {
                     Ok(status) => {
                         let _ = app.emit(
-                            "zai://terminal",
+                            "onyx://terminal",
                             TerminalEvent {
                                 session_id,
                                 kind: "exit".to_string(),
@@ -402,8 +405,12 @@ impl TerminalRegistry {
     }
 }
 
-fn spawn_pty(workspace: &Path, size: PtySize) -> Result<SpawnedPty, String> {
-    let candidates = shell_candidates();
+fn spawn_pty(
+    workspace: &Path,
+    size: PtySize,
+    wsl_distribution: Option<&str>,
+) -> Result<SpawnedPty, String> {
+    let candidates = shell_candidates(wsl_distribution)?;
     if candidates.is_empty() {
         return Err("No supported terminal shell was found".to_string());
     }
@@ -434,7 +441,7 @@ fn spawn_candidate(
     command.cwd(workspace);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
-    command.env("ZAI_TERMINAL", "1");
+    command.env("ONYX_TERMINAL", "1");
     command.env_remove("VITE_DEV_SERVER_URL");
     let child = pair
         .slave
@@ -458,7 +465,9 @@ fn spawn_candidate(
     })
 }
 
-fn shell_candidates() -> Vec<ShellCandidate> {
+fn shell_candidates(wsl_distribution: Option<&str>) -> Result<Vec<ShellCandidate>, String> {
+    #[cfg(not(windows))]
+    let _ = wsl_distribution;
     let mut paths = Vec::new();
     #[cfg(unix)]
     {
@@ -469,6 +478,21 @@ fn shell_candidates() -> Vec<ShellCandidate> {
     }
     #[cfg(windows)]
     {
+        if let Some(distribution) = wsl_distribution {
+            if distribution.len() > 100 || distribution.chars().any(char::is_control) {
+                return Err("The selected WSL distribution name is invalid".into());
+            }
+            let wsl = find_executable("wsl.exe")
+                .ok_or_else(|| "WSL is not installed or wsl.exe is unavailable".to_string())?;
+            return Ok(vec![ShellCandidate {
+                path: wsl,
+                args: if distribution.is_empty() {
+                    Vec::new()
+                } else {
+                    vec!["--distribution".into(), distribution.into()]
+                },
+            }]);
+        }
         for command in ["pwsh.exe", "powershell.exe"] {
             if let Some(path) = find_executable(command) {
                 paths.push(path);
@@ -483,7 +507,7 @@ fn shell_candidates() -> Vec<ShellCandidate> {
     }
 
     let mut seen = HashSet::new();
-    paths
+    Ok(paths
         .into_iter()
         .filter_map(|path| {
             let resolved = if path.is_file() {
@@ -497,7 +521,7 @@ fn shell_candidates() -> Vec<ShellCandidate> {
                 path: resolved,
             })
         })
-        .collect()
+        .collect())
 }
 
 fn shell_args(path: &Path) -> Vec<String> {
@@ -524,7 +548,7 @@ fn validate_size(cols: u16, rows: u16) -> Result<(), String> {
 
 fn emit_data(app: &AppHandle, session_id: &str, data: String) {
     let _ = app.emit(
-        "zai://terminal",
+        "onyx://terminal",
         TerminalEvent {
             session_id: session_id.to_string(),
             kind: "data".to_string(),
@@ -536,7 +560,7 @@ fn emit_data(app: &AppHandle, session_id: &str, data: String) {
 
 fn emit_error(app: &AppHandle, session_id: &str, data: String) {
     let _ = app.emit(
-        "zai://terminal",
+        "onyx://terminal",
         TerminalEvent {
             session_id: session_id.to_string(),
             kind: "error".to_string(),

@@ -1,6 +1,6 @@
 mod claude;
-mod cli;
-mod codex;
+pub(crate) mod cli;
+pub(crate) mod codex;
 mod driver;
 mod normalize;
 pub(crate) mod process;

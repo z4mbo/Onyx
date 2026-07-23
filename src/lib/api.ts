@@ -4,20 +4,32 @@ import { getCurrentWindow, type Theme } from "@tauri-apps/api/window"
 import { open } from "@tauri-apps/plugin-dialog"
 import type {
   AgentSession,
+  AccessMode,
+  ActiveAppContext,
   ApprovalRequest,
+  ChatReply,
+  ChatRequest,
   EditorTarget,
   GitActionResult,
   OpenRouterModel,
   OpenRouterStatus,
+  ProviderBrand,
   ProviderId,
+  ProviderModelOption,
   ProviderStatus,
+  ProviderUsage,
+  ReasoningEffort,
   RepoSummary,
   SessionEvent,
   TerminalEvent,
   TerminalSession,
+  TranscriptionReply,
+  VideoJob,
+  VoiceSettings,
   WorkspaceFile,
   WorkspaceEntry,
 } from "./types"
+import { brandForRuntime } from "./providers"
 
 const tauri = "__TAURI_INTERNALS__" in window
 
@@ -33,7 +45,7 @@ const demoProviders: ProviderStatus[] = [
   available: Boolean(available),
   executablePath: available && id !== "openrouter" ? `/usr/local/bin/${id}` : null,
   version: version ? String(version) : null,
-  installUrl: "https://github.com/z4mbo/zAI#providers",
+  installUrl: "https://github.com/z4mbo/Onyx#providers",
   transport: String(transport),
 }))
 
@@ -50,17 +62,34 @@ const putMockSession = (session: AgentSession) => {
   else mockSessions.push(cloneSession(session))
 }
 
-const createMockSession = (provider: ProviderId, model: string | null, workspace: string) => {
+interface CreateSessionOptions {
+  provider: ProviderId
+  providerBrand: ProviderBrand
+  model: string | null
+  reasoning: ReasoningEffort | null
+  speedMode: "standard" | "fast"
+  interactionMode: "build" | "plan"
+  accessMode: AccessMode
+  workspace: string
+}
+
+const createMockSession = (input: CreateSessionOptions) => {
   const now = new Date().toISOString()
   const session: AgentSession = {
     id: crypto.randomUUID(),
     title: "New session",
-    provider,
-    model,
-    workspace,
+    provider: input.provider,
+    providerBrand: input.providerBrand ?? brandForRuntime(input.provider),
+    model: input.model,
+    reasoning: input.reasoning,
+    speedMode: input.speedMode,
+    interactionMode: input.interactionMode,
+    accessMode: input.accessMode,
+    workspace: input.workspace,
     providerSessionId: null,
     status: "idle",
     messages: [],
+    contextUsage: null,
     createdAt: now,
     updatedAt: now,
   }
@@ -89,7 +118,7 @@ const sendMockMessage = async (sessionId: string, content: string) => {
 
   const turn = (mockTurns.get(sessionId) ?? 0) + 1
   mockTurns.set(sessionId, turn)
-  const response = "This is zAI's browser-preview transport. The native app will stream this turn from your selected CLI or OpenRouter model."
+  const response = "This is Onyx's browser-preview transport. The native app streams this turn from your selected CLI or OpenRouter model."
   const chunks = response.match(/[\s\S]{1,9}/g) ?? [response]
   void (async () => {
     for (const delta of chunks) {
@@ -117,10 +146,24 @@ export const api = {
   listProviders: () => (tauri ? invoke<ProviderStatus[]>("list_providers") : Promise.resolve(demoProviders)),
   listSessions: () => (tauri ? invoke<AgentSession[]>("list_sessions") : Promise.resolve(mockSessions.map(cloneSession))),
 
-  createSession: (provider: ProviderId, model: string | null, workspace: string) =>
+  providerModels: (provider: ProviderId) =>
+    tauri ? invoke<ProviderModelOption[]>("list_provider_models", { provider }) : Promise.resolve([]),
+  providerUsage: (provider: ProviderId) =>
+    tauri ? invoke<ProviderUsage | null>("provider_usage", { provider }) : Promise.resolve(null),
+
+  createSession: (input: CreateSessionOptions) =>
     tauri
-      ? invoke<AgentSession>("create_session", { input: { provider, model, workspace } })
-      : Promise.resolve(createMockSession(provider, model, workspace)),
+      ? invoke<AgentSession>("create_session", { input })
+      : Promise.resolve(createMockSession(input)),
+  updateSessionOptions: (input: Pick<AgentSession, "id" | "provider" | "providerBrand" | "model" | "reasoning" | "speedMode" | "interactionMode" | "accessMode">) => {
+    const payload = { ...input, sessionId: input.id }
+    if (tauri) return invoke<AgentSession>("update_session_options", { input: payload })
+    const session = mockSessions.find((item) => item.id === input.id)
+    if (!session) return Promise.reject(new Error("Demo session not found"))
+    Object.assign(session, input, { updatedAt: new Date().toISOString() })
+    putMockSession(session)
+    return Promise.resolve(cloneSession(session))
+  },
 
   deleteSession: (sessionId: string) => {
     if (tauri) return invoke<void>("delete_session", { sessionId })
@@ -151,12 +194,18 @@ export const api = {
     const value = await open({ directory: true, multiple: false, title: "Choose a workspace" })
     return typeof value === "string" ? value : null
   },
+  chooseFiles: async () => {
+    if (!tauri) return ["/Users/you/Developer/project/README.md"]
+    const value = await open({ directory: false, multiple: true, title: "Attach files" })
+    if (Array.isArray(value)) return value
+    return typeof value === "string" ? [value] : []
+  },
   workspaceEntries: (workspace: string) =>
     tauri ? invoke<WorkspaceEntry[]>("workspace_entries", { workspace }) : Promise.resolve([]),
   repoSummary: (workspace: string) =>
     tauri
       ? invoke<RepoSummary>("workspace_repo_summary", { workspace })
-      : Promise.resolve({
+      : Promise.resolve<RepoSummary>({
           isRepo: true,
           branch: "main",
           changedFiles: [
@@ -173,6 +222,9 @@ export const api = {
           prCommitCount: 1,
           prUrl: null,
         }),
+  initGit: (workspace: string) => tauri
+    ? invoke<GitActionResult>("workspace_git_init", { workspace })
+    : Promise.resolve({ message: "Initialized Git repository on branch main", url: null }),
   gitDiff: (workspace: string) =>
     tauri
       ? invoke<string>("workspace_git_diff", { workspace })
@@ -202,12 +254,13 @@ export const api = {
   createPullRequest: (workspace: string) =>
     tauri
       ? invoke<GitActionResult>("workspace_create_pr", { workspace })
-      : Promise.resolve({ message: "Pull request ready", url: "https://github.com/z4mbo/zAI/pull/1" }),
+      : Promise.resolve({ message: "Pull request ready", url: "https://github.com/z4mbo/Onyx/pull/1" }),
 
-  terminalOpen: (workspace: string, cols: number, rows: number) =>
+  terminalOpen: (workspace: string, cols: number, rows: number, wslDistribution: string | null = null) =>
     tauri
-      ? invoke<TerminalSession>("terminal_open", { workspace, cols, rows })
+      ? invoke<TerminalSession>("terminal_open", { workspace, cols, rows, wslDistribution })
       : Promise.resolve({ id: crypto.randomUUID(), cwd: workspace, shell: "demo" }),
+  listWslDistributions: () => tauri ? invoke<string[]>("list_wsl_distributions") : Promise.resolve([]),
   terminalWrite: (sessionId: string, data: string) => {
     if (tauri) return invoke<void>("terminal_write", { sessionId, data })
     mockTerminalListeners.forEach((listener) =>
@@ -224,7 +277,7 @@ export const api = {
       mockTerminalListeners.add(onEvent)
       return () => mockTerminalListeners.delete(onEvent)
     }
-    return listen<TerminalEvent>("zai://terminal", (event) => onEvent(event.payload))
+    return listen<TerminalEvent>("onyx://terminal", (event) => onEvent(event.payload))
   },
 
   setWindowTheme: (theme: Theme | null) =>
@@ -243,7 +296,48 @@ export const api = {
           { id: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet 4.6", contextLength: 1_000_000, promptPrice: null, completionPrice: null },
           { id: "google/gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview", contextLength: 1_000_000, promptPrice: null, completionPrice: null },
           { id: "openai/gpt-5.4", name: "OpenAI GPT-5.4", contextLength: 1_000_000, promptPrice: null, completionPrice: null },
+          { id: "x-ai/grok-4", name: "Grok 4", contextLength: 256_000, promptPrice: null, completionPrice: null },
         ]),
+  getVoiceSettings: () =>
+    tauri
+      ? invoke<VoiceSettings>("get_voice_settings")
+      : Promise.resolve<VoiceSettings>({
+          dictationShortcut: "Ctrl+Shift (hold)", agentShortcut: "Ctrl+Alt (hold)", overlayPosition: "bottom_center",
+          overlayMargin: 18, transcriptionProvider: "openrouter", transcriptionModel: "openai/whisper-large-v3",
+          agentProvider: "openrouter", agentModel: "openrouter/auto",
+          webProvider: "openrouter", webModel: "openrouter/auto",
+          filesProvider: "codex", filesModel: "default",
+          imageProvider: "openrouter", imageModel: "",
+          reasoning: "medium", language: null,
+          speakResponses: true, voiceProvider: "openrouter", voiceId: "alloy", voiceModel: "openai/gpt-4o-mini-tts-2025-12-15", voiceRate: 1,
+        }),
+  applyVoiceSettings: (settings: VoiceSettings) =>
+    tauri ? invoke<VoiceSettings>("apply_voice_settings", { settings }) : Promise.resolve(settings),
+  transcribeAudio: (audioBase64: string, format: string) =>
+    tauri
+      ? invoke<TranscriptionReply>("transcribe_audio", { request: { audioBase64, format } })
+      : Promise.resolve({ text: "Browser preview transcription", model: "demo" }),
+  speakText: (text: string) => tauri
+    ? invoke<string>("speak_text", { text })
+    : Promise.resolve(""),
+  injectText: (text: string) => tauri ? invoke<void>("inject_text", { text }) : Promise.resolve(),
+  activeAppContext: () => tauri
+    ? invoke<ActiveAppContext>("active_app_context")
+    : Promise.resolve({ name: "Browser preview", process: "browser", accent: "#7c6ff2", symbol: "O" }),
+  setAgentExpanded: (expanded: boolean) => tauri ? invoke<void>("set_agent_expanded", { expanded }) : Promise.resolve(),
+  hideWindow: (label: string) => tauri ? invoke<void>("hide_window", { label }) : Promise.resolve(),
+  showMainWindow: () => tauri ? invoke<void>("show_main_window") : Promise.resolve(),
+  platform: () => tauri ? invoke<string>("platform") : Promise.resolve("browser"),
+  chatSend: (request: ChatRequest) => tauri
+    ? invoke<ChatReply>("chat_send", { request })
+    : Promise.resolve({ content: "Onyx Chat browser preview is ready. Connect a CLI or OpenRouter in the desktop build for live responses.", model: request.model, media: [] }),
+  generateImage: (model: string, prompt: string, aspectRatio: string | null) => tauri
+    ? invoke<ChatReply>("generate_image", { request: { model, prompt, aspectRatio } })
+    : Promise.resolve({ content: "Image generation is available in the native app.", model, media: [] }),
+  startVideo: (model: string, prompt: string, aspectRatio: string | null) => tauri
+    ? invoke<VideoJob>("start_video", { request: { model, prompt, aspectRatio } })
+    : Promise.resolve({ id: crypto.randomUUID(), status: "completed", pollingUrl: "", contentUrl: null, error: null }),
+  pollVideo: (id: string) => tauri ? invoke<VideoJob>("poll_video", { id }) : Promise.resolve({ id, status: "completed" as const, pollingUrl: "", contentUrl: null, error: null }),
   respondApproval: (id: string, allow: boolean) =>
     tauri ? invoke<void>("respond_approval", { id, allow }) : Promise.resolve(),
 
@@ -259,9 +353,9 @@ export const api = {
         if (mockApprovalListener === onApproval) mockApprovalListener = undefined
       }
     }
-    const unlistenSession = await listen<SessionEvent>("zai://session", (event) => onSession(event.payload))
+    const unlistenSession = await listen<SessionEvent>("onyx://session", (event) => onSession(event.payload))
     try {
-      const unlistenApproval = await listen<ApprovalRequest>("zai://approval", (event) => onApproval(event.payload))
+      const unlistenApproval = await listen<ApprovalRequest>("onyx://approval", (event) => onApproval(event.payload))
       return () => {
         unlistenSession()
         unlistenApproval()

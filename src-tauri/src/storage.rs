@@ -1,4 +1,6 @@
-use crate::model::{AgentSession, Message, SessionStatus};
+use crate::model::{
+    AgentSession, ContextUsage, Message, ProviderBrand, SessionStatus, UpdateSessionOptionsInput,
+};
 use chrono::Utc;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -42,8 +44,12 @@ impl SessionStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => PersistedState::default(),
             Err(error) => return Err(error.to_string()),
         };
-        state.version = 1;
+        let previous_version = state.version;
+        state.version = 2;
         for session in &mut state.sessions {
+            if previous_version < 2 {
+                session.provider_brand = ProviderBrand::for_provider(session.provider);
+            }
             if session.status != SessionStatus::Idle {
                 session.status = SessionStatus::Idle;
             }
@@ -93,6 +99,39 @@ impl SessionStore {
         Ok(removed)
     }
 
+    pub fn update_options(&self, input: UpdateSessionOptionsInput) -> Result<AgentSession, String> {
+        let mut state = self.state.write();
+        let mut next = state.clone();
+        let session = next
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == input.session_id)
+            .ok_or_else(|| "Session not found".to_string())?;
+        if matches!(
+            session.status,
+            SessionStatus::Running | SessionStatus::WaitingApproval
+        ) {
+            return Err("Stop the running turn before changing its runtime options".into());
+        }
+        let connection_changed = session.provider != input.provider || session.model != input.model;
+        session.provider = input.provider;
+        session.provider_brand = input.provider_brand;
+        session.model = input.model;
+        session.reasoning = input.reasoning;
+        session.speed_mode = input.speed_mode;
+        session.interaction_mode = input.interaction_mode;
+        session.access_mode = input.access_mode;
+        session.updated_at = Utc::now();
+        if connection_changed {
+            session.provider_session_id = None;
+            session.context_usage = None;
+        }
+        let result = session.clone();
+        self.persist_state(&next)?;
+        *state = next;
+        Ok(result)
+    }
+
     pub fn begin_turn(&self, id: &str, message: Message) -> Result<AgentSession, String> {
         let mut state = self.state.write();
         let mut next = state.clone();
@@ -122,6 +161,7 @@ impl SessionStore {
         activities: Vec<Message>,
         message: Message,
         provider_session_id: Option<String>,
+        context_usage: Option<ContextUsage>,
         failed: bool,
     ) -> Result<AgentSession, String> {
         let mut state = self.state.write();
@@ -137,6 +177,9 @@ impl SessionStore {
         }
         if let Some(provider_session_id) = provider_session_id {
             session.provider_session_id = Some(provider_session_id);
+        }
+        if let Some(context_usage) = context_usage {
+            session.context_usage = Some(context_usage);
         }
         session.status = if failed {
             SessionStatus::Failed

@@ -1,201 +1,102 @@
-# zAI
+# Onyx
 
-zAI is a Rust-native desktop workspace for local coding-agent CLIs and
-OpenRouter models. It keeps one consistent conversation interface while each
-provider runs through an isolated adapter in the selected project directory.
+Onyx is a Rust-native desktop workspace that combines coding agents, a general multimodal chat, and system-wide voice assistance. Its coding surface keeps the OpenCode desktop visual language while using T3 Code-style provider drivers and session behavior.
 
-The desktop shell and orchestration layer are written in Rust with Tauri. The
-SolidJS interface uses [`@opencode-ai/ui` 1.18.4](https://www.npmjs.com/package/@opencode-ai/ui/v/1.18.4)
-and substantially adapts layout and component ideas from the OpenCode
-production interface. Its provider boundary, persistent-session behavior, and
-normalized event stream are informed by T3 Code's driver architecture. Exact
-source revisions and licenses are recorded below.
+> Onyx is an independent MIT-licensed project. It is not affiliated with or endorsed by OpenCode, T3 Tools, Anthropic, OpenAI, Google, Moonshot AI, xAI, OpenRouter, Clerk, or Convex.
 
-> [!IMPORTANT]
-> zAI is an independent community project. It is not affiliated with or
-> endorsed by OpenCode, T3 Tools, Anthropic, OpenAI, Google, Moonshot AI, or
-> OpenRouter.
+## What is included
+
+- Project-grouped coding sessions with tabbed workspaces.
+- Claude Code, Codex, Gemini CLI, and Kimi Code through their installed CLIs and existing subscriptions.
+- OpenRouter text, image, video, transcription, speech synthesis, and model discovery through a key stored in the operating-system keychain.
+- Provider-specific model, reasoning, service-tier, access, and Build/Plan controls. Codex models and 5-hour/weekly usage windows are read from the Codex app-server when the account reports them.
+- T3 Code-inspired Open, Commit, Push, Create PR, bottom-terminal, and multi-tab right-panel controls.
+- A T3 Chat-inspired general chat with local history, grouped/favorite models, and Chat/Image/Video modes.
+- Hold `Ctrl+Shift` for dictation and `Ctrl+Alt` for the voice agent on macOS and Windows. Voice history is stored locally.
+- Optional Clerk sign-in and Convex cloud sync scaffolding. The app stays local-first when these services are not configured.
+- macOS, Windows, and Linux builds. Windows terminals can use native shells, the default WSL distribution, or a selected WSL distribution.
 
 ## Providers
 
-| Provider | Integration | Authentication |
+| Brand | Runtime | Authentication |
 | --- | --- | --- |
-| Claude Code | Claude Code's streaming CLI protocol when available, with a bounded CLI fallback | Existing Claude Code login/configuration |
-| Codex | Codex app-server when available, with a bounded CLI fallback | Existing Codex login/configuration |
-| Gemini CLI | Gemini's non-interactive streaming output | Existing Gemini CLI login/configuration |
-| Kimi Code | Kimi's non-interactive streaming output | Existing Kimi Code login/configuration |
-| OpenRouter | Direct HTTPS chat-completions API with model discovery and a bounded tool loop | API key stored in the operating-system credential store |
+| OpenAI | Codex CLI/app-server | Existing Codex login |
+| Anthropic | Claude Code CLI | Existing Claude login |
+| Google | Gemini CLI | Existing Gemini login |
+| Moonshot AI | Kimi Code CLI | Existing Kimi login |
+| xAI | OpenRouter | OpenRouter API key |
+| OpenRouter | OpenRouter HTTPS API | OpenRouter API key |
 
-Only OpenRouter requires a credential to be entered in zAI. Local CLI adapters
-discover the executable, report its version, and reuse that tool's own login,
-settings, model access, and billing account. Providers are optional and can be
-installed independently:
+Only OpenRouter credentials are entered in Onyx. Local CLIs own their credentials, subscriptions, model availability, and terms.
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-- [Codex CLI](https://developers.openai.com/codex/cli)
-- [Gemini CLI](https://github.com/google-gemini/gemini-cli)
-- [Kimi Code](https://moonshotai.github.io/kimi-code/)
-- [OpenRouter API keys](https://openrouter.ai/keys)
-
-## How it works
-
-```text
-SolidJS interface
-      │ Tauri commands + events
-Rust session runtime
-      ├── Claude adapter ── claude CLI
-      ├── Codex adapter  ── codex CLI
-      ├── Gemini adapter ── gemini CLI
-      ├── Kimi adapter   ── kimi CLI
-      └── OpenRouter adapter ── HTTPS API + approved local tools
-```
-
-Provider-specific JSONL is normalized into session deltas, tool activity, and
-provider session IDs before it reaches the interface. A session is tied to one
-provider, model, and canonical workspace. One turn runs at a time per session;
-closing the app or cancelling a turn terminates its child process group.
-
-Conversation history is stored as `sessions.json` in the platform-specific
-Tauri application-data directory. It is local, but it is not encrypted; avoid
-putting secrets in prompts or tool output.
-
-Each session also has T3-style workspace controls: Open launches the selected
-code editor, Git actions commit/push/create or open a pull request, the bottom
-drawer hosts persistent PTYs, and the tabbed right panel can hold Browser,
-Terminal, Files, and Diff surfaces at the same time. The panel state is local
-to the open session tab.
-
-## Security model
-
-Coding agents can change files and execute programs. Use zAI on a clean Git
-worktree, review diffs, and keep important data backed up.
-
-- The OpenRouter key is validated before storage, placed in the operating
-  system keychain/credential manager, and never returned to the webview.
-- OpenRouter read, list, and literal-search tools are constrained to the
-  selected canonical workspace. File writes and shell commands require an
-  explicit in-app approval and time out after ten minutes.
-- OpenRouter file reads are capped at 256 KiB, writes at 1 MiB, and a response
-  can perform at most 12 tool rounds. Requests retain at most the newest 64
-  text messages or 512 KiB of history; chat responses are capped at 8 MiB,
-  assistant text at 1 MiB, and tool-call/result accumulation is separately
-  bounded per call and per turn.
-- Local-CLI prompts are capped at 24 KiB and OpenRouter prompts at 256 KiB.
-  Claude and Codex normally receive prompts over their persistent stdin
-  protocols; compatibility fallbacks and the Gemini/Kimi adapters pass the
-  prompt directly to the executable without invoking a shell.
-- Local CLIs are separate trusted programs. zAI launches them in the selected
-  workspace, but their native permission and sandbox behavior remains
-  authoritative. The persistent Claude adapter uses manual permission callbacks
-  and the persistent Codex adapter uses `on-request` approval with the
-  `workspace-write` sandbox; supported boolean requests are relayed to zAI's
-  approval interface. If protocol initialization fails, Claude falls back to
-  `acceptEdits` and Codex to `codex exec --json`, so those compatibility paths do
-  not provide the same in-app approval bridge. Gemini runs headlessly in its
-  `auto_edit` mode and zAI marks the selected workspace as trusted for that
-  process. Kimi's
-  [non-interactive prompt mode](https://moonshotai.github.io/kimi-code/en/reference/kimi-command.html#non-interactive-execution)
-  uses its upstream automatic permission policy. These modes can write files or
-  run tools without a zAI approval prompt, so use them only in workspaces you
-  trust. An OpenRouter
-  approval never grants permission to a local CLI.
-- Provider CLIs and OpenRouter necessarily send prompts, context, and selected
-  tool results to their respective services. Their privacy policies, terms,
-  quotas, and charges apply. zAI adds no analytics service of its own.
-- The integrated terminal is a full interactive shell running with the user's
-  operating-system authority in the selected workspace. Closing its tab stops
-  the PTY process tree, but commands entered there are otherwise unrestricted.
-- Commit stages every current workspace change after an explicit confirmation.
-  Push and Create PR perform external Git/GitHub mutations only after their
-  corresponding topbar buttons are clicked; zAI never force-pushes.
-- Browser surfaces accept only HTTP and HTTPS addresses and run in a sandboxed
-  frame. Pages can still execute their own scripts and network requests, and
-  their privacy policies apply. Some sites block embedding; use the
-  external-open icon in that case. Because the surface is an iframe, navigation
-  initiated inside a cross-origin page cannot always update zAI's address and
-  history controls.
-- The main webview's direct API connection policy is limited to OpenRouter;
-  embedded Browser frames may load user-selected HTTP/HTTPS pages, and local
-  CLIs make their own network connections outside the webview.
-
-## Run from source
+## Run and test
 
 Prerequisites:
 
-- Current stable [Rust](https://www.rust-lang.org/tools/install)
-- Node.js 20.19 or newer (or Node.js 22.12 or newer) and npm
-- The [Tauri 2 system prerequisites](https://v2.tauri.app/start/prerequisites/)
-  for your operating system
-- At least one provider CLI, or an OpenRouter API key, to run an agent
-
-Clone the repository, install the locked JavaScript dependency set, and start
-the Tauri development application:
+- Current stable Rust
+- Node.js 22 and npm
+- [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system
+- At least one supported CLI, or an OpenRouter key
 
 ```sh
-git clone https://github.com/z4mbo/zAI.git
-cd zAI
-npm ci
+git clone https://github.com/z4mbo/Onyx.git
+cd Onyx
+npm ci --legacy-peer-deps
 npm run dev
 ```
 
-`npm run dev` starts both the Vite frontend and the Rust/Tauri process. The
-first run also compiles the native application and can take longer. Keep that
-terminal open while testing.
+The first native launch compiles Rust dependencies and may take several minutes. `npm run dev:web` is a UI-only browser preview with mocked native operations.
 
-For interface-only work, `npm run dev:web` starts a browser preview on port
-1420. It uses the frontend's demo transport and does not exercise native CLI
-processes, the operating-system credential store, or real persistence.
+### Coding-agent smoke test
 
-### Configure a provider
+1. Verify the CLI you want to use from the same terminal: `claude --version`, `codex --version`, `gemini --version`, or `kimi --version`.
+2. Launch `npm run dev`, choose a disposable project, and create a session.
+3. Select provider, model, reasoning, Standard/Fast when available, access level, and Build or Plan.
+4. Send a prompt, stop a running turn, and verify the session remains grouped under its project.
+5. Test Open, terminal tabs, Browser/Files/Diff right-panel tabs, and Git actions in a disposable repository.
+6. Click **No Git** to initialize a new repository when the selected project is not already a repository.
 
-For Claude Code, Codex, Gemini, or Kimi:
+### Chat and media smoke test
 
-1. Install the official CLI linked in [Providers](#providers).
-2. Complete that CLI's normal login or API configuration outside zAI.
-3. Confirm its executable is on `PATH` in the environment from which you run
-   `npm run dev`.
-4. Open zAI Settings → Providers and select **Refresh**. zAI reuses the CLI's
-   existing credentials; it does not perform or store the CLI login itself.
+1. Open **Chat** from Home.
+2. Create several conversations and verify they persist after relaunch.
+3. Select an installed CLI model for subscription-backed text chat, or an OpenRouter model for text.
+4. Switch to Image or Video and choose a model whose OpenRouter catalog reports that output modality.
+5. Favorite a model and verify it sorts to the top of the picker.
 
-You can verify discovery from the same shell before launching zAI:
+### Voice smoke test
+
+1. Connect OpenRouter and set a transcription model in Settings → Voice.
+2. Grant microphone and accessibility/input permissions when the OS prompts.
+3. Hold `Ctrl+Shift`, speak, then release. The transcript should be inserted into the focused application and appear in Voice history.
+4. Hold `Ctrl+Alt`, ask a question, then release. The compact overlay should expand with the answer and, when **Speak responses** is enabled, play it through the configured OpenRouter speech model.
+5. Closing the main window should leave Onyx in the tray so the shortcuts remain available.
+
+Linux currently exposes the Voice dashboard and chat but does not install a global modifier-only hold listener; macOS and Windows implement the native hold gestures. This limitation is shown here rather than silently claiming parity.
+
+### Windows and WSL
+
+Open Settings → General → Windows terminal and select:
+
+- **Windows native** for PowerShell/cmd.
+- **Default WSL distribution**.
+- **Specific WSL distribution**, populated from `wsl.exe --list --quiet`.
+
+WSL must already be installed and configured. Onyx does not install or convert distributions.
+
+## Accounts and cloud sync
+
+Accounts are optional. Copy `.env.example` to `.env.local`, then configure Clerk and Convex:
 
 ```sh
-claude --version
-codex --version
-gemini --version
-kimi --version
+npx convex dev
 ```
 
-Only the provider you intend to use needs to be installed. For OpenRouter,
-create a key in the OpenRouter dashboard, open zAI Settings → Providers, enter
-the key in the OpenRouter section, and connect. zAI validates the key, stores
-it through the operating-system credential store, and then loads the model
-catalog available to that key. Do not commit or paste API keys into source
-files, `.env` files, screenshots, or issue reports.
+Create a Clerk JWT template named `convex`, set `VITE_CLERK_PUBLISHABLE_KEY` and `VITE_CONVEX_URL`, and add `CLERK_JWT_ISSUER_DOMAIN` to the Convex deployment. The included Convex functions authenticate every request and scope snapshots to the Clerk subject.
 
-### Test the desktop workspace
+The Account page provides sign-in/account status and a **Sync now** action that uploads coding sessions, chats, voice history, and preferences to the authenticated user's Convex snapshot. No subscription or payment behavior is implemented.
 
-Use `npm run dev` for functional testing; `npm run dev:web` is a visual demo
-and intentionally mocks native operations.
-
-1. Choose a real project folder and send a prompt to create a session.
-2. Confirm the chat composer matches the T3-style rounded glass layout and its
-   provider, Build, access-policy, send, and stop controls are present.
-3. Use the **Open** dropdown to select an installed editor. The main Open
-   button remembers that choice.
-4. Toggle the bottom panel with the first layout icon or `Cmd/Ctrl+J`. Run
-   `pwd`, resize the drawer, create another terminal tab, and close it.
-5. Toggle the right panel with the second layout icon or `Cmd/Ctrl+Shift+J`.
-   Use **+** to keep Browser, Files, Diff, and Terminal tabs open together.
-6. In Browser, enter a localhost or HTTPS URL. In Files, preview a UTF-8 file.
-   In Diff, verify tracked and untracked changes appear.
-7. Test Commit in a disposable Git repository first: its dialog lists every
-   file and clearly says it will commit all changes. Push and Create PR require
-   a configured remote; Create PR also requires an authenticated `gh` CLI.
-
-### Checks and builds
-
-Run the frontend checks and Rust tests:
+## Checks and packages
 
 ```sh
 npm test
@@ -204,45 +105,26 @@ npm run build
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo test --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-```
-
-`npm run build` validates and bundles the frontend only. Build the native
-desktop application separately:
-
-```sh
 npm run build:desktop
 ```
 
-Tauri installers and application bundles are emitted below
-`src-tauri/target/release/bundle/` unless Cargo's target directory is
-overridden.
+GitHub Actions runs tests and creates unsigned desktop bundles for macOS, Windows, and Linux. Production distribution still requires your own Apple/Windows signing credentials.
 
-## Attribution
+## Security notes
 
-The OpenCode and T3 Code source trees were reviewed at pinned revisions so the
-adaptations and architectural influences are reproducible:
+- Coding agents and terminals can modify files and execute programs. Use clean Git worktrees and review diffs.
+- Supervised, Auto-accept edits, and Full access are translated to each runtime's supported permission and sandbox options; the upstream CLI remains authoritative.
+- OpenRouter tools are constrained to the canonical project directory and bounded by prompt, output, file, tool-loop, and timeout limits.
+- OpenRouter keys are validated and stored in the OS credential manager; they are never returned to the webview. Keys saved by the earlier zAI build are migrated to the Onyx credential service on first use.
+- Chat, voice history, and coding sessions are local by default. Local session JSON is not encrypted. Clerk/Convex sync is opt-in and requires deployment configuration.
+- Browser panels load user-selected HTTP/HTTPS sites in sandboxed frames; those sites' terms and privacy policies apply.
 
-- OpenCode production UI reference for `@opencode-ai/ui` 1.18.4:
-  [`411eff73f026d4950c07947c4d983788cb615baa`](https://github.com/anomalyco/opencode/tree/411eff73f026d4950c07947c4d983788cb615baa).
-  zAI uses that published UI package and substantially adapts OpenCode UI
-  layout and component ideas for the zAI desktop interface.
-- T3 Code behavior and provider-driver architecture reference:
-  [`9a0a07167f0623c3a7db0ffeff2e3939760309df`](https://github.com/pingdotgg/t3code/tree/9a0a07167f0623c3a7db0ffeff2e3939760309df).
-  zAI is informed by its provider-instance separation, persistent session
-  handling, normalized events, composer geometry/interactions, session header
-  actions, panel toggles, terminal drawer, and right-panel tab model; T3 Code
-  is not a zAI runtime dependency.
+## Attribution and license
 
-Both upstream projects are MIT-licensed. Their copyright notices and complete
-license texts are preserved in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
-and [`licenses/`](licenses/), and those files are embedded in packaged desktop
-resources. The zAI project owns and uses its own logo,
-wordmark, and application icons; it does not use the OpenCode or T3 Code logo
-or wordmark. Attribution identifies provenance and does not imply sponsorship
-or endorsement.
+The UI package and production layout reference are from OpenCode at [`411eff73f026d4950c07947c4d983788cb615baa`](https://github.com/anomalyco/opencode/tree/411eff73f026d4950c07947c4d983788cb615baa). Provider behavior, composer controls, usage limits, and workspace interaction references are from T3 Code at [`78a0ea55c1d9edce8bcd2b3caff9510b4093e6d3`](https://github.com/pingdotgg/t3code/tree/78a0ea55c1d9edce8bcd2b3caff9510b4093e6d3).
 
-## Contributing and license
+The general chat interaction is informed by the public T3 Chat product. Onyx does not include T3 Chat source code, backend services, or brand assets.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow. The
-current zAI rewrite is released under the [MIT License](LICENSE). Historical
-revisions remain governed by the licenses included in those revisions.
+Both projects are MIT-licensed. Their complete notices are preserved in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [licenses/](licenses/), which are included in packaged apps. Onyx uses its own logo and does not redistribute the OpenCode or T3 Code marks.
+
+Onyx itself is released under the [MIT License](LICENSE).

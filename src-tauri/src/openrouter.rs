@@ -1,9 +1,11 @@
 use crate::model::{
-    AgentSession, ApprovalRequest, Message, MessageKind, MessageRole, OpenRouterModel,
-    OpenRouterStatus, SessionEvent,
+    AccessMode, AgentSession, ApprovalRequest, ChatMedia, ChatMessageInput, ChatReply, Message,
+    MessageKind, MessageRole, OpenRouterModel, OpenRouterStatus, SessionEvent, TranscriptionReply,
+    TranscriptionRequest, VideoJob,
 };
 #[cfg(windows)]
 use crate::providers::process::WindowsJob;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use cap_std::{
     ambient_authority,
     fs::{Dir, OpenOptions},
@@ -31,7 +33,8 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
-const SERVICE: &str = "com.z4mbo.zai";
+const SERVICE: &str = "com.z4mbo.onyx";
+const LEGACY_SERVICE: &str = "com.z4mbo.zai";
 const ACCOUNT: &str = "openrouter";
 const API_BASE: &str = "https://openrouter.ai/api/v1";
 const MAX_TOOL_ROUNDS: usize = 12;
@@ -42,6 +45,7 @@ const MAX_MODEL_ID_BYTES: usize = 512;
 const MAX_CHAT_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_MODELS_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_AUTH_RESPONSE_BYTES: usize = 256 * 1024;
+const MAX_SPEECH_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_ERROR_MESSAGE_BYTES: usize = 2 * 1024;
 const MAX_ASSISTANT_CONTENT_BYTES: usize = 1024 * 1024;
@@ -64,8 +68,8 @@ const MAX_TURN_CONTEXT_GROWTH_BYTES: usize = 10 * 1024 * 1024;
 const FILE_READ_TIMEOUT: Duration = Duration::from_secs(15);
 const FILE_SEARCH_TIMEOUT: Duration = Duration::from_secs(45);
 
-const SYSTEM_PROMPT: &str = "You are zAI, a coding agent working in the user's selected workspace. Inspect files before editing. Use tools when needed, make focused changes, and explain the result. File writes and shell commands always require the user's explicit approval. Never claim a tool succeeded until its result is returned.";
-const TRUNCATION_MARKER: &str = "\n...[truncated by zAI safety limit]";
+const SYSTEM_PROMPT: &str = "You are Onyx, a coding agent working in the user's selected workspace. Inspect files before editing. Use tools when needed, make focused changes, and explain the result. Follow the selected access policy and never claim a tool succeeded until its result is returned.";
+const TRUNCATION_MARKER: &str = "\n...[truncated by Onyx safety limit]";
 
 #[derive(Debug)]
 struct ParsedToolCall {
@@ -107,11 +111,14 @@ pub async fn save_key(value: String) -> Result<OpenRouterStatus, String> {
 
 pub async fn clear_key() -> Result<OpenRouterStatus, String> {
     tokio::task::spawn_blocking(|| {
-        let entry = keyring::Entry::new(SERVICE, ACCOUNT).map_err(|error| error.to_string())?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(error.to_string()),
+        for service in [SERVICE, LEGACY_SERVICE] {
+            let entry = keyring::Entry::new(service, ACCOUNT).map_err(|error| error.to_string())?;
+            match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(error) => return Err(error.to_string()),
+            }
         }
+        Ok(())
     })
     .await
     .map_err(|error| error.to_string())??;
@@ -142,7 +149,8 @@ pub async fn run_turn(
     }
     let key = read_key().await?;
     let workspace = canonical_workspace(&session.workspace)?;
-    let mut messages = build_initial_messages(&session.messages, &prompt)?;
+    let mut messages =
+        build_initial_messages(&session.messages, &prompt, session.interaction_mode)?;
     let mut request_context_bytes = encoded_messages_len(&messages)?;
     let mut turn_context_growth_bytes = 0_usize;
 
@@ -160,8 +168,8 @@ pub async fn run_turn(
         let request = client
             .post(format!("{API_BASE}/chat/completions"))
             .bearer_auth(&key)
-            .header("HTTP-Referer", "https://github.com/z4mbo/zAI")
-            .header("X-OpenRouter-Title", "zAI")
+            .header("HTTP-Referer", "https://github.com/z4mbo/Onyx")
+            .header("X-OpenRouter-Title", "Onyx")
             .json(&json!({
                 "model": model,
                 "messages": messages,
@@ -220,7 +228,7 @@ pub async fn run_turn(
         if !content.is_empty() {
             append_assistant_content(&mut final_content, &content)?;
             let _ = app.emit(
-                "zai://session",
+                "onyx://session",
                 SessionEvent::Delta {
                     session_id: session.id.clone(),
                     message_id: message_id.clone(),
@@ -254,7 +262,7 @@ pub async fn run_turn(
             activity_bytes = activity_bytes.saturating_add(activity_detail.len());
             let activity = Message::new(MessageRole::Tool, MessageKind::Tool, activity_detail);
             let _ = app.emit(
-                "zai://session",
+                "onyx://session",
                 SessionEvent::Activity {
                     session_id: session.id.clone(),
                     message: activity.clone(),
@@ -267,6 +275,7 @@ pub async fn run_turn(
                 &workspace,
                 &call.name,
                 &call.arguments,
+                session.access_mode,
                 &cancellation,
                 &approvals,
             )
@@ -300,7 +309,11 @@ pub async fn run_turn(
     Err("OpenRouter reached the tool-call safety limit for this turn".to_string())
 }
 
-fn build_initial_messages(history: &[Message], prompt: &str) -> Result<Vec<Value>, String> {
+fn build_initial_messages(
+    history: &[Message],
+    prompt: &str,
+    interaction_mode: crate::model::InteractionMode,
+) -> Result<Vec<Value>, String> {
     if prompt.len() > MAX_CURRENT_PROMPT_BYTES {
         return Err(format!(
             "OpenRouter prompts are limited to {MAX_CURRENT_PROMPT_BYTES} bytes"
@@ -341,7 +354,14 @@ fn build_initial_messages(history: &[Message], prompt: &str) -> Result<Vec<Value
     selected.reverse();
 
     let mut messages = Vec::with_capacity(selected.len() + 2);
-    messages.push(json!({ "role": "system", "content": SYSTEM_PROMPT }));
+    let system_prompt = if interaction_mode == crate::model::InteractionMode::Plan {
+        format!(
+            "{SYSTEM_PROMPT} You are in Plan mode: inspect as needed, but do not modify files or execute mutation commands. Return a concrete implementation plan."
+        )
+    } else {
+        SYSTEM_PROMPT.to_string()
+    };
+    messages.push(json!({ "role": "system", "content": system_prompt }));
     messages.extend(selected);
     messages.push(json!({ "role": "user", "content": prompt }));
     let encoded_len = encoded_messages_len(&messages)?;
@@ -548,18 +568,410 @@ pub fn respond_to_approval(
         .map_err(|_| "Approval request was cancelled".to_string())
 }
 
-async fn read_key() -> Result<String, String> {
+pub(crate) async fn read_key() -> Result<String, String> {
     tokio::task::spawn_blocking(|| {
-        keyring::Entry::new(SERVICE, ACCOUNT)
-            .map_err(|error| error.to_string())?
-            .get_password()
-            .map_err(|error| match error {
-                keyring::Error::NoEntry => "Connect an OpenRouter API key in Settings".to_string(),
-                other => other.to_string(),
-            })
+        let current = keyring::Entry::new(SERVICE, ACCOUNT).map_err(|error| error.to_string())?;
+        match current.get_password() {
+            Ok(key) => Ok(key),
+            Err(keyring::Error::NoEntry) => {
+                let legacy = keyring::Entry::new(LEGACY_SERVICE, ACCOUNT)
+                    .map_err(|error| error.to_string())?;
+                match legacy.get_password() {
+                    Ok(key) => {
+                        current
+                            .set_password(&key)
+                            .map_err(|error| error.to_string())?;
+                        let _ = legacy.delete_credential();
+                        Ok(key)
+                    }
+                    Err(keyring::Error::NoEntry) => {
+                        Err("Connect an OpenRouter API key in Settings".to_string())
+                    }
+                    Err(error) => Err(error.to_string()),
+                }
+            }
+            Err(error) => Err(error.to_string()),
+        }
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+pub async fn transcribe(
+    model: &str,
+    language: Option<&str>,
+    request: &TranscriptionRequest,
+) -> Result<TranscriptionReply, String> {
+    if request.audio_base64.is_empty() || request.audio_base64.len() > 32 * 1024 * 1024 {
+        return Err("The recording is empty or exceeds the 32 MiB limit".into());
+    }
+    if model.is_empty() || model.len() > MAX_MODEL_ID_BYTES {
+        return Err("The transcription model is invalid".into());
+    }
+    let key = read_key().await?;
+    let response = Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()
+        .map_err(|error| error.to_string())?
+        .post(format!("{API_BASE}/audio/transcriptions"))
+        .bearer_auth(key)
+        .header("X-OpenRouter-Title", "Onyx")
+        .json(&json!({
+            "model": model,
+            "input_audio": { "data": request.audio_base64, "format": request.format },
+            "language": language,
+            "temperature": 0
+        }))
+        .send()
+        .await
+        .map_err(safe_http_error)?;
+    let status = response.status();
+    let bytes = read_http_body_limited(
+        response,
+        if status.is_success() {
+            MAX_CHAT_RESPONSE_BYTES
+        } else {
+            MAX_ERROR_RESPONSE_BYTES
+        },
+    )
+    .await?;
+    if !status.is_success() {
+        return Err(openrouter_error(status, String::from_utf8_lossy(&bytes)));
+    }
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "OpenRouter returned invalid transcription data".to_string())?;
+    let text = value
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return Err("No understandable speech was detected".into());
+    }
+    Ok(TranscriptionReply {
+        text,
+        model: model.into(),
+    })
+}
+
+pub async fn speak(model: &str, voice: &str, rate: f32, text: &str) -> Result<String, String> {
+    if model.is_empty() || model.len() > MAX_MODEL_ID_BYTES {
+        return Err("The speech model is invalid".into());
+    }
+    if text.trim().is_empty() || text.len() > 64 * 1024 {
+        return Err("Speech text is empty or exceeds the 64 KiB limit".into());
+    }
+    if voice.len() > 128 || voice.chars().any(char::is_control) {
+        return Err("The voice identifier is invalid".into());
+    }
+    if !(0.5..=2.0).contains(&rate) {
+        return Err("Speech rate must be between 0.5 and 2.0".into());
+    }
+    let key = read_key().await?;
+    let response = Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()
+        .map_err(|error| error.to_string())?
+        .post(format!("{API_BASE}/audio/speech"))
+        .bearer_auth(key)
+        .header("HTTP-Referer", "https://github.com/z4mbo/Onyx")
+        .header("X-OpenRouter-Title", "Onyx")
+        .json(&json!({
+            "model": model,
+            "input": text,
+            "voice": if voice.trim().is_empty() { "alloy" } else { voice.trim() },
+            "response_format": "mp3",
+            "speed": rate,
+        }))
+        .send()
+        .await
+        .map_err(safe_http_error)?;
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.starts_with("audio/"))
+        .unwrap_or("audio/mpeg")
+        .to_string();
+    let bytes = read_http_body_limited(
+        response,
+        if status.is_success() {
+            MAX_SPEECH_RESPONSE_BYTES
+        } else {
+            MAX_ERROR_RESPONSE_BYTES
+        },
+    )
+    .await?;
+    if !status.is_success() {
+        return Err(openrouter_error(status, String::from_utf8_lossy(&bytes)));
+    }
+    if bytes.is_empty() {
+        return Err("OpenRouter returned empty speech audio".into());
+    }
+    Ok(format!(
+        "data:{content_type};base64,{}",
+        BASE64.encode(bytes)
+    ))
+}
+
+pub async fn chat_completion(
+    model: &str,
+    messages: &[ChatMessageInput],
+    web_search: bool,
+) -> Result<ChatReply, String> {
+    if model.is_empty() || model.len() > MAX_MODEL_ID_BYTES {
+        return Err("Choose a valid model".into());
+    }
+    if messages.is_empty() || messages.len() > MAX_HISTORY_MESSAGES {
+        return Err("Chat history is empty or too long".into());
+    }
+    let mut bytes = 0_usize;
+    let request_messages = messages
+        .iter()
+        .map(|message| {
+            bytes = bytes.saturating_add(message.content.len());
+            json!({ "role": message.role, "content": message.content })
+        })
+        .collect::<Vec<_>>();
+    if bytes > MAX_HISTORY_CONTENT_BYTES {
+        return Err("Chat history exceeds the 512 KiB limit".into());
+    }
+    let key = read_key().await?;
+    let mut request_body = json!({ "model": model, "messages": request_messages });
+    if web_search {
+        request_body["tools"] =
+            json!([{ "type": "openrouter:web_search", "max_total_results": 8 }]);
+    }
+    let response = Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()
+        .map_err(|error| error.to_string())?
+        .post(format!("{API_BASE}/chat/completions"))
+        .bearer_auth(key)
+        .header("HTTP-Referer", "https://github.com/z4mbo/Onyx")
+        .header("X-OpenRouter-Title", "Onyx")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(safe_http_error)?;
+    let status = response.status();
+    let body = read_http_body_limited(
+        response,
+        if status.is_success() {
+            MAX_CHAT_RESPONSE_BYTES
+        } else {
+            MAX_ERROR_RESPONSE_BYTES
+        },
+    )
+    .await?;
+    if !status.is_success() {
+        return Err(openrouter_error(status, String::from_utf8_lossy(&body)));
+    }
+    let value: Value = serde_json::from_slice(&body)
+        .map_err(|_| "OpenRouter returned invalid chat data".to_string())?;
+    let content = extract_content_limited(
+        value.pointer("/choices/0/message/content"),
+        MAX_ASSISTANT_CONTENT_BYTES,
+    )?;
+    if content.trim().is_empty() {
+        return Err("The model returned an empty response".into());
+    }
+    Ok(ChatReply {
+        content,
+        model: model.into(),
+        media: Vec::new(),
+    })
+}
+
+pub async fn generate_image(
+    model: &str,
+    prompt: &str,
+    aspect_ratio: Option<&str>,
+) -> Result<ChatReply, String> {
+    if prompt.trim().is_empty() || prompt.len() > MAX_CURRENT_PROMPT_BYTES {
+        return Err("Image prompt is empty or too long".into());
+    }
+    let key = read_key().await?;
+    let mut body = json!({ "model": model, "prompt": prompt, "n": 1, "output_format": "png" });
+    if let Some(ratio) =
+        aspect_ratio.filter(|value| matches!(*value, "1:1" | "16:9" | "9:16" | "4:3" | "3:4"))
+    {
+        body["aspect_ratio"] = json!(ratio);
+    }
+    let response = Client::builder()
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|error| error.to_string())?
+        .post(format!("{API_BASE}/images"))
+        .bearer_auth(key)
+        .header("HTTP-Referer", "https://github.com/z4mbo/Onyx")
+        .header("X-OpenRouter-Title", "Onyx")
+        .json(&body)
+        .send()
+        .await
+        .map_err(safe_http_error)?;
+    let status = response.status();
+    let payload = read_http_body_limited(
+        response,
+        if status.is_success() {
+            32 * 1024 * 1024
+        } else {
+            MAX_ERROR_RESPONSE_BYTES
+        },
+    )
+    .await?;
+    if !status.is_success() {
+        return Err(openrouter_error(status, String::from_utf8_lossy(&payload)));
+    }
+    let value: Value = serde_json::from_slice(&payload)
+        .map_err(|_| "OpenRouter returned invalid image data".to_string())?;
+    let media = value
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|image| {
+            let encoded = image.get("b64_json")?.as_str()?;
+            let mime = image
+                .get("media_type")
+                .and_then(Value::as_str)
+                .unwrap_or("image/png");
+            Some(ChatMedia {
+                kind: "image".into(),
+                url: format!("data:{mime};base64,{encoded}"),
+                mime_type: Some(mime.into()),
+            })
+        })
+        .collect::<Vec<_>>();
+    if media.is_empty() {
+        return Err("The image model returned no image".into());
+    }
+    Ok(ChatReply {
+        content: "Image generated".into(),
+        model: model.into(),
+        media,
+    })
+}
+
+pub async fn start_video(
+    model: &str,
+    prompt: &str,
+    aspect_ratio: Option<&str>,
+) -> Result<VideoJob, String> {
+    if prompt.trim().is_empty() || prompt.len() > MAX_CURRENT_PROMPT_BYTES {
+        return Err("Video prompt is empty or too long".into());
+    }
+    let key = read_key().await?;
+    let mut body = json!({ "model": model, "prompt": prompt });
+    if let Some(ratio) = aspect_ratio.filter(|value| matches!(*value, "16:9" | "9:16" | "1:1")) {
+        body["aspect_ratio"] = json!(ratio);
+    }
+    let response = Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| error.to_string())?
+        .post(format!("{API_BASE}/videos"))
+        .bearer_auth(key)
+        .header("HTTP-Referer", "https://github.com/z4mbo/Onyx")
+        .header("X-OpenRouter-Title", "Onyx")
+        .json(&body)
+        .send()
+        .await
+        .map_err(safe_http_error)?;
+    let status = response.status();
+    let payload = read_http_body_limited(
+        response,
+        if status.is_success() {
+            MAX_CHAT_RESPONSE_BYTES
+        } else {
+            MAX_ERROR_RESPONSE_BYTES
+        },
+    )
+    .await?;
+    if !status.is_success() {
+        return Err(openrouter_error(status, String::from_utf8_lossy(&payload)));
+    }
+    let value: Value = serde_json::from_slice(&payload)
+        .map_err(|_| "OpenRouter returned invalid video job data".to_string())?;
+    let id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "OpenRouter returned no video job id".to_string())?;
+    let polling_url = value
+        .get("polling_url")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    Ok(VideoJob {
+        id: id.into(),
+        status: value
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending")
+            .into(),
+        polling_url: polling_url.into(),
+        content_url: value
+            .get("unsigned_urls")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        error: value
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+pub async fn poll_video(id: &str) -> Result<VideoJob, String> {
+    if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
+        return Err("Invalid video job id".into());
+    }
+    let key = read_key().await?;
+    let response = Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| error.to_string())?
+        .get(format!("{API_BASE}/videos/{id}"))
+        .bearer_auth(key)
+        .send()
+        .await
+        .map_err(safe_http_error)?;
+    let status = response.status();
+    let payload = read_http_body_limited(
+        response,
+        if status.is_success() {
+            MAX_CHAT_RESPONSE_BYTES
+        } else {
+            MAX_ERROR_RESPONSE_BYTES
+        },
+    )
+    .await?;
+    if !status.is_success() {
+        return Err(openrouter_error(status, String::from_utf8_lossy(&payload)));
+    }
+    let value: Value = serde_json::from_slice(&payload)
+        .map_err(|_| "OpenRouter returned invalid video job data".to_string())?;
+    Ok(VideoJob {
+        id: id.into(),
+        status: value
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("processing")
+            .into(),
+        polling_url: format!("/api/v1/videos/{id}"),
+        content_url: value
+            .get("unsigned_urls")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        error: value
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
 }
 
 async fn fetch_models(key: &str) -> Result<Vec<OpenRouterModel>, String> {
@@ -569,8 +981,8 @@ async fn fetch_models(key: &str) -> Result<Vec<OpenRouterModel>, String> {
         .map_err(|error| error.to_string())?
         .get(format!("{API_BASE}/models"))
         .bearer_auth(key)
-        .header("HTTP-Referer", "https://github.com/z4mbo/zAI")
-        .header("X-OpenRouter-Title", "zAI")
+        .header("HTTP-Referer", "https://github.com/z4mbo/Onyx")
+        .header("X-OpenRouter-Title", "Onyx")
         .send()
         .await
         .map_err(safe_http_error)?;
@@ -610,6 +1022,10 @@ async fn fetch_models(key: &str) -> Result<Vec<OpenRouterModel>, String> {
                     .and_then(Value::as_str)
                     .unwrap_or(&id)
                     .to_string(),
+                description: model
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
                 id,
                 context_length: model.get("context_length").and_then(Value::as_u64),
                 prompt_price: model
@@ -620,6 +1036,22 @@ async fn fetch_models(key: &str) -> Result<Vec<OpenRouterModel>, String> {
                     .pointer("/pricing/completion")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                input_modalities: model
+                    .pointer("/architecture/input_modalities")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect(),
+                output_modalities: model
+                    .pointer("/architecture/output_modalities")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect(),
             })
         })
         .collect::<Vec<_>>();
@@ -694,6 +1126,7 @@ async fn execute_tool(
     workspace: &Path,
     name: &str,
     arguments: &Value,
+    access_mode: AccessMode,
     cancellation: &CancellationToken,
     approvals: &ApprovalRegistry,
 ) -> Result<String, String> {
@@ -760,16 +1193,20 @@ async fn execute_tool(
                 return Err("Write exceeds the 1 MiB safety limit".to_string());
             }
             safe_path(workspace, relative, true)?;
-            let approved = request_approval(
-                app,
-                session_id,
-                "Allow OpenRouter to write a file?",
-                &format!("Write {} bytes to {relative}", content.len()),
-                "writes files in the selected workspace",
-                cancellation,
-                approvals,
-            )
-            .await?;
+            let approved = if access_mode == AccessMode::ApprovalRequired {
+                request_approval(
+                    app,
+                    session_id,
+                    "Allow OpenRouter to write a file?",
+                    &format!("Write {} bytes to {relative}", content.len()),
+                    "writes files in the selected workspace",
+                    cancellation,
+                    approvals,
+                )
+                .await?
+            } else {
+                true
+            };
             if !approved {
                 return Ok("User denied the file write".to_string());
             }
@@ -778,16 +1215,20 @@ async fn execute_tool(
         }
         "run_command" => {
             let command = required_argument(arguments, "command")?;
-            let approved = request_approval(
-                app,
-                session_id,
-                "Allow OpenRouter to run this command?",
-                command,
-                "executes a shell command in the selected workspace",
-                cancellation,
-                approvals,
-            )
-            .await?;
+            let approved = if access_mode == AccessMode::FullAccess {
+                true
+            } else {
+                request_approval(
+                    app,
+                    session_id,
+                    "Allow OpenRouter to run this command?",
+                    command,
+                    "executes a shell command in the selected workspace",
+                    cancellation,
+                    approvals,
+                )
+                .await?
+            };
             if !approved {
                 return Ok("User denied the command".to_string());
             }
@@ -817,7 +1258,7 @@ async fn request_approval(
         risk: risk.to_string(),
         created_at: Utc::now(),
     };
-    if let Err(error) = app.emit("zai://approval", request) {
+    if let Err(error) = app.emit("onyx://approval", request) {
         approvals.lock().remove(&id);
         return Err(error.to_string());
     }
@@ -1476,7 +1917,7 @@ mod tests {
 
     #[test]
     fn workspace_paths_reject_parent_traversal() {
-        let root = std::env::temp_dir().join(format!("zai-path-test-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("onyx-path-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         assert!(safe_path(&root.canonicalize().unwrap(), "../secret", true).is_err());
         fs::remove_dir_all(root).unwrap();
@@ -1526,7 +1967,9 @@ mod tests {
             "current".to_string(),
         ));
 
-        let messages = build_initial_messages(&history, "current").unwrap();
+        let messages =
+            build_initial_messages(&history, "current", crate::model::InteractionMode::Build)
+                .unwrap();
         assert_eq!(messages.len(), MAX_HISTORY_MESSAGES + 2);
         assert_eq!(messages[1]["content"], json!("history-5"));
         assert_eq!(
@@ -1550,7 +1993,8 @@ mod tests {
             MessageKind::Text,
             "🙂".repeat(MAX_HISTORY_CONTENT_BYTES / 4 + 32),
         )];
-        let messages = build_initial_messages(&history, "next").unwrap();
+        let messages =
+            build_initial_messages(&history, "next", crate::model::InteractionMode::Build).unwrap();
         let content = messages[1]["content"].as_str().unwrap();
         assert!(content.len() <= MAX_HISTORY_CONTENT_BYTES);
         assert!(content.ends_with(TRUNCATION_MARKER));
@@ -1560,7 +2004,9 @@ mod tests {
     #[test]
     fn current_prompt_is_never_silently_truncated() {
         let prompt = "x".repeat(MAX_CURRENT_PROMPT_BYTES + 1);
-        assert!(build_initial_messages(&[], &prompt).is_err());
+        assert!(
+            build_initial_messages(&[], &prompt, crate::model::InteractionMode::Build).is_err()
+        );
     }
 
     #[test]
@@ -1637,7 +2083,7 @@ mod tests {
 
     #[test]
     fn workspace_reads_enforce_the_open_handle_byte_limit() {
-        let root = std::env::temp_dir().join(format!("zai-read-test-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("onyx-read-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("large.txt"), vec![b'x'; 1025]).unwrap();
 
@@ -1652,7 +2098,7 @@ mod tests {
     fn workspace_reads_reject_symlink_escape() {
         use std::os::unix::fs::symlink;
 
-        let base = std::env::temp_dir().join(format!("zai-read-test-{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!("onyx-read-test-{}", uuid::Uuid::new_v4()));
         let root = base.join("workspace");
         let outside = base.join("outside");
         fs::create_dir_all(&root).unwrap();
@@ -1671,7 +2117,7 @@ mod tests {
     fn workspace_reads_reject_fifos_without_waiting_for_a_writer() {
         use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc, time::Duration};
 
-        let root = std::env::temp_dir().join(format!("zai-fifo-test-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("onyx-fifo-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let fifo = root.join("input.pipe");
         let fifo_path = CString::new(fifo.as_os_str().as_bytes()).unwrap();
@@ -1695,7 +2141,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn command_output_limit_terminates_background_process_group() {
-        let root = std::env::temp_dir().join(format!("zai-command-test-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("onyx-command-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let cancellation = tokio_util::sync::CancellationToken::new();
         let error = run_shell_command(
@@ -1720,7 +2166,7 @@ mod tests {
     fn workspace_writes_reject_symlink_escape() {
         use std::os::unix::fs::symlink;
 
-        let base = std::env::temp_dir().join(format!("zai-write-test-{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!("onyx-write-test-{}", uuid::Uuid::new_v4()));
         let root = base.join("workspace");
         let outside = base.join("outside");
         fs::create_dir_all(&root).unwrap();

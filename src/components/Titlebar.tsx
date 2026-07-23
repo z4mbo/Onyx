@@ -1,8 +1,9 @@
-import { For, Show, type Component, type JSX } from "solid-js"
+import { createSignal, For, Show, type Component, type JSX } from "solid-js"
 import { Icon } from "@opencode-ai/ui/v2/icon"
+import { MessageSquare, Mic2 } from "lucide-solid"
 import { ZaiAppIcon } from "./ZaiAppIcon"
 
-/** The presentation-only tab shape consumed by the zAI desktop titlebar. */
+/** The presentation-only tab shape consumed by the Onyx desktop titlebar. */
 export interface TitlebarTab {
   /** Stable session or draft identifier. */
   id: string
@@ -12,10 +13,11 @@ export interface TitlebarTab {
   active: boolean
   /** Whether the tab's agent is producing a response. */
   running?: boolean
+  projectInitial?: string
 }
 
 /**
- * Self-contained callbacks and state required by the zAI desktop titlebar.
+ * Self-contained callbacks and state required by the Onyx desktop titlebar.
  *
  * The component intentionally knows nothing about routing, Tauri commands, or
  * provider protocols. Its parent owns navigation and session lifecycle state.
@@ -29,9 +31,15 @@ export interface TitlebarProps {
   onClose: (id: string) => void
   /** Create a new draft/session tab. */
   onNew: () => void
+  sessions?: readonly { id: string; label: string; project: string }[]
+  onOpenSession?: (id: string) => void
   /** Open the project/session home view. */
   onHome: () => void
-  /** Open zAI settings. */
+  /** Open general chat, images, and video. */
+  onChat: () => void
+  /** Open dictation, voice agent, and history. */
+  onVoice: () => void
+  /** Open Onyx settings. */
   onOpenSettings: () => void
 }
 
@@ -76,8 +84,9 @@ function RunningIndicator() {
   )
 }
 
-/** OpenCode-v2-proportioned desktop chrome, rebranded and decoupled for zAI. */
+/** OpenCode-v2-proportioned desktop chrome, rebranded and decoupled for Onyx. */
 export const Titlebar: Component<TitlebarProps> = (props) => {
+  const [newMenuOpen, setNewMenuOpen] = createSignal(false)
   const tabElements = new Map<string, HTMLButtonElement>()
 
   const closeTab = (event: MouseEvent, id: string) => {
@@ -275,7 +284,7 @@ export const Titlebar: Component<TitlebarProps> = (props) => {
                           "min-width": "16px",
                         }}
                       >
-                        <Show when={tab.running} fallback={<Icon name="edit" />}>
+                        <Show when={tab.running} fallback={<span class="zai-titlebar__project-icon">{tab.projectInitial ?? "O"}</span>}>
                           <RunningIndicator />
                         </Show>
                       </span>
@@ -332,29 +341,61 @@ export const Titlebar: Component<TitlebarProps> = (props) => {
           </div>
         </div>
 
-        <button
-          type="button"
-          class="zai-titlebar__control zai-titlebar__new"
-          style={{
-            ...CONTROL_RESET,
-            display: "inline-flex",
-            "align-items": "center",
-            "justify-content": "center",
-            width: "28px",
-            height: "28px",
-            "min-width": "28px",
-            "border-radius": "6px",
-            background: "transparent",
-          }}
-          onClick={props.onNew}
-          aria-label="New session"
-          title="New session"
-        >
-          <Icon name="plus" />
-        </button>
+        <div class="zai-titlebar__new-wrap">
+          <button
+            type="button"
+            class="zai-titlebar__control zai-titlebar__new"
+            style={{
+              ...CONTROL_RESET,
+              display: "inline-flex",
+              "align-items": "center",
+              "justify-content": "center",
+              width: "28px",
+              height: "28px",
+              "min-width": "28px",
+              "border-radius": "6px",
+              background: "transparent",
+            }}
+            onClick={() => setNewMenuOpen((value) => !value)}
+            aria-label="New or open session"
+            aria-expanded={newMenuOpen()}
+            title="New or open session"
+          >
+            <Icon name="plus" />
+          </button>
+          <Show when={newMenuOpen()}>
+            <div class="zai-titlebar__new-menu">
+              <button onClick={() => { setNewMenuOpen(false); props.onNew() }}><Icon name="plus" /><span><strong>New session</strong><small>Start in the current project</small></span></button>
+              <Show when={(props.sessions?.length ?? 0) > 0}>
+                <p>Open session</p>
+                <For each={props.sessions}>{(session) => <button onClick={() => { setNewMenuOpen(false); props.onOpenSession?.(session.id) }}><span class="zai-titlebar__project-icon">{session.project.slice(0, 1).toUpperCase()}</span><span><strong>{session.label}</strong><small>{session.project}</small></span></button>}</For>
+              </Show>
+            </div>
+          </Show>
+        </div>
 
         <div class="zai-titlebar__drag-space" data-tauri-drag-region style={{ flex: "1", height: "100%" }} />
 
+        <button
+          type="button"
+          class="zai-titlebar__control zai-titlebar__destination zai-titlebar__chat"
+          style={{ ...CONTROL_RESET, display: "inline-flex", "align-items": "center", "justify-content": "center", width: "28px", height: "28px", "min-width": "28px", "border-radius": "6px", background: "transparent" }}
+          onClick={props.onChat}
+          aria-label="Chat, images, and video"
+          title="Chat, images, and video"
+        >
+          <MessageSquare size={15} stroke-width={1.7} />
+        </button>
+        <button
+          type="button"
+          class="zai-titlebar__control zai-titlebar__destination zai-titlebar__voice"
+          style={{ ...CONTROL_RESET, display: "inline-flex", "align-items": "center", "justify-content": "center", width: "28px", height: "28px", "min-width": "28px", "border-radius": "6px", background: "transparent" }}
+          onClick={props.onVoice}
+          aria-label="Voice"
+          title="Voice and dictation"
+        >
+          <Mic2 size={15} stroke-width={1.7} />
+        </button>
         <button
           type="button"
           class="zai-titlebar__control zai-titlebar__settings"

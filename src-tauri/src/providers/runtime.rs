@@ -30,6 +30,7 @@ pub struct ProviderRunResult {
     pub content: String,
     pub provider_session_id: Option<String>,
     pub activities: Vec<Message>,
+    pub context_usage: Option<crate::model::ContextUsage>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +38,10 @@ struct SessionIdentity {
     provider: ProviderId,
     model: Option<String>,
     workspace: PathBuf,
+    reasoning: Option<crate::model::ReasoningEffort>,
+    speed_mode: crate::model::SpeedMode,
+    interaction_mode: crate::model::InteractionMode,
+    access_mode: crate::model::AccessMode,
 }
 
 impl From<&ProviderSessionConfig> for SessionIdentity {
@@ -45,6 +50,10 @@ impl From<&ProviderSessionConfig> for SessionIdentity {
             provider: config.provider,
             model: config.model.clone(),
             workspace: config.workspace.clone(),
+            reasoning: config.reasoning,
+            speed_mode: config.speed_mode,
+            interaction_mode: config.interaction_mode,
+            access_mode: config.access_mode,
         }
     }
 }
@@ -89,6 +98,10 @@ impl ProviderRuntime {
         provider_session_id: Option<String>,
         model: Option<String>,
         workspace: PathBuf,
+        reasoning: Option<crate::model::ReasoningEffort>,
+        speed_mode: crate::model::SpeedMode,
+        interaction_mode: crate::model::InteractionMode,
+        access_mode: crate::model::AccessMode,
         prompt: String,
         message_id: String,
         cancellation: CancellationToken,
@@ -99,6 +112,10 @@ impl ProviderRuntime {
             model,
             workspace,
             continuation: provider_session_id,
+            reasoning,
+            speed_mode,
+            interaction_mode,
+            access_mode,
         };
         let slot = self.session(&session_id, config).await?;
         let mut session = slot.session.lock().await;
@@ -174,6 +191,7 @@ impl ProviderRuntime {
             content: accumulator.content.trim().to_string(),
             provider_session_id: accumulator.continuation,
             activities: accumulator.activities,
+            context_usage: accumulator.context_usage,
         })
     }
 
@@ -251,6 +269,7 @@ struct TurnAccumulator {
     content: String,
     continuation: Option<String>,
     activities: Vec<Message>,
+    context_usage: Option<crate::model::ContextUsage>,
 }
 
 impl TurnAccumulator {
@@ -259,6 +278,7 @@ impl TurnAccumulator {
             content: String::new(),
             continuation,
             activities: Vec::new(),
+            context_usage: None,
         }
     }
 
@@ -320,7 +340,7 @@ async fn handle_event(
         ProviderEvent::TextDelta(delta) => {
             accumulator.append_delta(&delta)?;
             let _ = app.emit(
-                "zai://session",
+                "onyx://session",
                 SessionEvent::Delta {
                     session_id: session_id.to_string(),
                     message_id: message_id.to_string(),
@@ -331,7 +351,7 @@ async fn handle_event(
         ProviderEvent::Text(text) => {
             let delta = accumulator.append_text(&text)?;
             let _ = app.emit(
-                "zai://session",
+                "onyx://session",
                 SessionEvent::Delta {
                     session_id: session_id.to_string(),
                     message_id: message_id.to_string(),
@@ -342,7 +362,7 @@ async fn handle_event(
         ProviderEvent::Activity(activity) => {
             let message = accumulator.push_activity(activity)?;
             let _ = app.emit(
-                "zai://session",
+                "onyx://session",
                 SessionEvent::Activity {
                     session_id: session_id.to_string(),
                     message,
@@ -352,6 +372,16 @@ async fn handle_event(
         ProviderEvent::Continuation(id) => accumulator.continuation = Some(id),
         ProviderEvent::Approval(approval) => {
             relay_approval(app, session_id, cancellation, approvals, approval).await?;
+        }
+        ProviderEvent::ContextUsage(usage) => {
+            accumulator.context_usage = Some(usage.clone());
+            let _ = app.emit(
+                "onyx://session",
+                SessionEvent::ContextUsage {
+                    session_id: session_id.to_string(),
+                    usage,
+                },
+            );
         }
     }
     Ok(())
@@ -381,7 +411,7 @@ async fn relay_approval(
         risk: truncate(&risk, 4096),
         created_at: Utc::now(),
     };
-    if let Err(error) = app.emit("zai://approval", request) {
+    if let Err(error) = app.emit("onyx://approval", request) {
         approvals.lock().remove(&id);
         let _ = responder.send(false);
         return Err(error.to_string());

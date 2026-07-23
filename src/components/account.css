@@ -1,0 +1,10 @@
+.onyx-account-gate{width:100%;height:100%;min-width:0;min-height:0;display:grid;place-items:center;background:radial-gradient(circle at 50% 38%,color-mix(in srgb,#6f72ef 9%,transparent),transparent 34%),var(--v2-background-bg-deep,#f8f8f7);color:var(--v2-text-text-base,#20201f);font-family:Inter,system-ui,sans-serif}
+.onyx-account-gate>section{width:min(430px,calc(100vw - 48px));display:flex;flex-direction:column;align-items:center;text-align:center}
+.onyx-account-gate .onyx-orb{width:68px;height:68px;filter:drop-shadow(0 18px 30px #6456ca42)}
+.onyx-account-gate h1{margin:22px 0 7px;font:650 28px/1.15 "DM Sans",Inter,sans-serif;letter-spacing:-.045em}
+.onyx-account-gate p{max-width:370px;margin:0 0 18px;color:var(--v2-text-text-muted,#6f6f6c);font-size:13px;line-height:1.55}
+.onyx-account-gate__sign-in,.onyx-clerk-root,.onyx-clerk-card-box{width:100%!important}
+.onyx-clerk-card{border:.5px solid color-mix(in srgb,currentColor 10%,transparent)!important;background:color-mix(in srgb,#fff 92%,transparent)!important;box-shadow:0 18px 70px #29234916!important}
+.onyx-account-gate__loading{height:180px;display:grid;place-items:center;color:var(--v2-text-text-faint,#92928f);font-size:12px}
+.onyx-account-gate code{margin-top:20px;border:.5px solid var(--v2-border-border-base,#d8d8d5);border-radius:10px;padding:10px 14px;background:var(--v2-background-bg-base,#fff);font:11px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace}
+.onyx-account-gate small{margin-top:14px;color:#c44949;line-height:1.4}

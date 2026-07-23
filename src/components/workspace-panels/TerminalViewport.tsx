@@ -77,7 +77,7 @@ export interface TerminalViewportProps {
   class?: string
 }
 
-/** xterm.js viewport connected to zAI's native Rust PTY session. */
+/** xterm.js viewport connected to Onyx's native Rust PTY session. */
 export const TerminalViewport: Component<TerminalViewportProps> = (props) => {
   let mount: HTMLDivElement | undefined
 

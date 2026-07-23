@@ -132,6 +132,47 @@ pub async fn repo_summary(workspace: String) -> Result<RepoSummary, String> {
     repo_summary_at(&git, &workspace).await
 }
 
+pub async fn init_repository(workspace: String) -> Result<GitActionResult, String> {
+    let workspace = canonical_workspace(&workspace)?;
+    let Some(git) = find_executable("git") else {
+        return Err("Git is not installed or is unavailable on PATH".to_string());
+    };
+    let existing = run_command(
+        &git,
+        &workspace,
+        &["rev-parse", "--show-toplevel"],
+        "Git repository check",
+        Duration::from_secs(8),
+    )
+    .await?;
+    if existing.success {
+        let root = Path::new(trim_line_end(&existing.stdout))
+            .canonicalize()
+            .map_err(|error| format!("Git reported an unavailable repository root: {error}"))?;
+        return if root == workspace {
+            Ok(GitActionResult {
+                message: "This project is already a Git repository".into(),
+                url: None,
+            })
+        } else {
+            Err("The selected project is inside another Git repository; choose that repository root instead".into())
+        };
+    }
+    let initialized = run_command(
+        &git,
+        &workspace,
+        &["init", "-b", "main"],
+        "Initialize Git repository",
+        Duration::from_secs(20),
+    )
+    .await?;
+    checked("Initialize Git repository", initialized)?;
+    Ok(GitActionResult {
+        message: "Initialized Git repository on branch main".into(),
+        url: None,
+    })
+}
+
 async fn repo_summary_at(git: &Path, workspace: &Path) -> Result<RepoSummary, String> {
     let status = checked(
         "Read Git status",
@@ -398,7 +439,7 @@ async fn untracked_diff(git: &Path, workspace: &Path) -> Result<String, String> 
         }
     }
     if truncated {
-        output.push_str("\n\n# zAI: additional untracked files omitted from this preview.\n");
+        output.push_str("\n\n# Onyx: additional untracked files omitted from this preview.\n");
     }
     Ok(output)
 }
@@ -419,7 +460,7 @@ fn bounded_diff(parts: impl IntoIterator<Item = String>) -> String {
             end -= 1;
         }
         output.push_str(&part[..end]);
-        output.push_str("\n\n# zAI: diff preview truncated at 4 MiB.\n");
+        output.push_str("\n\n# Onyx: diff preview truncated at 4 MiB.\n");
         break;
     }
     output
@@ -1127,7 +1168,7 @@ mod tests {
 
     impl TestDirectory {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("zai-workspace-test-{}", Uuid::new_v4()));
+            let path = std::env::temp_dir().join(format!("onyx-workspace-test-{}", Uuid::new_v4()));
             std::fs::create_dir(&path).expect("create isolated test directory");
             Self(path)
         }
@@ -1207,8 +1248,8 @@ mod tests {
         let directory = TestDirectory::new();
         for args in [
             vec!["init", "--quiet"],
-            vec!["config", "user.email", "zai-tests@example.invalid"],
-            vec!["config", "user.name", "zAI tests"],
+            vec!["config", "user.email", "onyx-tests@example.invalid"],
+            vec!["config", "user.name", "Onyx tests"],
         ] {
             assert!(
                 Command::new("git")

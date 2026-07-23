@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default zAI desktop capability",
-  "windows": ["main"],
+  "description": "Default Onyx desktop capability",
+  "windows": ["main", "hud", "agent"],
   "permissions": [
     "core:default",
     "core:event:default",

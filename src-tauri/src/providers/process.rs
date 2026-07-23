@@ -4,11 +4,13 @@ use std::{
     process::{ExitStatus, Stdio},
     time::Duration,
 };
+#[cfg(unix)]
+use tokio::time::sleep;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufWriter},
     process::{Child, ChildStdin, Command},
     sync::mpsc,
-    time::{sleep, timeout},
+    time::timeout,
 };
 
 #[cfg(windows)]
@@ -474,7 +476,7 @@ mod tests {
     #[tokio::test]
     async fn batch_shims_cannot_execute_prompt_metacharacters() {
         let root =
-            std::env::temp_dir().join(format!("zai-batch-argument-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("onyx-batch-argument-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let shim = root.join("provider.cmd");
         let marker = root.join("injected.txt");
@@ -501,7 +503,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let root =
-            std::env::temp_dir().join(format!("zai-version-probe-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("onyx-version-probe-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let provider = root.join("provider");
         std::fs::write(&provider, "#!/bin/sh\nprintf 'provider 1.2.3\\n'\n").unwrap();
@@ -520,7 +522,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let root =
-            std::env::temp_dir().join(format!("zai-version-probe-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("onyx-version-probe-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let provider = root.join("provider");
         std::fs::write(&provider, "#!/bin/sh\n/usr/bin/head -c 70000 /dev/zero\n").unwrap();

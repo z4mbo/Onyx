@@ -1,3 +1,3 @@
 fn main() {
-    zai_lib::run();
+    onyx_lib::run();
 }

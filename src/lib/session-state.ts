@@ -42,6 +42,9 @@ export function applySessionEvent(items: AgentSession[], event: SessionEvent) {
 
   return items.map((session) => {
     if (session.id !== event.sessionId) return session
+    if (event.type === "context_usage") {
+      return { ...session, contextUsage: event.usage, updatedAt: new Date().toISOString() }
+    }
     if (event.type === "activity") {
       if (session.messages.some((message) => message.id === event.message.id)) return session
       return { ...session, messages: [...session.messages, event.message] }

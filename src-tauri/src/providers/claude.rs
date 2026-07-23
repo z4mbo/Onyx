@@ -7,7 +7,7 @@ use super::{
     normalize::{NormalizedEvent, StreamNormalizer},
     process::{JsonProcess, ProcessOutput, find_executable, platform_command},
 };
-use crate::model::ProviderId;
+use crate::model::{AccessMode, ContextUsage, InteractionMode, ProviderId, SpeedMode};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::{sync::mpsc, time::timeout};
@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_PERSISTENT_STREAM: usize = 256 * 1024 * 1024;
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
-const INITIALIZE_REQUEST_ID: &str = "zai-initialize";
+const INITIALIZE_REQUEST_ID: &str = "onyx-initialize";
 
 pub struct ClaudeDriver;
 
@@ -60,8 +60,25 @@ impl ClaudeSession {
             "--permission-prompt-tool".to_string(),
             "stdio".to_string(),
             "--permission-mode".to_string(),
-            "manual".to_string(),
+            match (config.interaction_mode, config.access_mode) {
+                (InteractionMode::Plan, _) => "plan",
+                (_, AccessMode::ApprovalRequired) => "manual",
+                (_, AccessMode::AutoAcceptEdits) => "acceptEdits",
+                (_, AccessMode::FullAccess) => "bypassPermissions",
+            }
+            .to_string(),
         ];
+        if config.access_mode == AccessMode::FullAccess
+            && config.interaction_mode != InteractionMode::Plan
+        {
+            args.push("--dangerously-skip-permissions".to_string());
+        }
+        if let Some(reasoning) = config.reasoning {
+            args.extend(["--effort".to_string(), reasoning.as_str().to_string()]);
+        }
+        if config.speed_mode == SpeedMode::Fast {
+            args.extend(["--settings".to_string(), r#"{"fastMode":true}"#.to_string()]);
+        }
         if let Some(id) = config.continuation.as_deref() {
             args.extend(["--resume".to_string(), id.to_string()]);
         }
@@ -153,6 +170,9 @@ impl ClaudeSession {
             }
 
             if value.get("type").and_then(Value::as_str) == Some("result") {
+                if let Some(usage) = parse_context_usage(&value) {
+                    send_event(events, ProviderEvent::ContextUsage(usage)).await?;
+                }
                 if value
                     .get("is_error")
                     .and_then(Value::as_bool)
@@ -232,6 +252,46 @@ impl ClaudeSession {
             .send_json(&control_response(request_id, approved, input))
             .await
     }
+}
+
+fn parse_context_usage(value: &Value) -> Option<ContextUsage> {
+    let usage = value.get("usage")?;
+    let input = usage
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .saturating_add(
+            usage
+                .get("cache_creation_input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        )
+        .saturating_add(
+            usage
+                .get("cache_read_input_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        );
+    let output = usage
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let max_tokens = value
+        .get("modelUsage")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|models| models.values())
+        .filter_map(|model| model.get("contextWindow").and_then(Value::as_u64))
+        .max();
+    let used = input.saturating_add(output);
+    (used > 0).then_some(ContextUsage {
+        used_tokens: used,
+        max_tokens,
+        input_tokens: Some(input),
+        cached_input_tokens: usage.get("cache_read_input_tokens").and_then(Value::as_u64),
+        output_tokens: Some(output),
+        reasoning_output_tokens: None,
+    })
 }
 
 impl ProviderSession for ClaudeSession {

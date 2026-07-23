@@ -1,4 +1,6 @@
-use crate::model::{MessageKind, ProviderId};
+use crate::model::{
+    AccessMode, ContextUsage, InteractionMode, MessageKind, ProviderId, ReasoningEffort, SpeedMode,
+};
 use std::{future::Future, path::PathBuf, pin::Pin};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -11,6 +13,28 @@ pub struct ProviderSessionConfig {
     pub model: Option<String>,
     pub workspace: PathBuf,
     pub continuation: Option<String>,
+    pub reasoning: Option<ReasoningEffort>,
+    pub speed_mode: SpeedMode,
+    pub interaction_mode: InteractionMode,
+    pub access_mode: AccessMode,
+}
+
+impl ProviderSessionConfig {
+    pub fn approval_policy(&self) -> &'static str {
+        match self.access_mode {
+            AccessMode::ApprovalRequired => "untrusted",
+            AccessMode::AutoAcceptEdits => "on-request",
+            AccessMode::FullAccess => "never",
+        }
+    }
+
+    pub fn sandbox_name(&self) -> &'static str {
+        match self.access_mode {
+            AccessMode::ApprovalRequired => "read-only",
+            AccessMode::AutoAcceptEdits => "workspace-write",
+            AccessMode::FullAccess => "danger-full-access",
+        }
+    }
 }
 
 impl ProviderSessionConfig {
@@ -61,6 +85,7 @@ pub enum ProviderEvent {
     Activity(ProviderActivity),
     Continuation(String),
     Approval(ProviderApproval),
+    ContextUsage(ContextUsage),
 }
 
 pub trait ProviderSession: Send {

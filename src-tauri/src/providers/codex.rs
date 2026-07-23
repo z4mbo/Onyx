@@ -6,7 +6,10 @@ use super::{
     },
     process::{JsonProcess, ProcessOutput, find_executable, platform_command},
 };
-use crate::model::ProviderId;
+use crate::model::{
+    AccessMode, ContextUsage, InteractionMode, ProviderId, ProviderModelOption, ProviderUsage,
+    ReasoningEffort, SpeedMode, UsageWindow,
+};
 use serde_json::{Value, json};
 use std::{
     collections::HashSet,
@@ -45,6 +48,7 @@ struct CodexSession {
     process: JsonProcess,
     thread_id: String,
     next_request_id: u64,
+    config: ProviderSessionConfig,
 }
 
 impl CodexSession {
@@ -81,6 +85,7 @@ impl CodexSession {
             process,
             thread_id,
             next_request_id: 3,
+            config,
         })
     }
 
@@ -92,7 +97,12 @@ impl CodexSession {
     ) -> Result<(), String> {
         let request_id = self.take_request_id();
         self.process
-            .send_json(&turn_start_request(request_id, &self.thread_id, prompt))
+            .send_json(&turn_start_request(
+                request_id,
+                &self.thread_id,
+                prompt,
+                &self.config,
+            ))
             .await?;
         let mut turn_id = None;
         let mut streamed_items = HashSet::new();
@@ -146,6 +156,11 @@ impl CodexSession {
                         send_event(events, ProviderEvent::Activity(activity)).await?;
                     }
                 }
+                Some("thread/tokenUsage/updated") => {
+                    if let Some(usage) = parse_context_usage(&value) {
+                        send_event(events, ProviderEvent::ContextUsage(usage)).await?;
+                    }
+                }
                 Some("item/completed") => {
                     let item = value.pointer("/params/item").unwrap_or(&Value::Null);
                     if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
@@ -174,7 +189,7 @@ impl CodexSession {
                     send_event(
                         events,
                         ProviderEvent::Activity(ProviderActivity::error(
-                            "Codex requested interactive input, but this zAI version only supports boolean approvals",
+                            "Codex requested interactive input, but this Onyx version only supports boolean approvals",
                         )),
                     )
                     .await?;
@@ -308,7 +323,7 @@ impl CodexSession {
                 "id": id,
                 "error": {
                     "code": -32601,
-                    "message": format!("zAI does not implement Codex server request {method}")
+                    "message": format!("Onyx does not implement Codex server request {method}")
                 }
             }))
             .await
@@ -374,7 +389,7 @@ fn initialize_request(id: u64) -> Value {
         "id": id,
         "method": "initialize",
         "params": {
-            "clientInfo": { "name": "zai", "title": "zAI", "version": env!("CARGO_PKG_VERSION") },
+            "clientInfo": { "name": "onyx", "title": "Onyx", "version": env!("CARGO_PKG_VERSION") },
             "capabilities": { "experimentalApi": true }
         }
     })
@@ -383,11 +398,14 @@ fn initialize_request(id: u64) -> Value {
 fn thread_request(id: u64, config: &ProviderSessionConfig) -> Value {
     let mut params = json!({
         "cwd": config.workspace,
-        "approvalPolicy": "on-request",
-        "sandbox": "workspace-write"
+        "approvalPolicy": config.approval_policy(),
+        "sandbox": config.sandbox_name()
     });
     if let Some(model) = config.model() {
         params["model"] = json!(model);
+    }
+    if let Some(service_tier) = config.speed_mode.as_service_tier() {
+        params["serviceTier"] = json!(service_tier);
     }
     if let Some(thread_id) = config.continuation.as_deref() {
         params["threadId"] = json!(thread_id);
@@ -397,15 +415,241 @@ fn thread_request(id: u64, config: &ProviderSessionConfig) -> Value {
     }
 }
 
-fn turn_start_request(id: u64, thread_id: &str, prompt: &str) -> Value {
+fn turn_start_request(
+    id: u64,
+    thread_id: &str,
+    prompt: &str,
+    config: &ProviderSessionConfig,
+) -> Value {
+    let mut params = json!({
+        "threadId": thread_id,
+        "input": [{ "type": "text", "text": prompt }],
+        "approvalPolicy": config.approval_policy(),
+        "sandboxPolicy": match config.access_mode {
+            AccessMode::ApprovalRequired => json!({ "type": "readOnly" }),
+            AccessMode::AutoAcceptEdits => json!({ "type": "workspaceWrite" }),
+            AccessMode::FullAccess => json!({ "type": "dangerFullAccess" }),
+        }
+    });
+    if let Some(model) = config.model() {
+        params["model"] = json!(model);
+    }
+    if let Some(reasoning) = config.reasoning {
+        params["effort"] = json!(reasoning.as_str());
+    }
+    if let Some(service_tier) = config.speed_mode.as_service_tier() {
+        params["serviceTier"] = json!(service_tier);
+    }
+    if let Some(model) = config.model() {
+        params["collaborationMode"] = json!({
+            "mode": if config.interaction_mode == InteractionMode::Plan { "plan" } else { "default" },
+            "settings": {
+                "model": model,
+                "reasoning_effort": config.reasoning.unwrap_or_default().as_str(),
+                "developer_instructions": if config.interaction_mode == InteractionMode::Plan {
+                    "Create and explain a concrete implementation plan. Do not modify files or run mutation commands until the user switches to Build mode."
+                } else {
+                    "Implement the requested changes and verify them."
+                }
+            }
+        });
+    }
     json!({
         "id": id,
         "method": "turn/start",
-        "params": {
-            "threadId": thread_id,
-            "input": [{ "type": "text", "text": prompt }]
-        }
+        "params": params
     })
+}
+
+fn parse_context_usage(value: &Value) -> Option<ContextUsage> {
+    let usage = value.pointer("/params/tokenUsage")?;
+    let last = usage.get("last")?;
+    Some(ContextUsage {
+        used_tokens: last.get("totalTokens")?.as_u64()?,
+        max_tokens: usage.get("modelContextWindow").and_then(Value::as_u64),
+        input_tokens: last.get("inputTokens").and_then(Value::as_u64),
+        cached_input_tokens: last.get("cachedInputTokens").and_then(Value::as_u64),
+        output_tokens: last.get("outputTokens").and_then(Value::as_u64),
+        reasoning_output_tokens: last.get("reasoningOutputTokens").and_then(Value::as_u64),
+    })
+}
+
+fn parse_reasoning(value: &str) -> Option<ReasoningEffort> {
+    match value {
+        "none" => Some(ReasoningEffort::None),
+        "minimal" => Some(ReasoningEffort::Minimal),
+        "low" => Some(ReasoningEffort::Low),
+        "medium" => Some(ReasoningEffort::Medium),
+        "high" => Some(ReasoningEffort::High),
+        "xhigh" => Some(ReasoningEffort::Xhigh),
+        "max" | "ultra" => Some(ReasoningEffort::Max),
+        _ => None,
+    }
+}
+
+async fn connect_probe() -> Result<JsonProcess, String> {
+    let executable = find_executable("codex")
+        .ok_or_else(|| "Codex is not installed or was not found on PATH".to_string())?;
+    let args = vec!["app-server".to_string(), "--stdio".to_string()];
+    let command = platform_command(&executable, &args);
+    let mut process =
+        JsonProcess::spawn(command, "Codex app-server probe", 32 * 1024 * 1024).await?;
+    process.send_json(&initialize_request(1)).await?;
+    let initialized = timeout(STARTUP_TIMEOUT, wait_for_response(&mut process, 1))
+        .await
+        .map_err(|_| "Codex app-server initialization timed out".to_string())??;
+    response_result(&initialized)?;
+    process
+        .send_json(&json!({ "method": "initialized" }))
+        .await?;
+    Ok(process)
+}
+
+pub async fn model_catalog() -> Result<Vec<ProviderModelOption>, String> {
+    let mut process = connect_probe().await?;
+    let mut id = 2_u64;
+    let mut cursor: Option<String> = None;
+    let mut models = Vec::new();
+    loop {
+        let params = cursor
+            .as_ref()
+            .map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
+        process
+            .send_json(&json!({ "id": id, "method": "model/list", "params": params }))
+            .await?;
+        let response = timeout(STARTUP_TIMEOUT, wait_for_response(&mut process, id))
+            .await
+            .map_err(|_| "Codex model catalog timed out".to_string())??;
+        let result = response_result(&response)?;
+        for model in result
+            .get("data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if model
+                .get("hidden")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let Some(model_id) = model.get("model").and_then(Value::as_str) else {
+                continue;
+            };
+            let reasoning = model
+                .get("supportedReasoningEfforts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| {
+                    entry
+                        .get("reasoningEffort")
+                        .and_then(Value::as_str)
+                        .and_then(parse_reasoning)
+                })
+                .collect::<Vec<_>>();
+            let default_reasoning = model
+                .get("defaultReasoningEffort")
+                .and_then(Value::as_str)
+                .and_then(parse_reasoning);
+            let has_fast = model
+                .get("serviceTiers")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .any(|tier| tier.get("id").and_then(Value::as_str) == Some("fast"))
+                || model
+                    .get("additionalSpeedTiers")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .any(|tier| tier.as_str() == Some("fast"));
+            models.push(ProviderModelOption {
+                id: model_id.to_string(),
+                name: model
+                    .get("displayName")
+                    .and_then(Value::as_str)
+                    .unwrap_or(model_id)
+                    .to_string(),
+                description: model
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                is_default: model
+                    .get("isDefault")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                reasoning,
+                default_reasoning,
+                speeds: if has_fast {
+                    vec![SpeedMode::Standard, SpeedMode::Fast]
+                } else {
+                    vec![SpeedMode::Standard]
+                },
+                default_speed: if model.get("defaultServiceTier").and_then(Value::as_str)
+                    == Some("fast")
+                {
+                    SpeedMode::Fast
+                } else {
+                    SpeedMode::Standard
+                },
+                context_length: None,
+            });
+        }
+        cursor = result
+            .get("nextCursor")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if cursor.is_none() {
+            break;
+        }
+        id = id.saturating_add(1);
+    }
+    process.shutdown().await;
+    if models.is_empty() {
+        Err("Codex returned an empty model catalog".into())
+    } else {
+        Ok(models)
+    }
+}
+
+pub async fn account_usage() -> Result<ProviderUsage, String> {
+    let mut process = connect_probe().await?;
+    process
+        .send_json(&json!({ "id": 2, "method": "account/rateLimits/read", "params": {} }))
+        .await?;
+    let response = timeout(STARTUP_TIMEOUT, wait_for_response(&mut process, 2))
+        .await
+        .map_err(|_| "Codex usage limits timed out".to_string())??;
+    let result = response_result(&response)?;
+    let limits = result.get("rateLimits").unwrap_or(&Value::Null);
+    let mut windows = Vec::new();
+    for (key, label) in [("primary", "5 hour"), ("secondary", "Weekly")] {
+        let Some(window) = limits.get(key).filter(|value| value.is_object()) else {
+            continue;
+        };
+        windows.push(UsageWindow {
+            label: label.into(),
+            used_percent: window
+                .get("usedPercent")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
+            window_minutes: window.get("windowDurationMins").and_then(Value::as_u64),
+            resets_at: window.get("resetsAt").and_then(Value::as_i64),
+        });
+    }
+    let usage = ProviderUsage {
+        provider: ProviderId::Codex,
+        plan: limits
+            .get("planType")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        windows,
+        updated_at: chrono::Utc::now(),
+    };
+    process.shutdown().await;
+    Ok(usage)
 }
 
 fn approval_response(method: &str, id: Value, approved: bool, params: &Value) -> Value {
@@ -414,7 +658,7 @@ fn approval_response(method: &str, id: Value, approved: bool, params: &Value) ->
             "decision": if approved {
                 json!("approved")
             } else {
-                json!({ "denied": { "rejection": "User denied the request in zAI" } })
+                json!({ "denied": { "rejection": "User denied the request in Onyx" } })
             }
         }),
         "item/permissions/requestApproval" => json!({
@@ -541,7 +785,10 @@ mod tests {
         approval_response, initialize_request, is_client_response, item_activity, thread_request,
         turn_start_request,
     };
-    use crate::{model::ProviderId, providers::driver::ProviderSessionConfig};
+    use crate::{
+        model::{AccessMode, InteractionMode, ProviderId, SpeedMode},
+        providers::driver::ProviderSessionConfig,
+    };
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -553,12 +800,16 @@ mod tests {
             model: Some("gpt-5.4".to_string()),
             workspace: PathBuf::from("/tmp/project"),
             continuation: Some("thread-1".to_string()),
+            reasoning: None,
+            speed_mode: SpeedMode::Standard,
+            interaction_mode: InteractionMode::Build,
+            access_mode: AccessMode::AutoAcceptEdits,
         };
         let request = thread_request(2, &config);
         assert_eq!(request["method"], "thread/resume");
         assert_eq!(request["params"]["approvalPolicy"], "on-request");
         assert_eq!(request["params"]["sandbox"], "workspace-write");
-        let turn = turn_start_request(3, "thread-1", "hello");
+        let turn = turn_start_request(3, "thread-1", "hello", &config);
         assert_eq!(turn["params"]["input"][0]["type"], "text");
     }
 
@@ -589,7 +840,7 @@ mod tests {
         let response = approval_response("execCommandApproval", json!(3), false, &json!({}));
         assert_eq!(
             response["result"]["decision"],
-            json!({ "denied": { "rejection": "User denied the request in zAI" } })
+            json!({ "denied": { "rejection": "User denied the request in Onyx" } })
         );
         assert_eq!(
             approval_response("applyPatchApproval", json!(4), true, &json!({}))["result"]["decision"],

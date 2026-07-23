@@ -1,6 +1,6 @@
-# Contributing to zAI
+# Contributing to Onyx
 
-Thanks for helping make zAI safer and more useful. Keep changes focused,
+Thanks for helping make Onyx safer and more useful. Keep changes focused,
 reviewable, and portable across macOS, Windows, and Linux where practical.
 
 ## Set up
