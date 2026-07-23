@@ -10,6 +10,7 @@ minify = "never"
 [watch]
 watch = [
   "frontend-rs/index.html",
+  "frontend-rs/boot.js",
   "frontend-rs/Cargo.toml",
   "frontend-rs/Cargo.lock",
   "frontend-rs/src",

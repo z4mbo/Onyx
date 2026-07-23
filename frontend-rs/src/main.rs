@@ -21,7 +21,10 @@ fn main() {
         .and_then(|document| document.get_element_by_id("root"))
         .expect("Onyx requires a #root mount element")
         .unchecked_into::<web_sys::HtmlElement>();
-    mount_to(root, || view! { <app::App /> }).forget();
+    root.replace_children_with_node_0();
+    let mount_root = root.clone();
+    mount_to(mount_root, || view! { <app::App /> }).forget();
+    let _ = root.set_attribute("data-onyx-mounted", "true");
 }
 
 #[cfg(not(target_arch = "wasm32"))]
