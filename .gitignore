@@ -1,6 +1,9 @@
 node_modules/
 .npm-cache/
 dist/
+dist-rust/
+frontend-rs/static/
+frontend-rs/target/
 src-tauri/target/
 src-tauri/gen/
 .DS_Store

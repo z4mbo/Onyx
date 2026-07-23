@@ -24,9 +24,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
       - run: npm ci --legacy-peer-deps
       - run: npm test
       - run: npm run build
+      - run: npm run build:rust-styles
+      - run: cargo fmt --manifest-path frontend-rs/Cargo.toml -- --check
+      - run: cargo test --manifest-path frontend-rs/Cargo.toml
+      - run: cargo clippy --manifest-path frontend-rs/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

@@ -1,0 +1,11 @@
+{
+  "build": {
+    "beforeDevCommand": "npm run dev:rust",
+    "devUrl": "http://localhost:1430",
+    "beforeBuildCommand": "npm run build:rust",
+    "frontendDist": "../dist-rust"
+  },
+  "app": {
+    "withGlobalTauri": true
+  }
+}

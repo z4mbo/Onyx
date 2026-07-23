@@ -16,8 +16,14 @@
   "scripts": {
     "dev": "node scripts/run-tauri.mjs dev",
     "dev:web": "vite --port 1420 --strictPort",
+    "dev:rust": "npm run build:rust-styles && node scripts/run-trunk.mjs serve --config Trunk.rust.toml",
+    "dev:desktop:rust": "node scripts/run-tauri.mjs dev --config src-tauri/tauri.rust.conf.json",
     "build": "npm run typecheck && vite build",
+    "build:rust": "npm run build:rust-styles && node scripts/run-trunk.mjs build --config Trunk.rust.toml --release",
+    "build:rust-styles": "vite build --config vite.rust-ui.config.ts",
     "build:desktop": "node scripts/run-tauri.mjs build",
+    "build:desktop:rust": "node scripts/run-tauri.mjs build --config src-tauri/tauri.rust.conf.json --no-bundle",
+    "test:rust-ui": "cargo test --manifest-path frontend-rs/Cargo.toml",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "tauri": "node scripts/run-tauri.mjs"

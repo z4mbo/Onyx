@@ -18,7 +18,7 @@ pub struct NativeVoicePermissions {
 pub fn permission_status() -> NativeVoicePermissions {
     #[cfg(target_os = "macos")]
     {
-        return macos::permission_status();
+        macos::permission_status()
     }
     #[cfg(not(target_os = "macos"))]
     NativeVoicePermissions {
@@ -30,7 +30,7 @@ pub fn permission_status() -> NativeVoicePermissions {
 pub fn request_permissions() -> NativeVoicePermissions {
     #[cfg(target_os = "macos")]
     {
-        return macos::request_permissions();
+        macos::request_permissions()
     }
     #[cfg(not(target_os = "macos"))]
     permission_status()

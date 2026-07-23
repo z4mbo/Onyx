@@ -1,0 +1,16 @@
+[build]
+target = "frontend-rs/index.html"
+dist = "dist-rust"
+public_url = "/"
+filehash = true
+# Trunk 0.21's JS minifier cannot parse wasm-bindgen's generated default export.
+# Rust release optimization and Vite's CSS minification remain enabled.
+minify = "never"
+
+[watch]
+ignore = ["./src", "./src-tauri", "./dist", "./dist-rust"]
+
+[serve]
+port = 1430
+open = false
+ws_protocol = "ws"

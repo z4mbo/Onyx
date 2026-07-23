@@ -525,7 +525,7 @@ fn inject_text(text: String) -> Result<(), String> {
                     .into(),
             );
         }
-        return paste_text_macos();
+        paste_text_macos()
     }
 
     #[cfg(not(target_os = "macos"))]
