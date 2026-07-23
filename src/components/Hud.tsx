@@ -13,27 +13,33 @@ export const Hud: Component = () => {
   const [app, setApp] = createSignal<ActiveAppContext>({ name: "Active app", process: "", accent: "#7165e8", symbol: "O" })
   const capture = new SpeechCapture()
   let starting = false
+  let finishing = false
   let pendingStop = false
 
   const start = async () => {
-    if (starting || capture.isRecording) return
+    if (starting || finishing || capture.isRecording) return
     starting = true
     pendingStop = false
     setPhase("Starting microphone")
+    let shouldFinish = false
     try {
       setApp(await api.activeAppContext())
       await capture.start(setLevel)
       setPhase("Listening")
-      if (pendingStop) await finish()
+      shouldFinish = pendingStop
     } catch (error) {
       setPhase(error instanceof Error ? error.message : String(error))
       window.setTimeout(() => void api.hideWindow("hud"), 3500)
-    } finally { starting = false }
+    } finally {
+      starting = false
+    }
+    if (shouldFinish) await finish()
   }
 
   const finish = async () => {
     if (starting) { pendingStop = true; return }
-    if (!capture.isRecording) return
+    if (finishing || !capture.isRecording) return
+    finishing = true
     setPhase("Transcribing")
     try {
       const audio = await capture.stop()
@@ -45,6 +51,8 @@ export const Hud: Component = () => {
     } catch (error) {
       setPhase(error instanceof Error ? error.message : String(error))
       window.setTimeout(() => void api.hideWindow("hud"), 3500)
+    } finally {
+      finishing = false
     }
   }
 

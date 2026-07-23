@@ -13,6 +13,7 @@ import type {
   GitActionResult,
   OpenRouterModel,
   OpenRouterStatus,
+  OpenAiStatus,
   ProviderBrand,
   ProviderId,
   ProviderModelOption,
@@ -298,6 +299,12 @@ export const api = {
           { id: "openai/gpt-5.4", name: "OpenAI GPT-5.4", contextLength: 1_000_000, promptPrice: null, completionPrice: null },
           { id: "x-ai/grok-4", name: "Grok 4", contextLength: 256_000, promptPrice: null, completionPrice: null },
         ]),
+  openAiStatus: () =>
+    tauri ? invoke<OpenAiStatus>("openai_status") : Promise.resolve({ connected: false }),
+  saveOpenAiKey: (key: string) =>
+    tauri ? invoke<OpenAiStatus>("openai_save_key", { key }) : Promise.resolve({ connected: true }),
+  clearOpenAiKey: () =>
+    tauri ? invoke<OpenAiStatus>("openai_clear_key") : Promise.resolve({ connected: false }),
   getVoiceSettings: () =>
     tauri
       ? invoke<VoiceSettings>("get_voice_settings")
@@ -327,12 +334,20 @@ export const api = {
   setAgentExpanded: (expanded: boolean) => tauri ? invoke<void>("set_agent_expanded", { expanded }) : Promise.resolve(),
   hideWindow: (label: string) => tauri ? invoke<void>("hide_window", { label }) : Promise.resolve(),
   showMainWindow: () => tauri ? invoke<void>("show_main_window") : Promise.resolve(),
+  openProviderWeb: (provider: "chatgpt" | "claude" | "gemini" | "grok") => tauri
+    ? invoke<void>("open_provider_web", { provider })
+    : Promise.resolve(window.open(({
+        chatgpt: "https://chatgpt.com/",
+        claude: "https://claude.ai/new",
+        gemini: "https://gemini.google.com/app",
+        grok: "https://grok.com/",
+      } as const)[provider], "_blank", "noopener,noreferrer")).then(() => undefined),
   platform: () => tauri ? invoke<string>("platform") : Promise.resolve("browser"),
   chatSend: (request: ChatRequest) => tauri
     ? invoke<ChatReply>("chat_send", { request })
     : Promise.resolve({ content: "Onyx Chat browser preview is ready. Connect a CLI or OpenRouter in the desktop build for live responses.", model: request.model, media: [] }),
-  generateImage: (model: string, prompt: string, aspectRatio: string | null) => tauri
-    ? invoke<ChatReply>("generate_image", { request: { model, prompt, aspectRatio } })
+  generateImage: (model: string, prompt: string, aspectRatio: string | null, source: "openai" | "openrouter" = "openrouter") => tauri
+    ? invoke<ChatReply>("generate_image", { request: { model, prompt, aspectRatio, source } })
     : Promise.resolve({ content: "Image generation is available in the native app.", model, media: [] }),
   startVideo: (model: string, prompt: string, aspectRatio: string | null) => tauri
     ? invoke<VideoJob>("start_video", { request: { model, prompt, aspectRatio } })

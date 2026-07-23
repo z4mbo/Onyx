@@ -18,13 +18,12 @@ import { api } from "../lib/api"
 import {
   accountSnapshot,
   initializeAccount,
-  openAccount,
   openSignIn,
   pushCloudSnapshot,
   signOut,
   subscribeAccount,
 } from "../lib/account"
-import type { AgentSession, DesktopPreferences, OpenRouterModel, OpenRouterStatus, ProviderId, ProviderModelOption, ProviderStatus, VoiceSettings } from "../lib/types"
+import type { AgentSession, DesktopPreferences, OpenAiStatus, OpenRouterModel, OpenRouterStatus, ProviderId, ProviderModelOption, ProviderStatus, VoiceSettings } from "../lib/types"
 import { ProviderBadge } from "./ProviderBadge"
 
 export type ColorScheme = "system" | "light" | "dark"
@@ -43,6 +42,7 @@ export const SettingsDialog: Component<{
   open: boolean
   providers: ProviderStatus[]
   openRouter: OpenRouterStatus
+  openAi: OpenAiStatus
   openRouterModels?: OpenRouterModel[]
   providerModels?: Partial<Record<ProviderId, ProviderModelOption[]>>
   sessions: AgentSession[]
@@ -51,10 +51,12 @@ export const SettingsDialog: Component<{
   onClose: () => void
   onRefresh: () => Promise<void>
   onOpenRouter: (status: OpenRouterStatus) => void
+  onOpenAi: (status: OpenAiStatus) => void
   onModels: (models: OpenRouterModel[]) => void
 }> = (props) => {
   const [page, setPage] = createSignal<SettingsPage>("general")
   const [key, setKey] = createSignal("")
+  const [openAiKey, setOpenAiKey] = createSignal("")
   const [saving, setSaving] = createSignal(false)
   const [message, setMessage] = createSignal<string | null>(null)
   const [voice, setVoice] = createSignal<VoiceSettings | null>(null)
@@ -101,6 +103,7 @@ export const SettingsDialog: Component<{
   createEffect(() => {
     if (!props.open) {
       setKey("")
+      setOpenAiKey("")
       setMessage(null)
       restoreFocus()
       return
@@ -199,6 +202,32 @@ export const SettingsDialog: Component<{
       props.onModels([])
       setMessage("OpenRouter disconnected.")
       await props.onRefresh()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const connectOpenAi = async () => {
+    setSaving(true)
+    setMessage(null)
+    try {
+      props.onOpenAi(await api.saveOpenAiKey(openAiKey()))
+      setOpenAiKey("")
+      setMessage("OpenAI API connected. Native GPT Image and audio routes are ready.")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const disconnectOpenAi = async () => {
+    setSaving(true)
+    try {
+      props.onOpenAi(await api.clearOpenAiKey())
+      setMessage("OpenAI API disconnected.")
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {
@@ -450,6 +479,39 @@ export const SettingsDialog: Component<{
                   </For>
                 </section>
 
+                <h3>OpenAI API</h3>
+                <section class="zai-settings-provider-card">
+                  <div class="zai-settings-provider-row zai-openrouter-row">
+                    <ProviderBadge brand="openai" />
+                    <div class="zai-settings-provider-copy">
+                      <strong>OpenAI API</strong>
+                      <span>Native GPT Image, transcription, and speech; billed separately from ChatGPT</span>
+                    </div>
+                    <Show when={props.openAi.connected} fallback={<span class="zai-settings-disconnected">Not connected</span>}>
+                      <div class="zai-settings-status-actions">
+                        <span class="zai-settings-ready"><Check size={13} /> Connected</span>
+                        <button class="zai-danger-link" disabled={saving()} onClick={disconnectOpenAi}>Disconnect</button>
+                      </div>
+                    </Show>
+                  </div>
+                  <Show when={!props.openAi.connected}>
+                    <div class="zai-openrouter-key">
+                      <KeyRound size={15} />
+                      <input
+                        type="password"
+                        autocomplete="off"
+                        value={openAiKey()}
+                        onInput={(event) => setOpenAiKey(event.currentTarget.value)}
+                        placeholder="sk-…"
+                        onKeyDown={(event) => event.key === "Enter" && openAiKey().trim() && void connectOpenAi()}
+                      />
+                      <button class="zai-neutral-button" disabled={!openAiKey().trim() || saving()} onClick={connectOpenAi}>
+                        <Show when={saving()} fallback="Connect"><LoaderCircle class="spin" size={14} /></Show>
+                      </button>
+                    </div>
+                  </Show>
+                </section>
+
                 <h3>OpenRouter</h3>
                 <section class="zai-settings-provider-card">
                   <div class="zai-settings-provider-row zai-openrouter-row">
@@ -515,12 +577,12 @@ export const SettingsDialog: Component<{
                 <section class="zai-settings-card">
                   <div class="zai-setting-row"><div><strong>Dictation</strong><span>Hold anywhere, release to transcribe and paste</span></div><kbd>{voice()?.dictationShortcut ?? "Ctrl Shift"}</kbd></div>
                   <div class="zai-setting-row"><div><strong>Agentic voice</strong><span>Hold anywhere to ask Onyx about the active app</span></div><kbd>{voice()?.agentShortcut ?? "Ctrl Alt"}</kbd></div>
-                  <div class="zai-setting-row"><div><strong>Dictation model</strong><span>Speech-to-text uses OpenRouter because CLI subscriptions do not expose audio transcription</span></div><input class="zai-settings-inline-input" value={voice()?.transcriptionModel ?? ""} onInput={(event) => setVoice((current) => current ? { ...current, transcriptionProvider: "openrouter", transcriptionModel: event.currentTarget.value } : current)} /></div>
+                  <div class="zai-setting-row"><div><strong>Dictation model</strong><span>Use OpenRouter or a separately billed OpenAI API key</span></div><div class="zai-setting-route__controls"><label class="zai-setting-select"><select value={voice()?.transcriptionProvider ?? "openrouter"} onChange={(event) => setVoice((current) => current ? { ...current, transcriptionProvider: event.currentTarget.value as VoiceSettings["transcriptionProvider"], transcriptionModel: event.currentTarget.value === "openai" ? "gpt-4o-mini-transcribe" : "openai/whisper-large-v3" } : current)}><option value="openrouter">OpenRouter</option><option value="openai" disabled={!props.openAi.connected}>OpenAI API</option></select><ChevronDown size={13} /></label><input class="zai-settings-inline-input" value={voice()?.transcriptionModel ?? ""} onInput={(event) => setVoice((current) => current ? { ...current, transcriptionModel: event.currentTarget.value } : current)} /></div></div>
                   {voiceRoute("General agent", "Answer voice questions with OpenRouter or an authenticated CLI subscription", "agentProvider", "agentModel")}
                   {voiceRoute("Web research", "Used automatically for current information and source requests", "webProvider", "webModel")}
                   {voiceRoute("File tasks", "Preferred coding subscription when a voice request becomes a workspace task", "filesProvider", "filesModel")}
                   {voiceRoute("Image tasks", "OpenRouter image-capable model used by creative workflows", "imageProvider", "imageModel", true)}
-                  <div class="zai-setting-row"><div><strong>Speech model</strong><span>OpenRouter text-to-speech model used for spoken answers</span></div><input class="zai-settings-inline-input" value={voice()?.voiceModel ?? ""} onInput={(event) => setVoice((current) => current ? { ...current, voiceProvider: "openrouter", voiceModel: event.currentTarget.value } : current)} /></div>
+                  <div class="zai-setting-row"><div><strong>Speech model</strong><span>Voice used to read agent answers</span></div><div class="zai-setting-route__controls"><label class="zai-setting-select"><select value={voice()?.voiceProvider ?? "openrouter"} onChange={(event) => setVoice((current) => current ? { ...current, voiceProvider: event.currentTarget.value as VoiceSettings["voiceProvider"], voiceModel: event.currentTarget.value === "openai" ? "gpt-4o-mini-tts" : "openai/gpt-4o-mini-tts" } : current)}><option value="openrouter">OpenRouter</option><option value="openai" disabled={!props.openAi.connected}>OpenAI API</option></select><ChevronDown size={13} /></label><input class="zai-settings-inline-input" value={voice()?.voiceModel ?? ""} onInput={(event) => setVoice((current) => current ? { ...current, voiceModel: event.currentTarget.value } : current)} /></div></div>
                   <div class="zai-setting-row"><div><strong>Voice</strong><span>Voice identifier supported by the selected speech model</span></div><input class="zai-settings-inline-input" value={voice()?.voiceId ?? "alloy"} onInput={(event) => setVoice((current) => current ? { ...current, voiceId: event.currentTarget.value } : current)} /></div>
                   <div class="zai-setting-row"><div><strong>Speech rate</strong><span>0.5× to 2×</span></div><input class="zai-settings-inline-input" type="number" min="0.5" max="2" step="0.1" value={voice()?.voiceRate ?? 1} onInput={(event) => setVoice((current) => current ? { ...current, voiceRate: event.currentTarget.valueAsNumber } : current)} /></div>
                   <div class="zai-setting-row"><div><strong>Overlay position</strong><span>Where dictation feedback appears</span></div><label class="zai-setting-select"><select value={voice()?.overlayPosition ?? "bottom_center"} onChange={(event) => setVoice((current) => current ? { ...current, overlayPosition: event.currentTarget.value as VoiceSettings["overlayPosition"] } : current)}><For each={["top_left","top_center","top_right","center","bottom_left","bottom_center","bottom_right"]}>{(position) => <option value={position}>{position.replaceAll("_", " ")}</option>}</For></select><ChevronDown size={13} /></label></div>
@@ -537,7 +599,7 @@ export const SettingsDialog: Component<{
                 <section class="zai-settings-card">
                   <Show when={account().configured} fallback={<div class="zai-setting-row"><div><strong>Account setup required</strong><span>Copy .env.example to .env.local and add your Clerk publishable key.</span></div><span class="zai-setting-value">Local only</span></div>}>
                     <Show when={account().profile} keyed fallback={<div class="zai-setting-row"><div><strong>Sign in to Onyx</strong><span>Sync sessions, chats, and preferences across your devices</span></div><button class="zai-neutral-button" onClick={() => void openSignIn().catch((error) => setMessage(String(error)))}>Sign in</button></div>}>
-                      {(profile) => <><div class="zai-setting-row"><div><strong>{profile.name}</strong><span>{profile.email}</span></div><span class="zai-settings-ready"><Check size={13} /> Signed in</span></div><div class="zai-setting-row"><div><strong>Cloud sync</strong><span>{account().cloud.configured ? "Convex is configured for this build" : "Add VITE_CONVEX_URL to enable sync"}</span></div><button class="zai-neutral-button" disabled={!account().cloud.authenticated || saving()} onClick={() => void syncNow()}><Show when={account().cloud.syncing} fallback="Sync now"><LoaderCircle class="spin" size={14} /></Show></button></div><div class="zai-setting-row"><button class="zai-neutral-button" onClick={() => void openAccount()}>Manage account</button><button class="zai-danger-link" onClick={() => void signOut()}>Sign out</button></div></>}
+                      {(profile) => <><div class="zai-setting-row"><div><strong>{profile.name}</strong><span>{profile.email}</span></div><span class="zai-settings-ready"><Check size={13} /> Signed in</span></div><div class="zai-setting-row"><div><strong>Cloud sync</strong><span>{account().cloud.configured ? "Convex is configured for this build" : "Add VITE_CONVEX_URL to enable sync"}</span></div><button class="zai-neutral-button" disabled={!account().cloud.authenticated || saving()} onClick={() => void syncNow()}><Show when={account().cloud.syncing} fallback="Sync now"><LoaderCircle class="spin" size={14} /></Show></button></div><div class="zai-setting-row"><div><strong>Account session</strong><span>Sign out of Onyx on this device</span></div><button class="zai-danger-link" onClick={() => void signOut()}>Sign out</button></div></>}
                     </Show>
                   </Show>
                 </section>

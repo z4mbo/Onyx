@@ -169,6 +169,10 @@ export interface OpenRouterStatus {
   connected: boolean
 }
 
+export interface OpenAiStatus {
+  connected: boolean
+}
+
 export type OverlayPosition =
   | "top_left"
   | "top_center"

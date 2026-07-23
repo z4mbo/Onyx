@@ -9,9 +9,15 @@ import {
   Switch,
   type Component,
 } from "solid-js"
-import { GitBranch } from "lucide-solid"
+import { Gauge, GitBranch, TimerReset } from "lucide-solid"
 import { openUrl } from "@tauri-apps/plugin-opener"
 import { api } from "./lib/api"
+import {
+  accountSnapshot,
+  initializeAccount,
+  signOut,
+  subscribeAccount,
+} from "./lib/account"
 import {
   brandForRuntime,
   fallbackModels,
@@ -33,6 +39,7 @@ import type {
   EditorTarget,
   OpenRouterModel,
   OpenRouterStatus,
+  OpenAiStatus,
   ProviderBrand,
   ProviderId,
   ProviderModelOption,
@@ -71,6 +78,12 @@ const DRAFT_TAB_ID = "onyx:draft"
 const LAST_WORKSPACE_KEY = "onyx.last-workspace"
 const PREFERRED_EDITOR_KEY = "onyx.preferred-editor"
 const DESKTOP_PREFERENCES_KEY = "onyx.desktop-preferences.v1"
+
+function compactTokens(tokens: number) {
+  if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(1))}M`
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`
+  return String(tokens)
+}
 
 function selectedWslDistribution(): string | null {
   try {
@@ -119,16 +132,18 @@ const App: Component = () => {
   const [openSessionIds, setOpenSessionIds] = createSignal<string[]>([])
   const [newProvider, setNewProvider] = createSignal<ProviderId>("claude")
   const [newBrand, setNewBrand] = createSignal<ProviderBrand>("anthropic")
-  const [newModel, setNewModel] = createSignal("claude-fable-5")
+  const [newModel, setNewModel] = createSignal("fable")
   const [newReasoning, setNewReasoning] = createSignal<ReasoningEffort | null>("medium")
   const [newSpeedMode, setNewSpeedMode] = createSignal<"standard" | "fast">("standard")
   const [newInteractionMode, setNewInteractionMode] = createSignal<"build" | "plan">("build")
   const [newAccessMode, setNewAccessMode] = createSignal<"approval_required" | "auto_accept_edits" | "full_access">("auto_accept_edits")
   const [providerModels, setProviderModels] = createSignal<Partial<Record<ProviderId, ProviderModelOption[]>>>({ ...fallbackModels })
   const [currentProviderUsage, setCurrentProviderUsage] = createSignal<ProviderUsage | null>(null)
+  const [draftProviderUsage, setDraftProviderUsage] = createSignal<ProviderUsage | null>(null)
   const [newWorkspace, setNewWorkspace] = createSignal(storedWorkspace())
   const [settingsOpen, setSettingsOpen] = createSignal(false)
   const [openRouter, setOpenRouter] = createSignal<OpenRouterStatus>({ connected: false })
+  const [openAi, setOpenAi] = createSignal<OpenAiStatus>({ connected: false })
   const [openRouterModels, setOpenRouterModels] = createSignal<OpenRouterModel[]>([])
   const [approvals, setApprovals] = createSignal<ApprovalRequest[]>([])
   const [approvalBusy, setApprovalBusy] = createSignal(false)
@@ -143,8 +158,12 @@ const App: Component = () => {
   const [gitAction, setGitAction] = createSignal<WorkspaceGitActionName | null>(null)
   const [commitOpen, setCommitOpen] = createSignal(false)
   const [draftGitReady, setDraftGitReady] = createSignal(false)
+  const [account, setAccount] = createSignal(accountSnapshot())
 
   const current = createMemo(() => sessions().find((session) => session.id === currentId()) ?? null)
+  const draftSelectedModel = createMemo(() =>
+    modelsForBrand(newBrand(), providerModels(), openRouterModels()).find((model) => model.id === newModel()),
+  )
   const activeApproval = createMemo(() => approvals().find((request) => request.sessionId === currentId()) ?? null)
   const activeWorkspaceUi = createMemo(() => {
     const id = currentId()
@@ -155,6 +174,10 @@ const App: Component = () => {
   let eventsReady = false
   let queuedEvents: SessionEvent[] = []
   let lastCloudSessionVersion = ""
+
+  const unsubscribeAccount = subscribeAccount(setAccount)
+  void initializeAccount()
+  onCleanup(unsubscribeAccount)
 
   const applyTheme = () => {
     const scheme = colorScheme()
@@ -279,12 +302,13 @@ const App: Component = () => {
   }
 
   const load = async () => {
-    const [providerList, sessionList, routerStatus, editorList] = await Promise.all([
-      api.listProviders(), api.listSessions(), api.openRouterStatus(), api.workspaceEditors(),
+    const [providerList, sessionList, routerStatus, openAiStatus, editorList] = await Promise.all([
+      api.listProviders(), api.listSessions(), api.openRouterStatus(), api.openAiStatus(), api.workspaceEditors(),
     ])
     setProviders(providerList)
     setSessions(sortSessions(sessionList))
     setOpenRouter(routerStatus)
+    setOpenAi(openAiStatus)
     setEditors(editorList)
     if (!editorList.some((editor) => editor.id === preferredEditor() && editor.available)) {
       const available = editorList.find((editor) => editor.available)
@@ -641,6 +665,15 @@ const App: Component = () => {
   })
 
   createEffect(() => {
+    const provider = newProvider()
+    let disposed = false
+    void api.providerUsage(provider)
+      .then((usage) => { if (!disposed && newProvider() === provider) setDraftProviderUsage(usage) })
+      .catch(() => { if (!disposed && newProvider() === provider) setDraftProviderUsage(null) })
+    onCleanup(() => { disposed = true })
+  })
+
+  createEffect(() => {
     const session = current()
     if (!session) {
       setCurrentProviderUsage(null)
@@ -721,22 +754,6 @@ const App: Component = () => {
   const toggleRightPanel = () => {
     const session = current()
     if (!session) return
-    const ui = workspaceUiBySession()[session.id] ?? emptyWorkspaceUi()
-    if (!ui.rightPanelOpen && ui.surfaces.length === 0) {
-      const browser: WorkspaceSurface = {
-        id: crypto.randomUUID(),
-        kind: "browser",
-        title: "Browser",
-      }
-      const files: WorkspaceSurface = { id: crypto.randomUUID(), kind: "files", title: "Files" }
-      updateWorkspaceUi(session.id, (value) => ({
-        ...value,
-        rightPanelOpen: true,
-        surfaces: [browser, files],
-        activeSurfaceId: browser.id,
-      }))
-      return
-    }
     updateWorkspaceUi(session.id, (value) => ({ ...value, rightPanelOpen: !value.rightPanelOpen }))
   }
 
@@ -867,8 +884,9 @@ const App: Component = () => {
         onOpenSession={openSession}
         onHome={() => setPage("home")}
         onChat={() => setPage("chat")}
-        onVoice={() => setPage("voice")}
         onOpenSettings={() => setSettingsOpen(true)}
+        profile={account().profile}
+        onSignOut={() => signOut().catch(showError)}
       />
 
       <main class="zai-main">
@@ -892,6 +910,8 @@ const App: Component = () => {
               providers={providers()}
               providerModels={providerModels()}
               openRouterModels={openRouterModels()}
+              openAi={openAi()}
+              profile={account().profile}
               onOpenSettings={() => setSettingsOpen(true)}
             />
           </Match>
@@ -1081,6 +1101,18 @@ const App: Component = () => {
                     </button>
                     <span class="zai-workspace-divider">/</span>
                     <button class="zai-git-status" onClick={() => void initializeDraftGit()} title={draftGitReady() ? "Git repository ready" : "Initialize a Git repository"}><GitBranch size={14} /> {draftGitReady() ? "main" : "No Git"}</button>
+                    <span class="zai-workspace-divider">/</span>
+                    <span class="zai-draft-usage" title="Selected model context window">
+                      <Gauge size={14} />
+                      Context {draftSelectedModel()?.contextLength ? compactTokens(draftSelectedModel()!.contextLength!) : "—"}
+                    </span>
+                    <span class="zai-workspace-divider">/</span>
+                    <span class="zai-draft-usage" title="Usage reported by the selected CLI subscription">
+                      <TimerReset size={14} />
+                      <Show when={draftProviderUsage()?.windows?.length} fallback="Usage not reported">
+                        {draftProviderUsage()!.windows.map((window) => `${window.label} ${Math.round(window.usedPercent)}%`).join(" · ")}
+                      </Show>
+                    </span>
                   </div>
                 </div>
               </div>
@@ -1095,12 +1127,14 @@ const App: Component = () => {
         providers={providers()}
         providerModels={providerModels()}
         openRouter={openRouter()}
+        openAi={openAi()}
         openRouterModels={openRouterModels()}
         colorScheme={colorScheme()}
         onColorScheme={changeColorScheme}
         onClose={() => setSettingsOpen(false)}
         onRefresh={refreshProviders}
         onOpenRouter={setOpenRouter}
+        onOpenAi={setOpenAi}
         onModels={(models) => {
           setOpenRouterModels(models)
           if (newProvider() === "openrouter" && !newModel()) setNewModel(models[0]?.id ?? "")

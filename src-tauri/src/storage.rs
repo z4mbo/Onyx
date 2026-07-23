@@ -188,8 +188,13 @@ impl SessionStore {
         };
         session.updated_at = Utc::now();
         let result = session.clone();
-        self.persist_state(&next)?;
+        // A completed provider turn must never remain "running" in memory just
+        // because the final disk flush failed. Keep the recoverable in-memory
+        // snapshot so the UI can stop its progress state and retry persistence
+        // on the next mutation or launch.
+        let persistence = self.persist_state(&next);
         *state = next;
+        persistence?;
         Ok(result)
     }
 
@@ -231,11 +236,71 @@ fn title_from(content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::title_from;
+    use super::{PersistedState, SessionStore, title_from};
+    use crate::model::{
+        AccessMode, AgentSession, InteractionMode, Message, MessageKind, MessageRole,
+        ProviderBrand, ProviderId, SessionStatus, SpeedMode,
+    };
+    use chrono::Utc;
+    use parking_lot::RwLock;
+    use std::path::PathBuf;
+    use uuid::Uuid;
 
     #[test]
     fn title_is_compact_and_bounded() {
         assert_eq!(title_from("  hello\n   world  "), "hello world");
         assert!(title_from(&"x".repeat(80)).ends_with('…'));
+    }
+
+    #[test]
+    fn completed_turn_exits_running_state_when_disk_flush_fails() {
+        let now = Utc::now();
+        let id = Uuid::new_v4().to_string();
+        let unavailable_parent =
+            std::env::temp_dir().join(format!("onyx-missing-{}", Uuid::new_v4()));
+        let store = SessionStore {
+            path: unavailable_parent.join("sessions.json"),
+            state: RwLock::new(PersistedState {
+                version: 2,
+                sessions: vec![AgentSession {
+                    id: id.clone(),
+                    title: "Test".to_string(),
+                    provider: ProviderId::Codex,
+                    provider_brand: ProviderBrand::Openai,
+                    model: None,
+                    reasoning: None,
+                    speed_mode: SpeedMode::Standard,
+                    interaction_mode: InteractionMode::Build,
+                    access_mode: AccessMode::ApprovalRequired,
+                    workspace: PathBuf::from("."),
+                    provider_session_id: None,
+                    status: SessionStatus::Running,
+                    messages: Vec::new(),
+                    context_usage: None,
+                    created_at: now,
+                    updated_at: now,
+                }],
+            }),
+        };
+
+        let result = store.finish_turn(
+            &id,
+            Vec::new(),
+            Message::new(MessageRole::Assistant, MessageKind::Text, "done"),
+            None,
+            None,
+            false,
+        );
+
+        assert!(result.is_err());
+        let recovered = store.get(&id).expect("session should remain in memory");
+        assert_eq!(recovered.status, SessionStatus::Idle);
+        assert_eq!(
+            recovered
+                .messages
+                .last()
+                .map(|message| message.content.as_str()),
+            Some("done")
+        );
     }
 }

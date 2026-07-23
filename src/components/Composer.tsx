@@ -12,6 +12,7 @@ import {
   PencilRuler,
   Plus,
   ShieldAlert,
+  TimerReset,
   Zap,
 } from "lucide-solid"
 import {
@@ -256,6 +257,10 @@ export const Composer: Component<ComposerProps> = (props) => {
                 <div class="zai-context-popover-wrap">
                   <button type="button" class="zai-composer__context-meter" style={{ "--context-progress": `${contextPercent() * 3.6}deg` }} aria-label="Context and usage" aria-expanded={usageOpen()} onClick={() => setUsageOpen((value) => !value)}>
                     <Gauge aria-hidden="true" size={15} />
+                  </button>
+                  <button type="button" class="zai-composer__usage-meter" aria-label="Subscription usage limits" aria-expanded={usageOpen()} onClick={() => setUsageOpen((value) => !value)}>
+                    <TimerReset aria-hidden="true" size={13} />
+                    <span>{props.providerUsage?.windows?.[0] ? `${props.providerUsage.windows[0].label} ${Math.round(props.providerUsage.windows[0].usedPercent)}%` : "Usage —"}</span>
                   </button>
                   <Show when={usageOpen()}>
                     <div class="zai-context-popover" role="dialog" aria-label="Context and usage limits">

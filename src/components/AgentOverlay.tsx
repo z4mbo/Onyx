@@ -15,6 +15,7 @@ export const AgentOverlay: Component = () => {
   const [expanded, setExpanded] = createSignal(false)
   const capture = new SpeechCapture()
   let starting = false
+  let finishing = false
   let pendingStop = false
 
   const ask = async (text: string) => {
@@ -44,20 +45,28 @@ export const AgentOverlay: Component = () => {
   }
 
   const start = async () => {
-    if (starting || capture.isRecording) return
+    if (starting || finishing || capture.isRecording) return
     starting = true; pendingStop = false; setExpanded(false); setAnswer(""); setQuestion(""); setPhase("Starting microphone")
     await api.setAgentExpanded(false).catch(() => undefined)
-    try { await capture.start(setLevel); setPhase("Listening"); if (pendingStop) await finish() }
+    let shouldFinish = false
+    try {
+      await capture.start(setLevel)
+      setPhase("Listening")
+      shouldFinish = pendingStop
+    }
     catch (error) { setPhase(error instanceof Error ? error.message : String(error)) }
     finally { starting = false }
+    if (shouldFinish) await finish()
   }
 
   const finish = async () => {
     if (starting) { pendingStop = true; return }
-    if (!capture.isRecording) return
+    if (finishing || !capture.isRecording) return
+    finishing = true
     setPhase("Transcribing")
     try { const audio = await capture.stop(); const result = await api.transcribeAudio(audio.audioBase64, audio.format); setQuestion(result.text); await ask(result.text) }
     catch (error) { setExpanded(true); await api.setAgentExpanded(true).catch(() => undefined); setPhase("Something went wrong"); setAnswer(error instanceof Error ? error.message : String(error)) }
+    finally { finishing = false }
   }
 
   const close = async () => { capture.cancel(); setExpanded(false); setAnswer(""); setPhase("Hold Ctrl + Alt"); await api.setAgentExpanded(false).catch(() => undefined); await api.hideWindow("agent") }

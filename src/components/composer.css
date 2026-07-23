@@ -281,6 +281,9 @@
 
 .zai-context-popover-wrap {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .t3-composer .zai-composer__context-meter {
@@ -302,6 +305,26 @@
 .t3-composer .zai-composer__context-meter:hover {
   color: color-mix(in srgb, var(--v2-text-text-muted) 78%, transparent);
   filter: brightness(.96);
+}
+
+.t3-composer .zai-composer__usage-meter {
+  display: inline-flex;
+  height: 30px;
+  max-width: 112px;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0 9px;
+  background: color-mix(in srgb, var(--v2-text-text-muted) 8%, transparent);
+  color: color-mix(in srgb, var(--v2-text-text-muted) 68%, transparent);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.t3-composer .zai-composer__usage-meter:hover {
+  background: color-mix(in srgb, var(--v2-text-text-muted) 12%, transparent);
+  color: var(--v2-text-text-muted);
 }
 
 .t3-composer .zai-composer__context-meter svg {
@@ -441,6 +464,16 @@
 
   .t3-composer .zai-composer__model-tile {
     max-width: 136px;
+  }
+
+  .t3-composer .zai-composer__usage-meter {
+    width: 30px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .t3-composer .zai-composer__usage-meter span {
+    display: none;
   }
 }
 

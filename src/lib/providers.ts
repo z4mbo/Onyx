@@ -31,7 +31,7 @@ export const providerMeta: Record<ProviderId, { name: string; color: string; mod
   claude: {
     name: "Anthropic",
     color: "#d97757",
-    models: ["claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"],
+    models: ["fable", "opus", "sonnet", "haiku"],
   },
   codex: {
     name: "OpenAI",
@@ -41,12 +41,12 @@ export const providerMeta: Record<ProviderId, { name: string; color: string; mod
   gemini: {
     name: "Google",
     color: "#4285f4",
-    models: ["default", "gemini-3.1-pro", "gemini-3-flash"],
+    models: ["default"],
   },
   kimi: {
     name: "Moonshot AI",
     color: "#5b5bd6",
-    models: ["default", "kimi-k2.5", "kimi-k2-thinking"],
+    models: ["default"],
   },
   openrouter: {
     name: "OpenRouter",
@@ -75,22 +75,16 @@ function namedModel(id: string, name: string, overrides: Partial<ProviderModelOp
 export const fallbackModels: Record<Exclude<ProviderId, "openrouter">, ProviderModelOption[]> = {
   codex: [namedModel("default", "Codex default", { isDefault: true })],
   claude: [
-    namedModel("claude-fable-5", "Claude Fable 5", { isDefault: true, reasoning: ["low", "medium", "high", "xhigh", "max"] }),
-    namedModel("claude-opus-4-8", "Claude Opus 4.8", { reasoning: ["low", "medium", "high", "xhigh", "max"], speeds: ["standard", "fast"] }),
-    namedModel("claude-opus-4-7", "Claude Opus 4.7", { reasoning: ["low", "medium", "high", "xhigh", "max"], speeds: ["standard", "fast"] }),
-    namedModel("claude-sonnet-5", "Claude Sonnet 5", { reasoning: ["low", "medium", "high", "xhigh", "max"] }),
-    namedModel("claude-sonnet-4-6", "Claude Sonnet 4.6", { reasoning: ["low", "medium", "high", "xhigh", "max"] }),
-    namedModel("claude-haiku-4-5", "Claude Haiku 4.5", { reasoning: ["low", "medium", "high"] }),
+    namedModel("fable", "Claude Fable", { isDefault: true, reasoning: ["low", "medium", "high", "xhigh", "max"] }),
+    namedModel("opus", "Claude Opus", { reasoning: ["low", "medium", "high", "xhigh", "max"] }),
+    namedModel("sonnet", "Claude Sonnet", { reasoning: ["low", "medium", "high", "xhigh", "max"] }),
+    namedModel("haiku", "Claude Haiku", { reasoning: ["low", "medium", "high"] }),
   ],
   gemini: [
-    namedModel("default", "Gemini default", { isDefault: true }),
-    namedModel("gemini-3.1-pro", "Gemini 3.1 Pro", { reasoning: ["low", "medium", "high"] }),
-    namedModel("gemini-3-flash", "Gemini 3 Flash", { reasoning: ["minimal", "low", "medium", "high"], speeds: ["standard", "fast"] }),
+    namedModel("default", "Gemini CLI default", { isDefault: true, reasoning: [], defaultReasoning: null }),
   ],
   kimi: [
-    namedModel("default", "Kimi default", { isDefault: true, reasoning: ["medium", "high"] }),
-    namedModel("kimi-k2.5", "Kimi K2.5", { reasoning: ["medium", "high"] }),
-    namedModel("kimi-k2-thinking", "Kimi K2 Thinking", { reasoning: ["high"] }),
+    namedModel("default", "Kimi configured default", { isDefault: true, reasoning: [], defaultReasoning: null }),
   ],
 }
 
@@ -132,8 +126,8 @@ export function modelsForBrand(
         name: model.name,
         description: model.description ?? null,
         isDefault: index === 0,
-        reasoning: DEFAULT_REASONING,
-        defaultReasoning: "medium",
+        reasoning: [],
+        defaultReasoning: null,
         speeds: ["standard"] as SpeedMode[],
         defaultSpeed: "standard" as SpeedMode,
         contextLength: model.contextLength,

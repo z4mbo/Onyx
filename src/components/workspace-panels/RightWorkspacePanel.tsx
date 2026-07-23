@@ -238,55 +238,53 @@ export const RightWorkspacePanel: Component<RightWorkspacePanelProps> = (props) 
               }}
             </For>
 
-            <Show when={props.surfaces.length > 0}>
-              <div class="zai-add-surface">
-                <button
-                  ref={addButton}
-                  type="button"
-                  class="zai-add-surface__button"
+            <div class="zai-add-surface">
+              <button
+                ref={addButton}
+                type="button"
+                class="zai-add-surface__button"
+                aria-label="Add panel surface"
+                aria-haspopup="menu"
+                aria-expanded={addMenuOpen()}
+                title="Add panel surface"
+                onClick={() => (addMenuOpen() ? closeAddMenu() : openAddMenu())}
+              >
+                <Plus aria-hidden="true" />
+              </button>
+              <Show when={addMenuOpen()}>
+                <div
+                  ref={menu}
+                  class="zai-add-surface__menu"
+                  role="menu"
                   aria-label="Add panel surface"
-                  aria-haspopup="menu"
-                  aria-expanded={addMenuOpen()}
-                  title="Add panel surface"
-                  onClick={() => (addMenuOpen() ? closeAddMenu() : openAddMenu())}
+                  style={{
+                    top: `${addMenuPosition().top}px`,
+                    left: `${addMenuPosition().left}px`,
+                  }}
                 >
-                  <Plus aria-hidden="true" />
-                </button>
-                <Show when={addMenuOpen()}>
-                  <div
-                    ref={menu}
-                    class="zai-add-surface__menu"
-                    role="menu"
-                    aria-label="Add panel surface"
-                    style={{
-                      top: `${addMenuPosition().top}px`,
-                      left: `${addMenuPosition().left}px`,
-                    }}
-                  >
-                    <For each={ALL_WORKSPACE_SURFACE_KINDS}>
-                      {(kind) => (
-                        <button
-                          ref={(element) => menuItemElements.set(kind, element)}
-                          type="button"
-                          role="menuitem"
-                          disabled={!availability()[kind]}
-                          title={
-                            availability()[kind]
-                              ? WORKSPACE_SURFACE_COPY[kind].label
-                              : props.unavailableReasons?.[kind]
-                          }
-                          onClick={() => addSurface(kind)}
-                          onKeyDown={(event) => handleMenuKeyDown(event, kind)}
-                        >
-                          <SurfaceIcon kind={kind} class="zai-surface-icon" />
-                          <span>{WORKSPACE_SURFACE_COPY[kind].label}</span>
-                        </button>
-                      )}
-                    </For>
-                  </div>
-                </Show>
-              </div>
-            </Show>
+                  <For each={ALL_WORKSPACE_SURFACE_KINDS}>
+                    {(kind) => (
+                      <button
+                        ref={(element) => menuItemElements.set(kind, element)}
+                        type="button"
+                        role="menuitem"
+                        disabled={!availability()[kind]}
+                        title={
+                          availability()[kind]
+                            ? WORKSPACE_SURFACE_COPY[kind].label
+                            : props.unavailableReasons?.[kind]
+                        }
+                        onClick={() => addSurface(kind)}
+                        onKeyDown={(event) => handleMenuKeyDown(event, kind)}
+                      >
+                        <SurfaceIcon kind={kind} class="zai-surface-icon" />
+                        <span>{WORKSPACE_SURFACE_COPY[kind].label}</span>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Show>
+            </div>
           </div>
           <Show when={props.onClosePanel}>
             <button

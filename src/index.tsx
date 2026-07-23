@@ -1,3 +1,4 @@
+import { ErrorBoundary } from "solid-js"
 import { render } from "solid-js/web"
 import App from "./App"
 import { AgentOverlay } from "./components/AgentOverlay"
@@ -8,10 +9,22 @@ import "./styles.css"
 const windowName = new URLSearchParams(window.location.search).get("window")
 if (windowName) document.documentElement.dataset.window = windowName
 render(
-  () => windowName === "hud"
-    ? <Hud />
-    : windowName === "agent"
-      ? <AgentOverlay />
-      : <AccountGate><App /></AccountGate>,
+  () => (
+    <ErrorBoundary fallback={(cause) => (
+      <main class="onyx-recovery" role="alert">
+        <div>
+          <strong>Onyx needs to reload</strong>
+          <p>{cause instanceof Error ? cause.message : "An unexpected interface error occurred."}</p>
+          <button onClick={() => window.location.reload()}>Reload Onyx</button>
+        </div>
+      </main>
+    )}>
+      {windowName === "hud"
+        ? <Hud />
+        : windowName === "agent"
+          ? <AgentOverlay />
+          : <AccountGate><App /></AccountGate>}
+    </ErrorBoundary>
+  ),
   document.getElementById("root")!,
 )

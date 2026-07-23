@@ -1,6 +1,8 @@
 mod active_app;
 mod model;
 mod modifier_hold;
+mod oauth_callback;
+mod openai;
 mod openrouter;
 mod providers;
 mod storage;
@@ -11,7 +13,7 @@ mod workspace;
 use crate::{
     model::{
         ActiveAppContext, AgentSession, ChatReply, ChatRequest, CreateSessionInput,
-        MediaGenerationRequest, Message, MessageKind, MessageRole, OpenRouterModel,
+        MediaGenerationRequest, Message, MessageKind, MessageRole, OpenAiStatus, OpenRouterModel,
         OpenRouterStatus, ProviderBrand, ProviderId, ProviderModelOption, ProviderStatus,
         ProviderUsage, SendMessageInput, SessionEvent, SessionStatus, TranscriptionReply,
         TranscriptionRequest, UpdateSessionOptionsInput, VideoJob, VoiceSettings, WorkspaceEntry,
@@ -32,7 +34,7 @@ use std::{
     time::Duration,
 };
 use tauri::{
-    AppHandle, Emitter, Manager, RunEvent, State, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -48,6 +50,7 @@ struct AppState {
     terminals: terminal::TerminalRegistry,
     voice_settings: RwLock<VoiceSettings>,
     voice_settings_path: PathBuf,
+    oauth_callback_cancel: Mutex<Option<Arc<AtomicBool>>>,
     exiting: AtomicBool,
 }
 
@@ -317,7 +320,14 @@ async fn send_message(
             }
         };
         running.lock().remove(&session_id);
-        if let Ok(session) = snapshot {
+        let final_session = match snapshot {
+            Ok(session) => Some(session),
+            Err(error) => {
+                eprintln!("Onyx could not persist the completed turn: {error}");
+                store.get(&session_id)
+            }
+        };
+        if let Some(session) = final_session {
             let _ = app_for_task.emit("onyx://session", SessionEvent::Snapshot { session });
         }
     });
@@ -342,6 +352,21 @@ async fn openrouter_clear_key() -> Result<OpenRouterStatus, String> {
 #[tauri::command]
 async fn openrouter_models() -> Result<Vec<OpenRouterModel>, String> {
     openrouter::models().await
+}
+
+#[tauri::command]
+async fn openai_status() -> OpenAiStatus {
+    openai::status().await
+}
+
+#[tauri::command]
+async fn openai_save_key(key: String) -> Result<OpenAiStatus, String> {
+    openai::save_key(key).await
+}
+
+#[tauri::command]
+async fn openai_clear_key() -> Result<OpenAiStatus, String> {
+    openai::clear_key().await
 }
 
 #[tauri::command]
@@ -380,30 +405,52 @@ async fn transcribe_audio(
     state: State<'_, AppState>,
 ) -> Result<TranscriptionReply, String> {
     let settings = state.voice_settings.read().clone();
-    if settings.transcription_provider != "openrouter" {
-        return Err("This build currently routes transcription through your OpenRouter key".into());
+    match settings.transcription_provider.as_str() {
+        "openrouter" => {
+            openrouter::transcribe(
+                &settings.transcription_model,
+                settings.language.as_deref(),
+                &request,
+            )
+            .await
+        }
+        "openai" => {
+            openai::transcribe(
+                &settings.transcription_model,
+                settings.language.as_deref(),
+                &request,
+            )
+            .await
+        }
+        _ => Err("Choose OpenRouter or OpenAI for transcription".into()),
     }
-    openrouter::transcribe(
-        &settings.transcription_model,
-        settings.language.as_deref(),
-        &request,
-    )
-    .await
 }
 
 #[tauri::command]
 async fn speak_text(text: String, state: State<'_, AppState>) -> Result<String, String> {
     let settings = state.voice_settings.read().clone();
-    if settings.voice_provider != "openrouter" {
-        return Err("This build currently routes speech through your OpenRouter key".into());
+    match settings.voice_provider.as_str() {
+        "openrouter" => {
+            openrouter::speak(
+                &settings.voice_model,
+                &settings.voice_id,
+                settings.voice_rate,
+                &text,
+            )
+            .await
+        }
+        "openai" => {
+            openai::speak(
+                &settings.voice_model,
+                &settings.voice_id,
+                settings.voice_rate,
+                &text,
+            )
+            .await
+        }
+        "system" => Err("System speech is not available in this build yet".into()),
+        _ => Err("Choose OpenRouter or OpenAI for speech".into()),
     }
-    openrouter::speak(
-        &settings.voice_model,
-        &settings.voice_id,
-        settings.voice_rate,
-        &text,
-    )
-    .await
 }
 
 #[tauri::command]
@@ -445,6 +492,37 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_provider_web(app: AppHandle, provider: String) -> Result<(), String> {
+    let (label, title, url) = match provider.as_str() {
+        "chatgpt" => ("provider-chatgpt", "ChatGPT · Onyx", "https://chatgpt.com/"),
+        "claude" => ("provider-claude", "Claude · Onyx", "https://claude.ai/new"),
+        "gemini" => (
+            "provider-gemini",
+            "Gemini · Onyx",
+            "https://gemini.google.com/app",
+        ),
+        "grok" => ("provider-grok", "Grok · Onyx", "https://grok.com/"),
+        _ => return Err("Unknown provider web app".to_string()),
+    };
+    if let Some(window) = app.get_webview_window(label) {
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    let external = url
+        .parse()
+        .map_err(|error| format!("Invalid provider URL: {error}"))?;
+    WebviewWindowBuilder::new(&app, label, WebviewUrl::External(external))
+        .title(title)
+        .inner_size(1180.0, 820.0)
+        .min_inner_size(720.0, 520.0)
+        .center()
+        .build()
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn platform() -> &'static str {
     std::env::consts::OS
 }
@@ -480,12 +558,25 @@ async fn chat_send(request: ChatRequest) -> Result<ChatReply, String> {
 
 #[tauri::command]
 async fn generate_image(request: MediaGenerationRequest) -> Result<ChatReply, String> {
-    openrouter::generate_image(
-        &request.model,
-        &request.prompt,
-        request.aspect_ratio.as_deref(),
-    )
-    .await
+    match request.source.as_str() {
+        "openai" => {
+            openai::generate_image(
+                &request.model,
+                &request.prompt,
+                request.aspect_ratio.as_deref(),
+            )
+            .await
+        }
+        "openrouter" => {
+            openrouter::generate_image(
+                &request.model,
+                &request.prompt,
+                request.aspect_ratio.as_deref(),
+            )
+            .await
+        }
+        _ => Err("Choose OpenAI or OpenRouter for image generation".to_string()),
+    }
 }
 
 #[tauri::command]
@@ -677,6 +768,19 @@ async fn terminal_close(session_id: String, state: State<'_, AppState>) -> Resul
     state.terminals.close(session_id).await
 }
 
+#[tauri::command]
+fn start_oauth_callback(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    if let Some(previous) = state
+        .oauth_callback_cancel
+        .lock()
+        .replace(cancelled.clone())
+    {
+        previous.store(true, Ordering::SeqCst);
+    }
+    oauth_callback::start(app, cancelled)
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -695,6 +799,9 @@ pub fn run() {
             openrouter_save_key,
             openrouter_clear_key,
             openrouter_models,
+            openai_status,
+            openai_save_key,
+            openai_clear_key,
             get_voice_settings,
             apply_voice_settings,
             transcribe_audio,
@@ -704,6 +811,7 @@ pub fn run() {
             set_agent_expanded,
             hide_window,
             show_main_window,
+            open_provider_web,
             platform,
             chat_send,
             generate_image,
@@ -725,6 +833,7 @@ pub fn run() {
             terminal_write,
             terminal_resize,
             terminal_close,
+            start_oauth_callback,
         ])
         .setup(|app| {
             let data_dir = app
@@ -741,6 +850,7 @@ pub fn run() {
                 terminals: terminal::TerminalRegistry::default(),
                 voice_settings: RwLock::new(voice_settings),
                 voice_settings_path,
+                oauth_callback_cancel: Mutex::new(None),
                 exiting: AtomicBool::new(false),
             });
             modifier_hold::start(app.handle().clone());

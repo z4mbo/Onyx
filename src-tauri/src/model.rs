@@ -359,6 +359,12 @@ pub struct OpenRouterStatus {
     pub connected: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenAiStatus {
+    pub connected: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayPosition {
@@ -496,6 +502,12 @@ pub struct MediaGenerationRequest {
     pub model: String,
     pub prompt: String,
     pub aspect_ratio: Option<String>,
+    #[serde(default = "default_media_source")]
+    pub source: String,
+}
+
+fn default_media_source() -> String {
+    "openrouter".to_string()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -14,25 +14,38 @@ export class SpeechCapture {
   async start(onLevel?: (level: number) => void) {
     if (this.isRecording) return
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") throw new Error("Audio capture is unavailable")
+    this.cleanupStream()
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: { autoGainControl: true, echoCancellation: true, noiseSuppression: true } })
-    const mimeType = MIME_TYPES.find((value) => MediaRecorder.isTypeSupported(value))
-    this.chunks = []
-    this.recorder = mimeType ? new MediaRecorder(this.stream, { mimeType }) : new MediaRecorder(this.stream)
-    this.recorder.ondataavailable = (event) => { if (event.data.size) this.chunks.push(event.data) }
-    this.recorder.start(200)
-    if (onLevel) this.monitor(this.stream, onLevel)
+    try {
+      const mimeType = MIME_TYPES.find((value) => MediaRecorder.isTypeSupported(value))
+      this.chunks = []
+      this.recorder = mimeType ? new MediaRecorder(this.stream, { mimeType }) : new MediaRecorder(this.stream)
+      this.recorder.ondataavailable = (event) => { if (event.data.size) this.chunks.push(event.data) }
+      this.recorder.start(200)
+      if (onLevel) this.monitor(this.stream, onLevel)
+    } catch (error) {
+      this.recorder = null
+      this.cleanupStream()
+      throw error
+    }
   }
 
   async stop(): Promise<CapturedAudio> {
     const recorder = this.recorder
     if (!recorder || recorder.state === "inactive") throw new Error("No recording is active")
     const stopped = new Promise<void>((resolve) => recorder.addEventListener("stop", () => resolve(), { once: true }))
-    recorder.stop()
-    await stopped
-    this.cleanupStream()
+    try {
+      recorder.stop()
+      await stopped
+    } catch (error) {
+      this.chunks = []
+      throw error
+    } finally {
+      if (this.recorder === recorder) this.recorder = null
+      this.cleanupStream()
+    }
     const mime = recorder.mimeType || this.chunks[0]?.type || "audio/webm"
     const blob = new Blob(this.chunks, { type: mime })
-    this.recorder = null
     this.chunks = []
     if (!blob.size) throw new Error("The recording is empty")
     if (blob.size > 24 * 1024 * 1024) throw new Error("The recording exceeds the 24 MiB limit")
@@ -40,7 +53,10 @@ export class SpeechCapture {
   }
 
   cancel() {
-    if (this.recorder && this.recorder.state !== "inactive") this.recorder.stop()
+    if (this.recorder && this.recorder.state !== "inactive") {
+      this.recorder.ondataavailable = null
+      this.recorder.stop()
+    }
     this.recorder = null
     this.chunks = []
     this.cleanupStream()

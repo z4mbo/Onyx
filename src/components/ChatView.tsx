@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show, type Component } from "solid-js"
 import {
   ChevronDown,
+  ExternalLink,
   Image as ImageIcon,
   LoaderCircle,
   Menu,
@@ -21,13 +22,14 @@ import type {
   ChatMessage,
   ChatThread,
   OpenRouterModel,
+  OpenAiStatus,
   ProviderBrand,
   ProviderId,
   ProviderModelOption,
   ProviderStatus,
+  AccountProfile,
 } from "../lib/types"
 import { ProviderBadge } from "./ProviderBadge"
-import { OnyxOrb } from "./OnyxOrb"
 import "./chat.css"
 
 const THREADS_KEY = "onyx.chat.threads.v1"
@@ -60,10 +62,23 @@ function modeIcon(mode: ChatThread["mode"]) {
   return mode === "image" ? ImageIcon : mode === "video" ? Video : MessageSquare
 }
 
+const subscriptionApps: Array<{
+  id: "chatgpt" | "claude" | "gemini" | "grok"
+  name: string
+  brand: ProviderBrand
+}> = [
+  { id: "chatgpt", name: "ChatGPT", brand: "openai" },
+  { id: "claude", name: "Claude", brand: "anthropic" },
+  { id: "gemini", name: "Gemini", brand: "google" },
+  { id: "grok", name: "Grok", brand: "xai" },
+]
+
 export const ChatView: Component<{
   providers: ProviderStatus[]
   providerModels: Partial<Record<ProviderId, ProviderModelOption[]>>
   openRouterModels: OpenRouterModel[]
+  openAi: OpenAiStatus
+  profile?: AccountProfile | null
   onOpenSettings: () => void
 }> = (props) => {
   const initialModels = modelsForBrand("anthropic", props.providerModels, props.openRouterModels)
@@ -83,8 +98,25 @@ export const ChatView: Component<{
   const [error, setError] = createSignal<string | null>(null)
 
   const active = createMemo(() => threads().find((thread) => thread.id === activeId()) ?? null)
+  const availableModels = (selectedBrand: ProviderBrand, selectedMode: ChatThread["mode"]) => {
+    if (selectedMode === "image" && selectedBrand === "openai") {
+      return [{
+        id: "gpt-image-2",
+        name: "GPT Image 2",
+        description: "OpenAI's current native image generation model",
+        isDefault: true,
+        reasoning: [],
+        defaultReasoning: null,
+        speeds: ["standard" as const],
+        defaultSpeed: "standard" as const,
+        contextLength: null,
+      }]
+    }
+    return modelsForBrand(selectedBrand, props.providerModels, props.openRouterModels)
+  }
   const modelOptions = createMemo(() => {
-    const models = modelsForBrand(brand(), props.providerModels, props.openRouterModels)
+    const models = availableModels(brand(), mode())
+    if (mode() === "image" && brand() === "openai") return models
     if (mode() === "chat") return models
     return models.filter((model) => {
       const source = props.openRouterModels.find((item) => item.id === model.id)
@@ -93,7 +125,8 @@ export const ChatView: Component<{
   })
   const selectedModelName = createMemo(() => modelOptions().find((model) => model.id === selectedModel())?.name ?? (selectedModel() || "Choose model"))
   const filteredBrands = createMemo(() => providerBrands.filter((item) => {
-    if (mode() !== "chat") return item.id === "openrouter"
+    if (mode() === "image") return item.id === "openrouter" || (item.id === "openai" && props.openAi.connected)
+    if (mode() === "video") return item.id === "openrouter"
     const status = props.providers.find((provider) => provider.id === item.runtime)
     return status?.available
   }))
@@ -154,14 +187,15 @@ export const ChatView: Component<{
 
   const chooseBrand = (value: ProviderBrand) => {
     setBrand(value)
-    const models = modelsForBrand(value, props.providerModels, props.openRouterModels)
+    const models = availableModels(value, mode())
     const next = models.find((model) => model.isDefault) ?? models[0]
     setSelectedModel(next?.id ?? "")
   }
 
   const chooseMode = (value: ChatThread["mode"]) => {
     setMode(value)
-    if (value !== "chat") chooseBrand("openrouter")
+    if (value === "image") chooseBrand(props.openAi.connected ? "openai" : "openrouter")
+    else if (value === "video") chooseBrand("openrouter")
     else if (brand() === "openrouter" && !props.providers.find((provider) => provider.id === "openrouter")?.available) chooseBrand("anthropic")
   }
 
@@ -193,7 +227,7 @@ export const ChatView: Component<{
     try {
       let reply
       if (mode() === "image") {
-        reply = await api.generateImage(selectedModel(), prompt, "1:1")
+        reply = await api.generateImage(selectedModel(), prompt, "1:1", brand() === "openai" ? "openai" : "openrouter")
       } else if (mode() === "video") {
         let job = await api.startVideo(selectedModel(), prompt, "16:9")
         for (let attempt = 0; attempt < 120 && !["completed", "failed"].includes(job.status); attempt += 1) {
@@ -240,7 +274,12 @@ export const ChatView: Component<{
             }}</For>
           </Show>
         </div>
-        <button class="onyx-chat__account" onClick={props.onOpenSettings}><OnyxOrb /><div><strong>Onyx account</strong><small>Sign in & sync</small></div><MoreHorizontal size={16} /></button>
+        <button class="onyx-chat__account" onClick={props.onOpenSettings}>
+          <Show when={props.profile?.imageUrl} fallback={<span class="onyx-chat__account-fallback">{props.profile?.name?.slice(0, 1).toUpperCase() ?? "O"}</span>}>
+            {(imageUrl) => <img src={imageUrl()} alt="" referrerpolicy="no-referrer" />}
+          </Show>
+          <div><strong>{props.profile?.name ?? "Onyx account"}</strong><small>{props.profile?.email || "Account & cloud"}</small></div><MoreHorizontal size={16} />
+        </button>
       </aside>
 
       <main class="onyx-chat__main">
@@ -253,9 +292,18 @@ export const ChatView: Component<{
         <div class="onyx-chat__scroll">
           <Show when={active()?.messages.length} fallback={
             <div class="onyx-chat__welcome">
-              <OnyxOrb class="onyx-chat__orb" />
-              <h1>How can I help?</h1>
-              <p>Chat with your subscriptions, or create images and video through OpenRouter.</p>
+              <h1>Onyx</h1>
+              <p>How can I help?</p>
+              <div class="onyx-chat__web-apps" aria-label="Subscription web apps">
+                <For each={subscriptionApps}>{(app) => (
+                  <button onClick={() => void api.openProviderWeb(app.id).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))}>
+                    <ProviderBadge brand={app.brand} size="sm" />
+                    <span>{app.name}</span>
+                    <ExternalLink size={12} />
+                  </button>
+                )}</For>
+              </div>
+              <small class="onyx-chat__web-note">Open the provider’s signed-in web app for subscription-only tools.</small>
             </div>
           }>
             <div class="onyx-chat__messages">

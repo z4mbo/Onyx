@@ -1,6 +1,7 @@
-import { createSignal, For, Show, type Component, type JSX } from "solid-js"
+import { createSignal, For, onCleanup, onMount, Show, type Component, type JSX } from "solid-js"
 import { Icon } from "@opencode-ai/ui/v2/icon"
-import { MessageSquare, Mic2 } from "lucide-solid"
+import { LogOut, MessageSquare, Settings, UserRound } from "lucide-solid"
+import type { AccountProfile } from "../lib/types"
 import { ZaiAppIcon } from "./ZaiAppIcon"
 
 /** The presentation-only tab shape consumed by the Onyx desktop titlebar. */
@@ -37,10 +38,12 @@ export interface TitlebarProps {
   onHome: () => void
   /** Open general chat, images, and video. */
   onChat: () => void
-  /** Open dictation, voice agent, and history. */
-  onVoice: () => void
   /** Open Onyx settings. */
   onOpenSettings: () => void
+  /** Signed-in Clerk profile rendered in the always-visible account control. */
+  profile?: AccountProfile | null
+  /** End the current account session. */
+  onSignOut?: () => void | Promise<void>
 }
 
 const CONTROL_RESET: JSX.CSSProperties = {
@@ -87,7 +90,33 @@ function RunningIndicator() {
 /** OpenCode-v2-proportioned desktop chrome, rebranded and decoupled for Onyx. */
 export const Titlebar: Component<TitlebarProps> = (props) => {
   const [newMenuOpen, setNewMenuOpen] = createSignal(false)
+  const [profileMenuOpen, setProfileMenuOpen] = createSignal(false)
   const tabElements = new Map<string, HTMLButtonElement>()
+  let newButton: HTMLButtonElement | undefined
+  let newMenu: HTMLDivElement | undefined
+  let profileButton: HTMLButtonElement | undefined
+  let profileMenu: HTMLDivElement | undefined
+
+  onMount(() => {
+    const closeMenus = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (!profileButton?.contains(target) && !profileMenu?.contains(target)) setProfileMenuOpen(false)
+      if (!newButton?.contains(target) && !newMenu?.contains(target)) setNewMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setProfileMenuOpen(false)
+        setNewMenuOpen(false)
+      }
+    }
+    document.addEventListener("pointerdown", closeMenus)
+    window.addEventListener("keydown", closeOnEscape)
+    onCleanup(() => {
+      document.removeEventListener("pointerdown", closeMenus)
+      window.removeEventListener("keydown", closeOnEscape)
+    })
+  })
 
   const closeTab = (event: MouseEvent, id: string) => {
     event.preventDefault()
@@ -155,7 +184,7 @@ export const Titlebar: Component<TitlebarProps> = (props) => {
           height: "36px",
           width: "100%",
           padding: "8px 12px 0 8px",
-          overflow: "hidden",
+          overflow: "visible",
         }}
       >
         <button
@@ -343,6 +372,7 @@ export const Titlebar: Component<TitlebarProps> = (props) => {
 
         <div class="zai-titlebar__new-wrap">
           <button
+            ref={newButton}
             type="button"
             class="zai-titlebar__control zai-titlebar__new"
             style={{
@@ -364,7 +394,7 @@ export const Titlebar: Component<TitlebarProps> = (props) => {
             <Icon name="plus" />
           </button>
           <Show when={newMenuOpen()}>
-            <div class="zai-titlebar__new-menu">
+            <div ref={newMenu} class="zai-titlebar__new-menu">
               <button onClick={() => { setNewMenuOpen(false); props.onNew() }}><Icon name="plus" /><span><strong>New session</strong><small>Start in the current project</small></span></button>
               <Show when={(props.sessions?.length ?? 0) > 0}>
                 <p>Open session</p>
@@ -386,36 +416,49 @@ export const Titlebar: Component<TitlebarProps> = (props) => {
         >
           <MessageSquare size={15} stroke-width={1.7} />
         </button>
-        <button
-          type="button"
-          class="zai-titlebar__control zai-titlebar__destination zai-titlebar__voice"
-          style={{ ...CONTROL_RESET, display: "inline-flex", "align-items": "center", "justify-content": "center", width: "28px", height: "28px", "min-width": "28px", "border-radius": "6px", background: "transparent" }}
-          onClick={props.onVoice}
-          aria-label="Voice"
-          title="Voice and dictation"
-        >
-          <Mic2 size={15} stroke-width={1.7} />
-        </button>
-        <button
-          type="button"
-          class="zai-titlebar__control zai-titlebar__settings"
-          style={{
-            ...CONTROL_RESET,
-            display: "inline-flex",
-            "align-items": "center",
-            "justify-content": "center",
-            width: "28px",
-            height: "28px",
-            "min-width": "28px",
-            "border-radius": "6px",
-            background: "transparent",
-          }}
-          onClick={props.onOpenSettings}
-          aria-label="Settings"
-          title="Settings"
-        >
-          <Icon name="settings-gear" />
-        </button>
+        <div class="zai-titlebar__profile-wrap">
+          <button
+            ref={profileButton}
+            type="button"
+            class="zai-titlebar__control zai-titlebar__profile"
+            style={{ ...CONTROL_RESET }}
+            onClick={() => setProfileMenuOpen((value) => !value)}
+            aria-label={props.profile ? `Account: ${props.profile.name}` : "Account and settings"}
+            aria-haspopup="menu"
+            aria-expanded={profileMenuOpen()}
+            title={props.profile?.name ?? "Account and settings"}
+          >
+            <Show
+              when={props.profile?.imageUrl}
+              fallback={<span class="zai-titlebar__profile-avatar zai-titlebar__profile-avatar--fallback"><UserRound size={14} /></span>}
+            >
+              {(imageUrl) => <img class="zai-titlebar__profile-avatar" src={imageUrl()} alt="" referrerpolicy="no-referrer" />}
+            </Show>
+            <Show when={props.profile?.name}>
+              {(name) => <span class="zai-titlebar__profile-name">{name()}</span>}
+            </Show>
+          </button>
+          <Show when={profileMenuOpen()}>
+            <div ref={profileMenu} class="zai-titlebar__profile-menu" role="menu">
+              <Show when={props.profile} keyed>
+                {(profile) => (
+                  <div class="zai-titlebar__profile-summary">
+                    <strong>{profile.name}</strong>
+                    <span>{profile.email}</span>
+                  </div>
+                )}
+              </Show>
+              <button role="menuitem" onClick={() => { setProfileMenuOpen(false); props.onOpenSettings() }}>
+                <Settings size={14} /><span>Settings</span>
+              </button>
+              <Show when={props.profile && props.onSignOut}>
+                <button role="menuitem" onClick={() => { setProfileMenuOpen(false); void props.onSignOut?.() }}>
+                  <LogOut size={14} /><span>Sign out</span>
+                </button>
+              </Show>
+            </div>
+          </Show>
+        </div>
       </div>
     </header>
   )
