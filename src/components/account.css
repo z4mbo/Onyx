@@ -251,10 +251,6 @@
   line-height: 1.45;
 }
 
-#clerk-captcha:empty {
-  display: none;
-}
-
 @media (max-width: 440px) {
   .onyx-account-gate {
     padding-inline: 16px;

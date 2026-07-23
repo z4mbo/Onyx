@@ -54,7 +54,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://challenges.cloudflare.com; connect-src ipc: http://ipc.localhost https://openrouter.ai https://*.clerk.accounts.dev https://*.clerk.com https://challenges.cloudflare.com wss://*.convex.cloud https://*.convex.cloud; frame-src 'self' http: https: https://challenges.cloudflare.com; img-src 'self' asset: data: blob: https:; media-src 'self' asset: data: blob: https:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost https://openrouter.ai wss://*.convex.cloud https://*.convex.cloud; frame-src 'self' http: https:; img-src 'self' asset: data: blob: https:; media-src 'self' asset: data: blob: https:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
     }
   },
   "bundle": {

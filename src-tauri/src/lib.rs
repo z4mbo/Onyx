@@ -1,7 +1,7 @@
 mod active_app;
+mod clerk_oauth;
 mod model;
 mod modifier_hold;
-mod oauth_callback;
 mod openai;
 mod openrouter;
 mod providers;
@@ -50,7 +50,7 @@ struct AppState {
     terminals: terminal::TerminalRegistry,
     voice_settings: RwLock<VoiceSettings>,
     voice_settings_path: PathBuf,
-    oauth_callback_cancel: Mutex<Option<Arc<AtomicBool>>>,
+    clerk_oauth_cancel: Mutex<Option<Arc<AtomicBool>>>,
     exiting: AtomicBool,
 }
 
@@ -769,16 +769,36 @@ async fn terminal_close(session_id: String, state: State<'_, AppState>) -> Resul
 }
 
 #[tauri::command]
-fn start_oauth_callback(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+fn start_clerk_oauth(
+    app: AppHandle,
+    login_hint: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<clerk_oauth::OAuthStart, String> {
     let cancelled = Arc::new(AtomicBool::new(false));
-    if let Some(previous) = state
-        .oauth_callback_cancel
-        .lock()
-        .replace(cancelled.clone())
-    {
+    if let Some(previous) = state.clerk_oauth_cancel.lock().replace(cancelled.clone()) {
         previous.store(true, Ordering::SeqCst);
     }
-    oauth_callback::start(app, cancelled)
+    clerk_oauth::start(app, cancelled, login_hint)
+}
+
+#[tauri::command]
+async fn clerk_account_profile() -> Result<Option<clerk_oauth::AccountProfile>, String> {
+    clerk_oauth::profile().await
+}
+
+#[tauri::command]
+async fn clerk_account_token(force_refresh: Option<bool>) -> Result<Option<String>, String> {
+    clerk_oauth::id_token(force_refresh.unwrap_or(false)).await
+}
+
+#[tauri::command]
+async fn clerk_sign_out(app: AppHandle) -> Result<(), String> {
+    clerk_oauth::sign_out().await?;
+    let _ = app.emit(
+        "onyx://account-changed",
+        serde_json::json!({ "profile": null, "error": null }),
+    );
+    Ok(())
 }
 
 pub fn run() {
@@ -833,7 +853,10 @@ pub fn run() {
             terminal_write,
             terminal_resize,
             terminal_close,
-            start_oauth_callback,
+            start_clerk_oauth,
+            clerk_account_profile,
+            clerk_account_token,
+            clerk_sign_out,
         ])
         .setup(|app| {
             let data_dir = app
@@ -850,7 +873,7 @@ pub fn run() {
                 terminals: terminal::TerminalRegistry::default(),
                 voice_settings: RwLock::new(voice_settings),
                 voice_settings_path,
-                oauth_callback_cancel: Mutex::new(None),
+                clerk_oauth_cancel: Mutex::new(None),
                 exiting: AtomicBool::new(false),
             });
             modifier_hold::start(app.handle().clone());

@@ -90,15 +90,17 @@ WSL must already be installed and configured. Onyx does not install or convert d
 
 ## Accounts and cloud sync
 
-Production builds require Clerk sign-in on first launch. Copy `.env.example` to `.env.local`, then configure Clerk and Convex:
+Production builds require Clerk sign-in on first launch. Onyx uses the system browser with OAuth 2.0 Authorization Code + PKCE, then stores its refresh credentials in the operating-system keychain. Authentication never runs inside the Tauri WebView, so Google, Apple, email verification, consent, and anti-bot checks run on a supported HTTPS page.
+
+The public OAuth client and Clerk issuer are compiled into the desktop app; no Clerk publishable key or client secret is shipped. To enable cloud sync, copy `.env.example` to `.env.local`, set `VITE_CONVEX_URL`, and configure the Convex deployment:
 
 ```sh
 npx convex dev
 ```
 
-Create a Clerk JWT template named `convex`, set `VITE_CLERK_PUBLISHABLE_KEY` and `VITE_CONVEX_URL`, and add `CLERK_JWT_ISSUER_DOMAIN` to the Convex deployment. The included Convex functions authenticate every request and scope snapshots to the Clerk subject.
+Set `CLERK_JWT_ISSUER_DOMAIN` in Convex to the Clerk issuer documented in `.env.example`. `convex/auth.config.ts` accepts the Onyx public OAuth client audience (and the legacy `convex` JWT-template audience). The included Convex functions authenticate every request and scope snapshots to the Clerk subject.
 
-The custom Onyx sign-in screen supports Google, Apple, and email verification without embedding Clerk's hosted account card. The Account page provides sign-in/account status and a **Sync now** action that uploads coding sessions, chats, voice history, and preferences to the authenticated user's Convex snapshot. No subscription or payment behavior is implemented.
+The custom Onyx sign-in screen provides individual Google, Apple, and email entry points, then opens the secure browser flow. The Account page provides sign-in/account status and a **Sync now** action that uploads coding sessions, chats, voice history, and preferences to the authenticated user's Convex snapshot. No subscription or payment behavior is implemented.
 
 ## Checks and packages
 

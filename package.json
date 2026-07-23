@@ -23,7 +23,6 @@
     "tauri": "node scripts/run-tauri.mjs"
   },
   "dependencies": {
-    "@clerk/clerk-js": "^6.25.6",
     "@fontsource-variable/dm-sans": "5.2.8",
     "@fontsource/jetbrains-mono": "5.2.8",
     "@opencode-ai/ui": "1.18.4",

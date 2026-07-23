@@ -1,4 +1,3 @@
-import { Clerk } from "@clerk/clerk-js"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { openUrl } from "@tauri-apps/plugin-opener"
@@ -15,16 +14,14 @@ export interface AccountState {
   error: string | null
 }
 
-const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY?.trim() ?? ""
 const convexUrl = import.meta.env.VITE_CONVEX_URL?.trim() ?? ""
 const tauri = "__TAURI_INTERNALS__" in window
-let clerk: Clerk | null = null
 let convex: ConvexClient | null = null
 let initialized: Promise<void> | null = null
-let oauthListenerReady: Promise<void> | null = null
+let accountListenerReady: Promise<void> | null = null
 let state: AccountState = {
-  configured: Boolean(publishableKey),
-  loading: Boolean(publishableKey),
+  configured: tauri,
+  loading: tauri,
   profile: null,
   cloud: {
     configured: Boolean(convexUrl),
@@ -37,82 +34,31 @@ let state: AccountState = {
 }
 const listeners = new Set<(value: AccountState) => void>()
 
-interface ClerkApiError {
-  code?: string
-  message?: string
-  longMessage?: string
+interface OAuthStart {
+  authorizeUrl: string
 }
 
-function clerkErrors(cause: unknown): ClerkApiError[] {
-  if (!cause || typeof cause !== "object" || !("errors" in cause)) return []
-  const errors = (cause as { errors?: unknown }).errors
-  return Array.isArray(errors) ? errors.filter((item): item is ClerkApiError => Boolean(item) && typeof item === "object") : []
-}
-
-function clerkErrorCode(cause: unknown) {
-  return clerkErrors(cause)[0]?.code
+interface AccountEvent {
+  profile: AccountProfile | null
+  error: string | null
 }
 
 export function accountErrorMessage(cause: unknown) {
-  const first = clerkErrors(cause)[0]
-  if (first?.longMessage) return first.longMessage
-  if (first?.message) return first.message
   if (cause instanceof Error) return cause.message
   return String(cause)
 }
 
-function requireClerk() {
-  if (!clerk?.client) throw new Error("Onyx accounts are not ready yet")
-  return clerk
-}
-
-function emailFactor() {
-  const factor = requireClerk().client!.signIn.supportedFirstFactors?.find(
-    (item) => item.strategy === "email_code",
-  )
-  if (!factor || !("emailAddressId" in factor)) {
-    throw new Error("Email verification codes are not enabled for this Clerk application")
-  }
-  return factor
-}
-
-async function completeSession(sessionId: string | null, flow: string) {
-  if (!sessionId) throw new Error(`${flow} did not create a session`)
-  await requireClerk().setActive({
-    session: sessionId,
-    navigate: async () => undefined,
-  })
-}
-
-async function handleOauthCallback(callbackUrl: string) {
-  const instance = requireClerk()
-  const callback = new URL(callbackUrl)
-  const previous = `${window.location.pathname}${window.location.search}${window.location.hash}`
-  const callbackLocation = `${window.location.pathname}${callback.search}${callback.hash}`
-  window.history.replaceState(window.history.state, "", callbackLocation)
-  try {
-    await instance.handleRedirectCallback(
-      {
-        signInFallbackRedirectUrl: "/",
-        signUpFallbackRedirectUrl: "/",
-        transferable: true,
-        reloadResource: "signIn",
-      },
-      async () => undefined,
-    )
-  } finally {
-    window.history.replaceState(window.history.state, "", previous)
-  }
-}
-
-function installOauthListener() {
-  if (!tauri || oauthListenerReady) return oauthListenerReady ?? Promise.resolve()
-  oauthListenerReady = listen<string>("onyx://oauth-callback", (event) => {
-    void handleOauthCallback(event.payload).catch((cause) => {
-      emit({ error: accountErrorMessage(cause) })
-    })
+function installAccountListener() {
+  if (!tauri || accountListenerReady) return accountListenerReady ?? Promise.resolve()
+  accountListenerReady = listen<AccountEvent>("onyx://account-changed", (event) => {
+    if (event.payload.error) {
+      emit({ loading: false, error: event.payload.error })
+      return
+    }
+    emit({ loading: false, profile: event.payload.profile, error: null })
+    configureConvexAuth()
   }).then(() => undefined)
-  return oauthListenerReady
+  return accountListenerReady
 }
 
 function emit(update: Partial<AccountState>) {
@@ -120,15 +66,21 @@ function emit(update: Partial<AccountState>) {
   listeners.forEach((listener) => listener(state))
 }
 
-function profileFromClerk(instance: Clerk): AccountProfile | null {
-  const user = instance.user
-  if (!user) return null
-  return {
-    id: user.id,
-    name: user.fullName || user.username || user.primaryEmailAddress?.emailAddress || "Onyx user",
-    email: user.primaryEmailAddress?.emailAddress ?? "",
-    imageUrl: user.imageUrl || null,
-  }
+function configureConvexAuth() {
+  if (!tauri || !convexUrl) return
+  convex ??= new ConvexClient(convexUrl)
+  convex.setAuth(
+    async ({ forceRefreshToken }) => {
+      if (!state.profile) return null
+      return await invoke<string | null>("clerk_account_token", {
+        forceRefresh: forceRefreshToken,
+      })
+    },
+    (authenticated) => {
+      state = { ...state, cloud: { ...state.cloud, authenticated } }
+      listeners.forEach((listener) => listener(state))
+    },
+  )
 }
 
 export function accountSnapshot() {
@@ -144,31 +96,17 @@ export function subscribeAccount(listener: (value: AccountState) => void) {
 export function initializeAccount() {
   if (initialized) return initialized
   initialized = (async () => {
-    if (!publishableKey) {
-      emit({ loading: false })
+    if (!tauri) {
+      emit({ configured: false, loading: false })
       return
     }
     try {
-      clerk = new Clerk(publishableKey)
-      await clerk.load({
-        allowedRedirectOrigins: [
-          window.location.origin,
-          /^http:\/\/127\.0\.0\.1:\d+$/,
-        ],
-      })
-      await installOauthListener()
-      const refresh = () => emit({ loading: false, profile: clerk ? profileFromClerk(clerk) : null, error: null })
-      clerk.addListener(refresh)
-      refresh()
-      if (convexUrl) {
-        convex = new ConvexClient(convexUrl)
-        convex.setAuth(async () => clerk?.session?.getToken({ template: "convex" }) ?? null, (authenticated) => {
-          state = { ...state, cloud: { ...state.cloud, authenticated } }
-          listeners.forEach((listener) => listener(state))
-        })
-      }
+      await installAccountListener()
+      const profile = await invoke<AccountProfile | null>("clerk_account_profile")
+      emit({ loading: false, profile, error: null })
+      configureConvexAuth()
     } catch (cause) {
-      emit({ loading: false, error: cause instanceof Error ? cause.message : String(cause) })
+      emit({ loading: false, error: accountErrorMessage(cause) })
     }
   })()
   return initialized
@@ -176,85 +114,36 @@ export function initializeAccount() {
 
 export async function openSignIn() {
   await initializeAccount()
-  if (!clerk) throw new Error("Add VITE_CLERK_PUBLISHABLE_KEY to enable accounts")
+  if (!tauri) throw new Error("Account sign-in is available in the Onyx desktop app")
   window.dispatchEvent(new Event("onyx:account-sign-in"))
 }
 
-export async function beginSocialSignIn(provider: "google" | "apple") {
+async function beginBrowserSignIn(loginHint?: string) {
   await initializeAccount()
-  const instance = requireClerk()
-  const callbackUrl = tauri
-    ? await invoke<string>("start_oauth_callback")
-    : new URL("/", window.location.href).toString()
-  const redirectUrl = instance.buildUrlWithAuth(callbackUrl)
-  const attempt = await instance.client!.signIn.create({
-    strategy: `oauth_${provider}`,
-    redirectUrl,
-    actionCompleteRedirectUrl: callbackUrl,
-    signUpIfMissing: true,
+  if (!tauri) throw new Error("Account sign-in is available in the Onyx desktop app")
+  const flow = await invoke<OAuthStart>("start_clerk_oauth", {
+    loginHint: loginHint?.trim() || null,
   })
-  const target = attempt.firstFactorVerification.externalVerificationRedirectURL
-  if (!target) throw new Error(`${provider === "google" ? "Google" : "Apple"} sign-in is not enabled for this Clerk application`)
-  if (tauri) await openUrl(target.toString())
-  else window.location.assign(target.toString())
+  await openUrl(flow.authorizeUrl)
+}
+
+export async function beginSocialSignIn(_provider: "google" | "apple") {
+  await beginBrowserSignIn()
 }
 
 export async function beginEmailSignIn(identifier: string) {
-  await initializeAccount()
-  const instance = requireClerk()
-  await instance.client!.signIn.create({
-    identifier: identifier.trim(),
-    signUpIfMissing: true,
-  })
-  const factor = emailFactor()
-  await instance.client!.signIn.prepareFirstFactor({
-    strategy: "email_code",
-    emailAddressId: factor.emailAddressId,
-  })
-}
-
-export async function resendEmailSignIn() {
-  const instance = requireClerk()
-  const factor = emailFactor()
-  await instance.client!.signIn.prepareFirstFactor({
-    strategy: "email_code",
-    emailAddressId: factor.emailAddressId,
-  })
-}
-
-export async function verifyEmailSignIn(code: string) {
-  const instance = requireClerk()
-  try {
-    const attempt = await instance.client!.signIn.attemptFirstFactor({
-      strategy: "email_code",
-      code: code.trim(),
-    })
-    if (attempt.status !== "complete") {
-      if (attempt.status === "needs_second_factor" || attempt.status === "needs_client_trust") {
-        throw new Error("This account requires an additional verification step that Onyx does not support yet")
-      }
-      throw new Error(`Sign-in could not be completed (${attempt.status ?? "unknown status"})`)
-    }
-    await completeSession(attempt.createdSessionId, "Sign-in")
-  } catch (cause) {
-    if (clerkErrorCode(cause) !== "sign_up_if_missing_transfer") throw cause
-    const signUp = await instance.client!.signUp.create({ transfer: true })
-    if (signUp.status !== "complete") {
-      const requirements = signUp.missingFields.filter((field) => field !== "email_address")
-      const suffix = requirements.length > 0 ? `: ${requirements.join(", ")}` : ""
-      throw new Error(`Your account needs additional information before it can be created${suffix}`)
-    }
-    await completeSession(signUp.createdSessionId, "Sign-up")
-  }
+  await beginBrowserSignIn(identifier)
 }
 
 export async function signOut() {
-  await clerk?.signOut()
+  if (tauri) await invoke<void>("clerk_sign_out")
+  emit({ profile: null, error: null })
+  configureConvexAuth()
 }
 
 export async function pushCloudSnapshot(payload: unknown) {
   await initializeAccount()
-  if (!convex || !clerk?.user) throw new Error("Sign in and configure Convex before syncing")
+  if (!convex || !state.profile) throw new Error("Sign in and configure Convex before syncing")
   state = { ...state, cloud: { ...state.cloud, syncing: true, error: null } }
   listeners.forEach((listener) => listener(state))
   try {
@@ -270,7 +159,7 @@ export async function pushCloudSnapshot(payload: unknown) {
 
 export async function pullCloudSnapshot(): Promise<string | null> {
   await initializeAccount()
-  if (!convex || !clerk?.user) throw new Error("Sign in and configure Convex before syncing")
+  if (!convex || !state.profile) throw new Error("Sign in and configure Convex before syncing")
   return await convex.query(anyApi.sync.latestSnapshot, {}) as string | null
 }
 
