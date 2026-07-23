@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Onyx">
+  <defs>
+    <radialGradient id="core" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(44 34) rotate(49) scale(110)">
+      <stop stop-color="#c8feff"/><stop offset=".24" stop-color="#61d8f3"/><stop offset=".57" stop-color="#7072ef"/><stop offset=".84" stop-color="#6138c1"/><stop offset="1" stop-color="#211746"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(41 31) rotate(57) scale(62)">
+      <stop stop-color="#fff" stop-opacity=".82"/><stop offset=".38" stop-color="#c9fcff" stop-opacity=".24"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="64" cy="64" r="58" fill="url(#core)"/>
+  <circle cx="64" cy="64" r="58" fill="url(#glow)"/>
+  <circle cx="64" cy="64" r="57" fill="none" stroke="#eaffff" stroke-opacity=".32" stroke-width="2"/>
+  <ellipse cx="44" cy="32" rx="14" ry="9" fill="#fff" fill-opacity=".28" transform="rotate(-25 44 32)"/>
+</svg>
