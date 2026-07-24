@@ -25,6 +25,9 @@ jobs:
         with:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
+        with:
+          tool: trunk@0.21.14
       - run: npm ci --legacy-peer-deps
       - run: npm test
       - run: npm run build
@@ -61,6 +64,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
+        with:
+          tool: trunk@0.21.14
       - run: npm ci --legacy-peer-deps
       - run: npm run build:desktop
       - uses: actions/upload-artifact@v4

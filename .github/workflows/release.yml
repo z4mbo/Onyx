@@ -38,7 +38,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
+        with:
+          tool: trunk@0.21.14
 
       - uses: swatinem/rust-cache@v2
         with:
