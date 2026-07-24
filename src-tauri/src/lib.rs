@@ -1218,6 +1218,7 @@ pub fn run() {
         .expect("failed to build Onyx");
 
     app.run(|handle, event| match event {
+        #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => {
             let _ = windowing::show_main(handle);
         }
