@@ -21,7 +21,8 @@ screenshots, issues, or commits.
 ## Make a change
 
 1. Create a branch from the current default branch.
-2. Keep Rust/Tauri orchestration under `src-tauri/` and view state under `src/`.
+2. Keep Rust/Tauri orchestration under `src-tauri/` and Rust view state under
+   `frontend-rs/src/`.
 3. Add or update focused tests for behavior that can regress.
 4. Check permission, workspace-containment, cancellation, and secret-handling
    implications for every provider or tool change.

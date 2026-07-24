@@ -78,13 +78,16 @@ if (
     ["find-identity", "-v", "-p", "codesigning"],
     { encoding: "utf8" },
   );
-  const available = [...(identities.stdout ?? "").matchAll(/"((?:Developer ID Application|Apple Development):[^"]+)"/g)]
+  const available = [...(identities.stdout ?? "").matchAll(/"(Developer ID Application:[^"]+)"/g)]
     .map((match) => match[1]);
-  const identity = available.find((value) => value.startsWith("Developer ID Application:"))
-    ?? available.find((value) => value.startsWith("Apple Development:"));
+  const identity = available[0];
   if (identity) {
     environment.APPLE_SIGNING_IDENTITY = identity;
     console.info(`Signing this macOS build with ${identity}`);
+  } else {
+    console.info(
+      "No Developer ID Application identity found; using the configured ad-hoc signature without accessing a development certificate.",
+    );
   }
 }
 

@@ -2,7 +2,7 @@
 @import "@fontsource/jetbrains-mono/latin-400.css";
 
 /*
- * T3 Code composer geometry, adapted to Onyx's Solid controls and semantic
+ * T3 Code composer geometry, adapted to Onyx's Rust controls and semantic
  * OpenCode color tokens. Kept component-scoped so the surrounding shell stays
  * in the OpenCode-informed Inter visual language.
  */

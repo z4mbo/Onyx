@@ -1,6 +1,6 @@
 # Onyx
 
-Onyx is a Rust-native desktop workspace that combines coding agents, official provider chats in the right sidebar, and system-wide voice assistance. Its coding surface keeps the OpenCode desktop visual language while using T3 Code-style provider drivers and session behavior.
+Onyx is a Rust-native desktop workspace that combines coding agents, native multimodal chat, official provider links, and system-wide voice assistance. Its coding surface keeps the OpenCode desktop visual language while using T3 Code-style provider drivers and session behavior.
 
 > Onyx is an independent MIT-licensed project. It is not affiliated with or endorsed by OpenCode, T3 Tools, Anthropic, OpenAI, Google, Moonshot AI, xAI, OpenRouter, Clerk, or Convex.
 
@@ -13,7 +13,7 @@ Onyx is a Rust-native desktop workspace that combines coding agents, official pr
 - Provider-specific model, reasoning, service-tier, access, and Build/Plan controls. Codex models and 5-hour/weekly usage windows are read from the Codex app-server when the account reports them.
 - T3 Code-inspired Open, Commit, Push, Create PR, bottom-terminal, and multi-tab right-panel controls. Commit drafts a message with `claude -p` when Claude Code is installed and none is provided.
 - T3 Code-style approvals: Deny, Allow for session (Claude Code persists the matching permission rule; Codex answers `approved_for_session`), or Allow once. In Plan mode the proposed plan is captured into the transcript for review instead of surfacing as a tool approval.
-- Persistent, signed-in ChatGPT, Claude, Gemini, and Grok child webviews inside the session sidebar, without scraping private website APIs.
+- Native local chat history with provider/model selection, favorites, web search, and OpenRouter/OpenAI image and video generation. Subscription-only ChatGPT, Claude, Gemini, and Grok tools open in each provider's signed-in system-browser session.
 - Hold `Control+Shift` for dictation and `Control+Option` for the voice agent on macOS (`Ctrl+Shift` and `Ctrl+Alt` on Windows). Voice history is stored locally.
 - Optional Clerk sign-in and Convex cloud sync scaffolding. The app stays local-first when these services are not configured.
 - macOS, Windows, and Linux builds. Windows terminals can use native shells, the default WSL distribution, or a selected WSL distribution.
@@ -32,6 +32,15 @@ Onyx is a Rust-native desktop workspace that combines coding agents, official pr
 
 Only OpenRouter and OpenAI API credentials are entered in Onyx. Local CLIs own their credentials, subscriptions, model availability, and terms. Website subscriptions remain available in provider-controlled web-app windows; Onyx does not extract cookies or call private website endpoints.
 
+## Install a desktop build
+
+Each successful `main` CI run publishes `onyx-macOS-ARM64`, `onyx-Windows-X64`, and `onyx-Linux-X64` artifacts on its GitHub Actions run.
+
+- **macOS:** download `onyx-macOS-ARM64`, open the `.dmg`, drag **Onyx.app** into **Applications**, eject the disk image, then launch Onyx from Applications.
+- **Windows:** download `onyx-Windows-X64` and run the bundled `.msi` or `-setup.exe` installer.
+
+CI test builds are installable but are not Apple-notarized or Windows Authenticode-signed. A public one-click production install without an operating-system trust warning requires the repository owner to configure the corresponding Apple Developer ID/notarization and Windows code-signing credentials. Onyx never asks users to change Keychain permissions from inside the app.
+
 ## Run and test
 
 Prerequisites:
@@ -48,7 +57,7 @@ npm ci --legacy-peer-deps
 npm run dev
 ```
 
-The first native launch compiles Rust dependencies and may take several minutes. The production interface is Leptos/WebAssembly; `npm run dev:web` runs that same Rust UI in a browser, where native-only operations are unavailable. `npm run dev:solid` remains available only as a legacy visual reference while its shared CSS is retired incrementally.
+The first native launch compiles Rust dependencies and may take several minutes. The production interface is Leptos/WebAssembly; `npm run dev:web` runs that same Rust UI in a browser, where native-only operations are unavailable.
 
 ### Coding-agent smoke test
 
@@ -61,10 +70,10 @@ The first native launch compiles Rust dependencies and may take several minutes.
 
 ### Subscription chat and media smoke test
 
-1. Open a coding session and choose **Chat** in the right panel.
-2. Choose ChatGPT, Claude, Gemini, or Grok in the sidebar and sign in on the provider's official site.
-3. Close and reopen the sidebar and verify the signed-in session persists inside Onyx.
-4. In ChatGPT, verify subscription-backed image creation works through the official site. A ChatGPT subscription is separate from the optional, separately billed OpenAI API key.
+1. Open **Chat** from Home and create, search, switch, and delete a local conversation.
+2. Switch providers/models, favorite a model, and verify text chat plus optional web search.
+3. With the relevant API key configured, verify OpenRouter/OpenAI image generation and OpenRouter video generation.
+4. Open ChatGPT, Claude, Gemini, or Grok from Chat or the session right panel and verify it opens in the system browser. A website subscription remains separate from optional, separately billed API keys.
 
 ### Voice smoke test
 
@@ -80,7 +89,7 @@ Linux currently exposes the Voice dashboard and chat but does not install a glob
 
 - Nothing happens while holding `Control+Shift`: macOS Input Monitoring is missing. Enable Onyx under System Settings → Privacy & Security → Input Monitoring, then relaunch.
 - The overlay records but nothing pastes: the transcript is still copied to the clipboard (`⌘V` pastes it). For automatic pasting, enable Onyx under Privacy & Security → Accessibility.
-- Grants are tied to the app's code signature. `npm run tauri dev` rebuilds are ad-hoc signed, so macOS silently drops Input Monitoring/Accessibility grants after every rebuild — re-toggle them, or use `npm run tauri build` (which signs with your Apple identity when one exists) for day-to-day voice use.
+- Grants are tied to the app's code signature. Development rebuilds change identity frequently, so macOS can drop Input Monitoring/Accessibility and Keychain trust. Use an installed Developer ID-signed release for day-to-day use; local builds use an ad-hoc signature unless a **Developer ID Application** identity is installed.
 
 ### Windows and WSL
 
@@ -102,7 +111,7 @@ The public OAuth client and Clerk issuer are compiled into the desktop app; no C
 npx convex dev
 ```
 
-Set `CLERK_JWT_ISSUER_DOMAIN` in Convex to the Clerk issuer documented in `.env.example`. `convex/auth.config.ts` accepts the Onyx public OAuth client audience (and the legacy `convex` JWT-template audience). The included Convex functions authenticate every request and scope snapshots to the Clerk subject.
+Set `CLERK_JWT_ISSUER_DOMAIN` in Convex to the Clerk issuer documented in `.env.example`. `convex/auth.config.js` accepts the Onyx public OAuth client audience (and the legacy `convex` JWT-template audience). The included Convex functions authenticate every request and scope snapshots to the Clerk subject.
 
 The custom Onyx sign-in screen provides individual Google, Apple, and email entry points, then opens the secure browser flow. The Account page provides sign-in/account status and a **Sync now** action that uploads coding sessions, chats, voice history, and preferences to the authenticated user's Convex snapshot. No subscription or payment behavior is implemented.
 
@@ -118,7 +127,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 npm run build:desktop
 ```
 
-GitHub Actions runs tests and creates unsigned desktop bundles for macOS, Windows, and Linux. Production distribution still requires your own Apple/Windows signing credentials.
+GitHub Actions runs tests and creates installable desktop bundles for macOS, Windows, and Linux. Tagged release builds additionally sign the in-app updater payload when the updater secret is configured. Production distribution without operating-system trust warnings still requires Apple notarization and Windows signing credentials.
 
 ## Releases and auto-updates
 
@@ -141,7 +150,7 @@ One-time setup: the updater keypair lives at `~/.tauri/onyx-updater.key` (privat
 - OpenAI API keys are validated and stored in the OS credential manager; they are never returned to the webview. ChatGPT subscriptions are not API credentials.
 - Chat, voice history, and coding sessions are local by default. Local session JSON is not encrypted. Clerk/Convex sync is opt-in and requires deployment configuration.
 - Browser panels load user-selected HTTP/HTTPS sites in sandboxed frames; those sites' terms and privacy policies apply.
-- Official provider chats run as isolated child webviews inside the right sidebar. Onyx does not read their cookies, scrape their DOM, or relay private network calls into unified chat.
+- Official provider subscriptions open in the system browser. Onyx does not read their cookies, scrape their DOM, or relay private network calls into unified chat.
 
 ## Attribution and license
 

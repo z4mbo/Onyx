@@ -16,18 +16,14 @@
   "scripts": {
     "dev": "node scripts/run-tauri.mjs dev",
     "dev:web": "npm run dev:rust",
-    "dev:solid": "vite --port 1420 --strictPort",
     "dev:rust": "npm run build:rust-styles && node scripts/run-trunk.mjs serve --config Trunk.rust.toml --enable-cooldown",
-    "dev:desktop:rust": "node scripts/run-tauri.mjs dev",
     "build": "npm run typecheck && npm run build:rust",
-    "build:solid": "vite build",
     "build:rust": "npm run build:rust-styles && node scripts/run-trunk.mjs build --config Trunk.rust.toml --release",
-    "build:rust-styles": "vite build --config vite.rust-ui.config.ts",
+    "build:rust-styles": "vite build --config vite.rust-ui.config.js",
     "build:desktop": "node scripts/run-tauri.mjs build",
-    "build:desktop:rust": "node scripts/run-tauri.mjs build --no-bundle",
     "test:rust-ui": "cargo test --manifest-path frontend-rs/Cargo.toml",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "test": "npm run test:rust-ui && cargo test --manifest-path src-tauri/Cargo.toml",
+    "typecheck": "cargo check --manifest-path frontend-rs/Cargo.toml --target wasm32-unknown-unknown && cargo check --manifest-path src-tauri/Cargo.toml",
     "tauri": "node scripts/run-tauri.mjs"
   },
   "dependencies": {
@@ -41,18 +37,12 @@
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
-    "convex": "^1.42.3",
-    "lucide-solid": "^0.468.0",
-    "solid-js": "^1.9.9"
+    "convex": "^1.42.3"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.1.11",
     "@tauri-apps/cli": "^2.8.5",
-    "@types/node": "^26.1.1",
     "tailwindcss": "4.1.11",
-    "typescript": "^5.8.3",
-    "vite": "^7.1.4",
-    "vite-plugin-solid": "^2.11.8",
-    "vitest": "^4.1.10"
+    "vite": "^7.1.4"
   }
 }

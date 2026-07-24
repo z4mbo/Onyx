@@ -5,21 +5,25 @@ use wasm_bindgen_futures::JsFuture;
 
 use crate::model::{
     AccountProfile, ActiveAppContext, AgentSession, CapturedAudio, ChatReply, ChatRequest,
-    ConnectionStatus, CreateSessionInput, EditorTarget, GitActionResult, NativeVoicePermissions,
-    OAuthStart, OpenRouterModel, ProviderId, ProviderModelOption, ProviderStatus, ProviderUsage,
-    RepoSummary, TerminalSession, TranscriptionReply, UpdateInfo, UpdateSessionOptionsInput,
-    VoiceSettings, WorkspaceEntry, WorkspaceFile, demo_providers,
+    ConnectionStatus, CreateSessionInput, EditorTarget, GitActionResult, MediaGenerationRequest,
+    NativeVoicePermissions, OAuthStart, OpenRouterModel, ProviderId, ProviderModelOption,
+    ProviderStatus, ProviderUsage, RepoSummary, TerminalSession, TranscriptionReply, UpdateInfo,
+    UpdateSessionOptionsInput, VideoJob, VoiceSettings, WorkspaceEntry, WorkspaceFile,
+    demo_providers,
 };
 
 #[wasm_bindgen(inline_js = r#"
 export function onyxInvoke(command, args) {
-  const invoke = window.__TAURI__?.core?.invoke;
+  const invoke = window.__ONYX_RUNTIME__?.invoke
+    ?? window.__TAURI__?.core?.invoke
+    ?? window.__TAURI_INTERNALS__?.invoke;
   if (!invoke) return Promise.reject(new Error("Tauri IPC is unavailable."));
   return invoke(command, args);
 }
 
 export function onyxListen(eventName, callback) {
-  const listen = window.__TAURI__?.event?.listen;
+  const listen = window.__ONYX_RUNTIME__?.listen
+    ?? window.__TAURI__?.event?.listen;
   if (!listen) return Promise.reject(new Error("Tauri events are unavailable."));
   return listen(eventName, event => callback(event.payload));
 }
@@ -525,6 +529,18 @@ pub async fn chat_send(request: ChatRequest) -> Result<ChatReply, String> {
     invoke("chat_send", &serde_json::json!({ "request": request })).await
 }
 
+pub async fn generate_image(request: MediaGenerationRequest) -> Result<ChatReply, String> {
+    invoke("generate_image", &serde_json::json!({ "request": request })).await
+}
+
+pub async fn start_video(request: MediaGenerationRequest) -> Result<VideoJob, String> {
+    invoke("start_video", &serde_json::json!({ "request": request })).await
+}
+
+pub async fn poll_video(id: &str) -> Result<VideoJob, String> {
+    invoke("poll_video", &serde_json::json!({ "id": id })).await
+}
+
 pub async fn respond_approval(id: &str, allow: bool, for_session: bool) -> Result<(), String> {
     invoke(
         "respond_approval",
@@ -595,26 +611,6 @@ pub async fn push_cloud(payload: &str) -> Result<(), String> {
 
 pub async fn pull_cloud() -> Result<Option<String>, String> {
     runtime("pullCloud", &serde_json::json!([])).await
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct RuntimeBounds {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
-
-pub async fn show_provider_view(provider: &str, bounds: RuntimeBounds) -> Result<(), String> {
-    runtime("showProvider", &serde_json::json!([provider, bounds])).await
-}
-
-pub async fn focus_provider_view(provider: &str) -> Result<(), String> {
-    runtime("focusProvider", &serde_json::json!([provider])).await
-}
-
-pub async fn hide_provider_view(provider: Option<&str>) -> Result<(), String> {
-    runtime("hideProvider", &serde_json::json!([provider])).await
 }
 
 pub struct AudioCaptureHandle {

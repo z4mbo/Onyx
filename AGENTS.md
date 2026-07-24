@@ -12,7 +12,7 @@ UI.
 
 ## Repository map
 
-- `src/` — SolidJS interface, view state, and typed Tauri client
+- `frontend-rs/src/` — Rust/Leptos interface, view state, and typed Tauri client
 - `src-tauri/src/lib.rs` — Tauri commands, runtime state, and event emission
 - `src-tauri/src/providers/` — CLI discovery, lifecycle, and output normalization
 - `src-tauri/src/openrouter.rs` — OpenRouter model catalog and approved tool loop

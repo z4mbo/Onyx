@@ -21,7 +21,7 @@
   };
 
   const showFailure = (summary, detail) => {
-    if (failed || root?.dataset.onyxMounted === "true") return;
+    if (failed) return;
     failed = true;
     if (!root) return;
 
@@ -38,6 +38,19 @@
     panel.append(heading, message, diagnostic);
     status.append(panel);
     root.replaceChildren(status);
+  };
+
+  const nativeConsoleError = console.error.bind(console);
+  console.error = (...values) => {
+    nativeConsoleError(...values);
+    const detail = values.map(describe).join("\n");
+    if (
+      detail.includes("panicked at")
+      || detail.includes("RuntimeError: unreachable")
+      || detail.includes("wasm-function")
+    ) {
+      showFailure("The Rust interface stopped unexpectedly.", detail);
+    }
   };
 
   window.addEventListener(

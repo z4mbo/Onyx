@@ -1,4 +1,7 @@
-use crate::model::{ChatMedia, ChatReply, OpenAiStatus, TranscriptionReply, TranscriptionRequest};
+use crate::{
+    credentials,
+    model::{ChatMedia, ChatReply, OpenAiStatus, TranscriptionReply, TranscriptionRequest},
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use reqwest::{
     Client, Response, StatusCode,
@@ -27,7 +30,7 @@ fn transcription_client() -> Result<&'static Client, String> {
 
 pub async fn status() -> OpenAiStatus {
     OpenAiStatus {
-        connected: read_key().await.is_ok_and(|value| !value.trim().is_empty()),
+        connected: credentials::exists(SERVICE, ACCOUNT).await.unwrap_or(false),
     }
 }
 

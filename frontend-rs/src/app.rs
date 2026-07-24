@@ -11,9 +11,9 @@ use crate::{
     bridge,
     catalog::{fallback_catalogs, models_for_brand, runtime_for_brand, selected_or_default},
     components::{
-        AccountGate, AgentOverlay, BottomTerminalPanel, ColorScheme, Composer, GitCommitDialog,
-        HomeView, Hud, RightWorkspacePanel, SessionWorkspaceUi, SettingsDialog, Titlebar,
-        TitlebarSession, TitlebarTab, Transcript, VoiceHistoryView, WorkspaceSurface,
+        AccountGate, AgentOverlay, BottomTerminalPanel, ChatView, ColorScheme, Composer,
+        GitCommitDialog, HomeView, Hud, RightWorkspacePanel, SessionWorkspaceUi, SettingsDialog,
+        Titlebar, TitlebarSession, TitlebarTab, Transcript, VoiceHistoryView, WorkspaceSurface,
         WorkspaceSurfaceKind, WorkspaceTerminal, WorkspaceTopbarActions,
     },
     model::{
@@ -31,6 +31,7 @@ const DRAFT_TAB_ID: &str = "onyx:draft";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Page {
     Home,
+    Chat,
     #[default]
     Draft,
     Session,
@@ -41,6 +42,7 @@ impl Page {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Home => "home",
+            Self::Chat => "chat",
             Self::Draft => "draft",
             Self::Session => "session",
             Self::Voice => "voice",
@@ -399,7 +401,7 @@ pub fn App() -> impl IntoView {
 
     let show_notice = Callback::new(move |(message, kind): (String, &'static str)| {
         notice_generation.update(|value| *value += 1);
-        let generation = notice_generation.get();
+        let generation = notice_generation.get_untracked();
         notice_kind.set(kind.to_owned());
         notice.set(Some(message));
         spawn_local(async move {
@@ -972,41 +974,6 @@ pub fn App() -> impl IntoView {
             ui.right_panel_open = !ui.right_panel_open;
         });
     });
-    let open_chat_panel = Callback::new(move |_: ()| {
-        let session = current.get().or_else(|| sessions.read().first().cloned());
-        let Some(session) = session else {
-            open_draft.run(None);
-            show_error.run(
-                "Start a coding session first, then Chat stays in its right panel.".to_owned(),
-            );
-            return;
-        };
-        if current_id.read().as_deref() != Some(session.id.as_str()) || page.get() != Page::Session
-        {
-            open_session.run(session.id.clone());
-        }
-        update_workspace_ui(workspace_states, &session.id, |ui| {
-            if let Some(existing) = ui
-                .surfaces
-                .iter()
-                .find(|surface| surface.kind == WorkspaceSurfaceKind::Chat)
-            {
-                ui.active_surface_id = Some(existing.id.clone());
-            } else {
-                let surface = WorkspaceSurface {
-                    id: storage::unique_id("surface"),
-                    kind: WorkspaceSurfaceKind::Chat,
-                    title: "Chat".to_owned(),
-                    resource_id: None,
-                    pending: false,
-                };
-                ui.active_surface_id = Some(surface.id.clone());
-                ui.surfaces.push(surface);
-            }
-            ui.right_panel_open = true;
-        });
-    });
-
     let new_terminal = Callback::new(move |_: ()| {
         let Some(session) = current.get() else {
             return;
@@ -1146,69 +1113,14 @@ pub fn App() -> impl IntoView {
 
     Effect::new(move |_| {
         spawn_local(async move {
-            let result = async {
-                let provider_list = bridge::list_providers().await?;
-                let session_list = bridge::list_sessions().await?;
-                let router_status = bridge::openrouter_status().await?;
-                let openai_status = bridge::openai_status().await?;
-                let editor_list = bridge::workspace_editors().await?;
-                Ok::<_, String>((
-                    provider_list,
-                    session_list,
-                    router_status,
-                    openai_status,
-                    editor_list,
-                ))
-            }
-            .await;
-            match result {
-                Ok((
-                    provider_list,
-                    mut session_list,
-                    router_status,
-                    openai_status,
-                    editor_list,
-                )) => {
+            match bridge::list_sessions().await {
+                Ok(mut session_list) => {
                     session_list.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-                    providers.set(provider_list.clone());
                     sessions.set(session_list);
-                    openrouter.set(router_status);
-                    openai.set(openai_status);
-                    editors.set(editor_list.clone());
-                    if !editor_list
-                        .iter()
-                        .any(|editor| editor.id == preferred_editor.get() && editor.available)
-                        && let Some(editor) = editor_list.iter().find(|editor| editor.available)
-                    {
-                        preferred_editor.set(editor.id.clone());
-                    }
-                    if router_status.connected {
-                        openrouter_models
-                            .set(bridge::openrouter_models().await.unwrap_or_default());
-                    }
-                    for provider in ProviderId::ALL {
-                        if provider == ProviderId::Openrouter {
-                            continue;
-                        }
-                        if let Ok(models) = bridge::provider_models(provider).await
-                            && !models.is_empty()
-                        {
-                            catalogs.update(|catalogs| {
-                                catalogs.insert(provider, models);
-                            });
-                        }
-                    }
-                    let available = provider_list
-                        .iter()
-                        .find(|provider| provider.id == draft_provider.get() && provider.available)
-                        .or_else(|| provider_list.iter().find(|provider| provider.available));
-                    if let Some(available) = available {
-                        let brand = ProviderBrand::for_provider(available.id);
-                        select_draft_brand.run(brand);
-                    }
                 }
-                Err(cause) => show_error.run(cause),
+                Err(cause) => show_error.run(format!("Could not restore sessions: {cause}")),
             }
+
             events_ready.set(true);
             let queued = queued_events.get_untracked();
             queued_events.set(Vec::new());
@@ -1225,6 +1137,64 @@ pub fn App() -> impl IntoView {
                     pending_events,
                     tombstones,
                 );
+            }
+
+            match bridge::list_providers().await {
+                Ok(provider_list) => {
+                    providers.set(provider_list.clone());
+                    let available = provider_list
+                        .iter()
+                        .find(|provider| provider.id == draft_provider.get() && provider.available)
+                        .or_else(|| provider_list.iter().find(|provider| provider.available));
+                    if let Some(available) = available {
+                        let brand = ProviderBrand::for_provider(available.id);
+                        select_draft_brand.run(brand);
+                    }
+                }
+                Err(cause) => show_error.run(format!("Could not discover providers: {cause}")),
+            }
+
+            match bridge::openrouter_status().await {
+                Ok(status) => {
+                    openrouter.set(status);
+                    if status.connected {
+                        openrouter_models
+                            .set(bridge::openrouter_models().await.unwrap_or_default());
+                    }
+                }
+                Err(cause) => {
+                    show_error.run(format!("Could not read the OpenRouter status: {cause}"))
+                }
+            }
+            match bridge::openai_status().await {
+                Ok(status) => openai.set(status),
+                Err(cause) => show_error.run(format!("Could not read the OpenAI status: {cause}")),
+            }
+            match bridge::workspace_editors().await {
+                Ok(editor_list) => {
+                    editors.set(editor_list.clone());
+                    if !editor_list
+                        .iter()
+                        .any(|editor| editor.id == preferred_editor.get() && editor.available)
+                        && let Some(editor) = editor_list.iter().find(|editor| editor.available)
+                    {
+                        preferred_editor.set(editor.id.clone());
+                    }
+                }
+                Err(cause) => show_error.run(format!("Could not discover editors: {cause}")),
+            }
+
+            for provider in ProviderId::ALL {
+                if provider == ProviderId::Openrouter {
+                    continue;
+                }
+                if let Ok(models) = bridge::provider_models(provider).await
+                    && !models.is_empty()
+                {
+                    catalogs.update(|catalogs| {
+                        catalogs.insert(provider, models);
+                    });
+                }
             }
         });
 
@@ -1351,14 +1321,18 @@ pub fn App() -> impl IntoView {
 
     Effect::new(move |_| {
         spawn_local(async move {
-            match bridge::account_profile().await {
-                Ok(profile) => {
-                    account_profile.set(profile);
-                    account_loading.set(false);
-                }
-                Err(cause) => {
-                    account_error.set(Some(cause));
-                    account_loading.set(false);
+            if cfg!(debug_assertions) {
+                account_loading.set(false);
+            } else {
+                match bridge::account_profile().await {
+                    Ok(profile) => {
+                        account_profile.set(profile);
+                        account_loading.set(false);
+                    }
+                    Err(cause) => {
+                        account_error.set(Some(cause));
+                        account_loading.set(false);
+                    }
                 }
             }
             cloud_configured.set(bridge::cloud_configured().await.unwrap_or(false));
@@ -1449,8 +1423,19 @@ pub fn App() -> impl IntoView {
                 on_delete=delete_session
                 on_choose_workspace=choose_workspace
                 on_settings=Callback::new(move |_| settings_open.set(true))
-                on_chat=open_chat_panel
+                on_chat=Callback::new(move |_| page.set(Page::Chat))
                 on_voice=Callback::new(move |_| page.set(Page::Voice))
+            />
+        }
+        .into_any(),
+        Page::Chat => view! {
+            <ChatView
+                providers=Signal::derive(move || providers.get())
+                catalogs=Signal::derive(move || catalogs.get())
+                openrouter_models=Signal::derive(move || openrouter_models.get())
+                openai=Signal::derive(move || openai.get())
+                profile=Signal::derive(move || account_profile.get())
+                on_settings=Callback::new(move |_| settings_open.set(true))
             />
         }
         .into_any(),
@@ -1677,7 +1662,6 @@ pub fn App() -> impl IntoView {
                                     ui=active_ui
                                     workspace=workspace_signal
                                     repo_is_ready=Signal::derive(move || repo.get().is_some_and(|repo| repo.is_repo))
-                                    suspended=Signal::derive(move || settings_open.get() || commit_open.get())
                                     on_activate=Callback::new(move |id| update_workspace_ui(workspace_states, &activate_surface_session_id, |ui| ui.active_surface_id = Some(id)))
                                     on_close_surface=close_surface
                                     on_add_surface=add_surface
@@ -1716,13 +1700,13 @@ pub fn App() -> impl IntoView {
                 on_settings=Callback::new(move |_| settings_open.set(true))
                 on_sign_out=sign_out
                 profile=Signal::derive(move || account_profile.get())
-                show_layout_controls=Signal::derive(move || page.get() != Page::Session)
+                show_layout_controls=Signal::derive(move || false)
                 bottom_panel_open=Signal::derive(move || page.get() == Page::Session && active_ui.get().bottom_panel_open)
                 right_panel_open=Signal::derive(move || page.get() == Page::Session && active_ui.get().right_panel_open)
-                bottom_panel_available=Signal::derive(move || !sessions.read().is_empty())
-                right_panel_available=Signal::derive(move || !sessions.read().is_empty())
+                bottom_panel_available=Signal::derive(move || false)
+                right_panel_available=Signal::derive(move || false)
                 on_toggle_bottom_panel=toggle_bottom
-                on_toggle_right_panel=open_chat_panel
+                on_toggle_right_panel=toggle_right
             />
 
             <main class="zai-main">{page_view}</main>

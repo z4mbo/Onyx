@@ -12,7 +12,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         styles: "frontend-rs/styles-entry.css",
-        runtime: "frontend-rs/runtime.ts",
+        runtime: "frontend-rs/runtime.js",
       },
       output: {
         entryFileNames: "[name].js",

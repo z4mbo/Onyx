@@ -127,8 +127,14 @@ pub fn Transcript(session: Signal<Option<AgentSession>>) -> impl IntoView {
         if !pinned.get_untracked() {
             return;
         }
+        // Capture the DOM node while this owner is alive. A queued animation
+        // frame can run after a keyed session view has been disposed, so it
+        // must never reach back into the disposed NodeRef.
+        let Some(element) = scroller.get_untracked() else {
+            return;
+        };
         let callback = Closure::once(move || {
-            if let Some(element) = scroller.get_untracked() {
+            if element.is_connected() {
                 element.set_scroll_top(element.scroll_height());
             }
         });
@@ -149,12 +155,11 @@ pub fn Transcript(session: Signal<Option<AgentSession>>) -> impl IntoView {
             aria-relevant="additions text"
             aria-atomic="false"
             aria-busy=move || running.get()
-            on:scroll=move |_| {
-                if let Some(element) = scroller.get() {
-                    let remaining =
-                        element.scroll_height() - element.scroll_top() - element.client_height();
-                    pinned.set(remaining < 80);
-                }
+            on:scroll=move |event| {
+                let element = event_target::<web_sys::HtmlElement>(&event);
+                let remaining =
+                    element.scroll_height() - element.scroll_top() - element.client_height();
+                pinned.set(remaining < 80);
             }
         >
             <div class="zai-transcript__inner">

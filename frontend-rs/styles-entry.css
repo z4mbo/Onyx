@@ -1,11 +1,11 @@
-@import "../src/styles.css";
-@import "../src/components/account.css";
-@import "../src/components/chat.css";
-@import "../src/components/composer.css";
-@import "../src/components/overlay.css";
-@import "../src/components/workspace-panels/workspace-panels.css";
-@import "../src/components/workspace-panels/git-dialog.css";
-@import "../src/components/workspace-panels/surface-views.css";
+@import "./styles/base.css";
+@import "./styles/account.css";
+@import "./styles/chat.css";
+@import "./styles/composer.css";
+@import "./styles/overlay.css";
+@import "./styles/workspace-panels.css";
+@import "./styles/git-dialog.css";
+@import "./styles/surface-views.css";
 @import "@xterm/xterm/css/xterm.css";
 
 .onyx-boot-status {

@@ -1,6 +1,5 @@
 use std::{cell::RefCell, collections::HashMap};
 
-use gloo_timers::future::TimeoutFuture;
 use icondata::{
     LuArrowLeft, LuArrowRight, LuBox, LuChevronDown, LuCloudUpload, LuEraser, LuExternalLink,
     LuFile, LuFileDiff, LuFolder, LuGitCommitHorizontal, LuGitPullRequest, LuGlobe,
@@ -13,7 +12,7 @@ use leptos_icons::Icon;
 use wasm_bindgen_futures::spawn_local;
 
 use crate::{
-    bridge::{self, RuntimeBounds},
+    bridge,
     model::{EditorTarget, RepoSummary, WorkspaceEntry, WorkspaceFile},
     storage,
 };
@@ -321,93 +320,46 @@ pub fn WorkspaceTopbarActions(
 }
 
 #[component]
-fn OfficialChatSurface(suspended: Signal<bool>, on_error: Callback<String>) -> impl IntoView {
+fn OfficialChatSurface(on_error: Callback<String>) -> impl IntoView {
     #[derive(Clone, Copy)]
     struct Official {
-        id: &'static str,
         name: &'static str,
         brand: ProviderBrand,
         detail: &'static str,
+        url: &'static str,
     }
     const OFFICIAL: [Official; 4] = [
         Official {
-            id: "chatgpt",
             name: "ChatGPT",
             brand: ProviderBrand::Openai,
             detail: "Your signed-in ChatGPT subscription",
+            url: "https://chatgpt.com/",
         },
         Official {
-            id: "claude",
             name: "Claude",
             brand: ProviderBrand::Anthropic,
             detail: "Your signed-in Claude subscription",
+            url: "https://claude.ai/new",
         },
         Official {
-            id: "gemini",
             name: "Gemini",
             brand: ProviderBrand::Google,
             detail: "Your signed-in Gemini subscription",
+            url: "https://gemini.google.com/app",
         },
         Official {
-            id: "grok",
             name: "Grok",
             brand: ProviderBrand::Xai,
             detail: "Your signed-in Grok subscription",
+            url: "https://grok.com/",
         },
     ];
 
-    let selected = RwSignal::new(storage::get("onyx.official-provider"));
-    let loading = RwSignal::new(false);
-    let host = NodeRef::<leptos::html::Div>::new();
-    let open = Callback::new(move |provider: String| {
-        selected.set(Some(provider.clone()));
-        storage::set("onyx.official-provider", &provider);
-        loading.set(true);
+    let open = Callback::new(move |url: String| {
         spawn_local(async move {
-            TimeoutFuture::new(16).await;
-            if suspended.get() {
-                loading.set(false);
-                return;
-            }
-            let result = if let Some(element) = host.get_untracked() {
-                let rect = element.get_bounding_client_rect();
-                bridge::show_provider_view(
-                    &provider,
-                    RuntimeBounds {
-                        x: rect.x(),
-                        y: rect.y(),
-                        width: rect.width(),
-                        height: rect.height(),
-                    },
-                )
-                .await
-            } else {
-                Err("The provider sidebar is not ready.".to_owned())
-            };
-            if let Err(cause) = result {
-                on_error.run(cause);
-            } else if let Err(cause) = bridge::focus_provider_view(&provider).await {
+            if let Err(cause) = bridge::open_url(&url).await {
                 on_error.run(cause);
             }
-            loading.set(false);
-        });
-    });
-
-    Effect::new(move |_| {
-        let is_suspended = suspended.get();
-        let provider = selected.get();
-        spawn_local(async move {
-            if is_suspended {
-                let _ = bridge::hide_provider_view(provider.as_deref()).await;
-            } else if let Some(provider) = provider {
-                open.run(provider);
-            }
-        });
-    });
-    on_cleanup(move || {
-        let provider = selected.get_untracked();
-        spawn_local(async move {
-            let _ = bridge::hide_provider_view(provider.as_deref()).await;
         });
     });
 
@@ -416,45 +368,28 @@ fn OfficialChatSurface(suspended: Signal<bool>, on_error: Callback<String>) -> i
             <nav aria-label="Official chat provider">
                 <For
                     each=move || OFFICIAL
-                    key=|provider| provider.id
+                    key=|provider| provider.name
                     children=move |provider| view! {
                         <button
                             type="button"
-                            data-active=move || if selected.read().as_deref() == Some(provider.id) { "true" } else { "false" }
-                            aria-pressed=move || selected.read().as_deref() == Some(provider.id)
-                            title=provider.name
-                            on:click=move |_| open.run(provider.id.to_owned())
+                            title=provider.detail
+                            on:click=move |_| open.run(provider.url.to_owned())
                         >
                             <ProviderBadge brand=Signal::derive(move || provider.brand) small=true />
                             <span>{provider.name}</span>
+                            <Icon icon=LuExternalLink width="12px" height="12px" />
                         </button>
                     }
                 />
             </nav>
-            <div node_ref=host class="zai-provider-sidebar__host">
-                <Show
-                    when=move || selected.get().is_some()
-                    fallback=move || view! {
-                        <div class="zai-provider-sidebar__empty">
-                            <Icon icon=LuMessageSquare width="22px" height="22px" />
-                            <strong>"Choose an official chat"</strong>
-                            <span>"It will stay inside this sidebar and reuse its signed-in session."</span>
-                        </div>
-                    }
-                >
-                    <div class="zai-provider-sidebar__loading">
-                        {move || {
-                            let provider = selected.get().and_then(|id| OFFICIAL.into_iter().find(|item| item.id == id));
-                            provider.map(|provider| view! {
-                                <ProviderBadge brand=Signal::derive(move || provider.brand) />
-                                <strong>{if loading.get() { format!("Opening {}…", provider.name) } else { provider.name.to_owned() }}</strong>
-                                <span>{provider.detail}</span>
-                            })
-                        }}
-                    </div>
-                </Show>
+            <div class="zai-provider-sidebar__host">
+                <div class="zai-provider-sidebar__empty">
+                    <Icon icon=LuMessageSquare width="22px" height="22px" />
+                    <strong>"Open an official chat"</strong>
+                    <span>"Subscription web apps open in your browser and keep their own signed-in sessions."</span>
+                </div>
             </div>
-            <footer>"Official provider site · account and subscription stay with the provider"</footer>
+            <footer>"Official provider site · opens outside Onyx"</footer>
         </div>
     }
 }
@@ -800,7 +735,6 @@ pub fn RightWorkspacePanel(
     ui: Signal<SessionWorkspaceUi>,
     workspace: Signal<String>,
     repo_is_ready: Signal<bool>,
-    suspended: Signal<bool>,
     on_activate: Callback<String>,
     on_close_surface: Callback<String>,
     on_add_surface: Callback<WorkspaceSurfaceKind>,
@@ -923,7 +857,7 @@ pub fn RightWorkspacePanel(
                     <section class="zai-right-workspace-panel__content" role="tabpanel">
                         {move || active.get().map(|surface| match surface.kind {
                             WorkspaceSurfaceKind::Chat => view! {
-                                <OfficialChatSurface suspended=suspended on_error=on_error />
+                                <OfficialChatSurface on_error=on_error />
                             }.into_any(),
                             WorkspaceSurfaceKind::Browser => view! {
                                 <BrowserSurface on_error=on_error />

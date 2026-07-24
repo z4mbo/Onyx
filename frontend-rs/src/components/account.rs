@@ -20,7 +20,10 @@ pub fn AccountGate(
     let email = RwSignal::new(String::new());
     let busy = RwSignal::new(None::<String>);
     let message = RwSignal::new(None::<String>);
-    let signed_in = Signal::derive(move || profile.get().is_some());
+    // Browser previews and debug desktop builds must remain usable without a
+    // production account. Packaged release builds still require native sign-in.
+    let development_bypass = cfg!(debug_assertions) || !bridge::is_tauri();
+    let signed_in = Signal::derive(move || development_bypass || profile.get().is_some());
 
     let begin = Callback::new(move |login_hint: Option<String>| {
         if busy.get().is_some() {

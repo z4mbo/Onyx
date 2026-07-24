@@ -671,6 +671,72 @@ pub struct ChatReply {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct MediaGenerationRequest {
+    pub model: String,
+    pub prompt: String,
+    pub aspect_ratio: Option<String>,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoJob {
+    pub id: String,
+    pub status: String,
+    pub polling_url: String,
+    pub content_url: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatMode {
+    #[default]
+    Chat,
+    Image,
+    Video,
+}
+
+impl ChatMode {
+    pub const ALL: [Self; 3] = [Self::Chat, Self::Image, Self::Video];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Image => "image",
+            Self::Video => "video",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessage {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    #[serde(default)]
+    pub media: Vec<ChatMedia>,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatThread {
+    pub id: String,
+    pub title: String,
+    pub provider: ProviderId,
+    pub model: String,
+    #[serde(default)]
+    pub mode: ChatMode,
+    #[serde(default)]
+    pub messages: Vec<ChatMessage>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AccountProfile {
     pub id: String,
     pub name: String,
@@ -965,5 +1031,32 @@ mod tests {
         assert_eq!(sessions[0].messages, vec![activity]);
         assert_eq!(sessions[0].context_usage, Some(usage));
         assert_eq!(sessions[0].updated_at, "2026-01-01T00:00:02Z");
+    }
+
+    #[test]
+    fn rust_chat_threads_read_existing_local_history() {
+        let value = serde_json::json!({
+            "id": "chat-1",
+            "title": "Existing chat",
+            "provider": "openrouter",
+            "model": "openai/gpt-5",
+            "messages": [{
+                "id": "message-1",
+                "role": "user",
+                "content": "Hello",
+                "media": [],
+                "createdAt": "2026-01-01T00:00:00Z"
+            }],
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+        });
+        let thread: ChatThread =
+            serde_json::from_value(value).expect("read existing chat-thread storage");
+
+        assert_eq!(thread.mode, ChatMode::Chat);
+        assert_eq!(thread.messages[0].content, "Hello");
+        let serialized = serde_json::to_value(thread).expect("serialize chat thread");
+        assert_eq!(serialized["createdAt"], "2026-01-01T00:00:00Z");
+        assert_eq!(serialized["mode"], "chat");
     }
 }

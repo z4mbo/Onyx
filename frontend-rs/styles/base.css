@@ -508,7 +508,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .zai-tool-group__list .zai-tool-event { margin-bottom: 2px; }
 .zai-tool-group__list .zai-tool-event summary { height: 24px; }
 
-/* Transcript syntax highlighting (see src/lib/highlight.tsx). */
+/* Transcript syntax highlighting emitted by frontend-rs/src/markdown.rs. */
 .zai-shell .syn-kw { color: color-mix(in srgb, #c678dd 78%, var(--v2-text-text-base)); }
 .zai-shell .syn-str { color: color-mix(in srgb, #7fb069 82%, var(--v2-text-text-base)); }
 .zai-shell .syn-num { color: color-mix(in srgb, #d19a66 85%, var(--v2-text-text-base)); }

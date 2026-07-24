@@ -1,4 +1,5 @@
 mod account;
+mod chat;
 mod composer;
 mod home;
 mod orb;
@@ -11,6 +12,7 @@ mod voice_history;
 mod workspace;
 
 pub use account::AccountGate;
+pub use chat::ChatView;
 pub use composer::Composer;
 pub use home::HomeView;
 pub use orb::OnyxOrb;

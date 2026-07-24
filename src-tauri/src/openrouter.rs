@@ -1,10 +1,13 @@
-use crate::model::{
-    AccessMode, AgentSession, ApprovalDecision, ApprovalRequest, ChatMedia, ChatMessageInput,
-    ChatReply, Message, MessageKind, MessageRole, OpenRouterModel, OpenRouterStatus, SessionEvent,
-    TranscriptionReply, TranscriptionRequest, VideoJob,
-};
 #[cfg(windows)]
 use crate::providers::process::WindowsJob;
+use crate::{
+    credentials,
+    model::{
+        AccessMode, AgentSession, ApprovalDecision, ApprovalRequest, ChatMedia, ChatMessageInput,
+        ChatReply, Message, MessageKind, MessageRole, OpenRouterModel, OpenRouterStatus,
+        SessionEvent, TranscriptionReply, TranscriptionRequest, VideoJob,
+    },
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use cap_std::{
     ambient_authority,
@@ -97,7 +100,10 @@ pub struct OpenRouterRunResult {
 
 pub async fn status() -> OpenRouterStatus {
     OpenRouterStatus {
-        connected: read_key().await.is_ok_and(|value| !value.trim().is_empty()),
+        connected: credentials::exists(SERVICE, ACCOUNT).await.unwrap_or(false)
+            || credentials::exists(LEGACY_SERVICE, ACCOUNT)
+                .await
+                .unwrap_or(false),
     }
 }
 

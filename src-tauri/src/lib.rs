@@ -1,5 +1,6 @@
 mod active_app;
 mod clerk_oauth;
+mod credentials;
 mod microphone;
 mod model;
 mod modifier_hold;
