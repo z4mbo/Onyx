@@ -1,0 +1,156 @@
+.zai-update-dialog-scrim {
+  position: fixed;
+  z-index: 90;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--v2-overlay-simple-overlay-scrim) 88%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+.zai-update-dialog {
+  width: min(580px, calc(100vw - 48px));
+  max-height: min(720px, calc(100vh - 48px));
+  overflow: hidden;
+  border: .5px solid var(--zai-workspace-border);
+  border-radius: 18px;
+  background: var(--zai-workspace-panel-bg);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 28%);
+  color: var(--zai-workspace-text);
+}
+
+.zai-update-dialog > header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 20px 16px;
+  border-bottom: .5px solid var(--zai-workspace-border);
+}
+
+.zai-update-dialog__icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #8b7cff 0%, #4c88ff 55%, #1cc9b7 100%);
+  box-shadow: 0 8px 20px rgb(76 136 255 / 30%);
+  color: white;
+}
+
+.zai-update-dialog > header > div { min-width: 0; flex: 1; }
+.zai-update-dialog > header p {
+  margin: 0 0 3px;
+  color: var(--zai-workspace-faint);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .12em;
+}
+.zai-update-dialog > header h2 { margin: 0; font-size: 18px; font-weight: 650; }
+.zai-update-dialog > header button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--zai-workspace-muted);
+  cursor: pointer;
+}
+.zai-update-dialog > header button:hover { background: var(--zai-workspace-hover); }
+.zai-update-dialog > header button:disabled { cursor: default; opacity: .4; }
+
+.zai-update-dialog__body {
+  max-height: min(510px, calc(100vh - 190px));
+  overflow: auto;
+  padding: 20px;
+}
+.zai-update-dialog__notes { font-size: 13px; line-height: 1.65; }
+.zai-update-dialog__notes > :first-child { margin-top: 0; }
+.zai-update-dialog__notes > :last-child { margin-bottom: 0; }
+.zai-update-dialog__notes h3 { margin: 20px 0 7px; font-size: 13px; }
+.zai-update-dialog__notes ul { margin: 8px 0; padding-left: 20px; }
+.zai-update-dialog__notes li + li { margin-top: 6px; }
+
+.zai-update-dialog__progress {
+  margin-top: 18px;
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--zai-workspace-deep-bg);
+}
+.zai-update-dialog__progress > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 9px;
+  color: var(--zai-workspace-muted);
+  font-size: 11px;
+}
+.zai-update-dialog__progress > span {
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--zai-workspace-active);
+}
+.zai-update-dialog__progress i {
+  display: block;
+  height: 100%;
+  min-width: 8%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #7568ff, #36a1ff);
+  transition: width 160ms ease;
+}
+
+.zai-update-dialog > footer {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: .5px solid var(--zai-workspace-border);
+  padding: 14px 20px;
+}
+.zai-update-dialog > footer > span { color: var(--zai-workspace-faint); font-size: 11px; }
+.zai-update-dialog__primary {
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 9px;
+  padding: 0 14px;
+  background: var(--v2-background-bg-contrast);
+  color: var(--v2-text-text-contrast);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+.zai-update-dialog__primary:disabled { cursor: default; opacity: .55; }
+
+.zai-titlebar__update {
+  display: inline-flex;
+  height: 26px;
+  align-items: center;
+  gap: 6px;
+  border: .5px solid color-mix(in srgb, #6b74ff 55%, var(--zai-workspace-border));
+  border-radius: 8px;
+  padding: 0 9px;
+  background: color-mix(in srgb, #6877ff 13%, transparent);
+  color: var(--zai-workspace-text);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+  -webkit-app-region: no-drag;
+}
+.zai-titlebar__update:hover { background: color-mix(in srgb, #6877ff 20%, transparent); }
+.zai-titlebar__update svg { color: #7782ff; }
+
+@media (max-width: 760px) {
+  .zai-titlebar__update span { display: none; }
+  .zai-titlebar__update { width: 28px; justify-content: center; padding: 0; }
+}

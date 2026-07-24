@@ -1,12 +1,11 @@
 use std::{cell::RefCell, collections::HashMap};
 
 use icondata::{
-    LuArrowLeft, LuArrowRight, LuBox, LuChevronDown, LuCloudUpload, LuEraser, LuExternalLink,
-    LuFile, LuFileDiff, LuFolder, LuGitCommitHorizontal, LuGitPullRequest, LuGlobe,
-    LuMessageSquare, LuPanelBottom, LuPanelRight, LuPlus, LuRefreshCw, LuSquareTerminal, LuTrash2,
-    LuX,
+    LuBox, LuChevronDown, LuCloudUpload, LuEraser, LuExternalLink, LuFile, LuFileDiff, LuFolder,
+    LuGitCommitHorizontal, LuGitPullRequest, LuGlobe, LuMessageSquare, LuPanelBottom, LuPanelRight,
+    LuPlus, LuRefreshCw, LuSquareTerminal, LuTrash2, LuX,
 };
-use leptos::ev::{KeyboardEvent, SubmitEvent};
+use leptos::ev::KeyboardEvent;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use wasm_bindgen_futures::spawn_local;
@@ -17,7 +16,7 @@ use crate::{
     storage,
 };
 
-use super::ProviderBadge;
+use super::{InternalBrowser, ProviderBadge};
 use crate::model::ProviderBrand;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -114,25 +113,6 @@ fn surface_icon(kind: WorkspaceSurfaceKind) -> icondata::Icon {
         WorkspaceSurfaceKind::Files => LuFolder,
         WorkspaceSurfaceKind::Diff => LuFileDiff,
     }
-}
-
-fn normalize_browser_url(raw: &str) -> Result<String, String> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Err("Enter a URL.".to_owned());
-    }
-    let value = if raw.starts_with("http://") || raw.starts_with("https://") {
-        raw.to_owned()
-    } else if raw.starts_with("localhost") || raw.starts_with("127.") || raw.starts_with("[::1]") {
-        format!("http://{raw}")
-    } else {
-        format!("https://{raw}")
-    };
-    let parsed = web_sys::Url::new(&value).map_err(|_| "Enter a valid HTTP or HTTPS URL.")?;
-    if parsed.protocol() != "http:" && parsed.protocol() != "https:" {
-        return Err("Only HTTP and HTTPS previews are supported.".to_owned());
-    }
-    Ok(parsed.href())
 }
 
 #[component]
@@ -320,9 +300,10 @@ pub fn WorkspaceTopbarActions(
 }
 
 #[component]
-fn OfficialChatSurface(on_error: Callback<String>) -> impl IntoView {
-    #[derive(Clone, Copy)]
+fn OfficialChatSurface(browser_label: String, on_error: Callback<String>) -> impl IntoView {
+    #[derive(Clone, Copy, PartialEq, Eq)]
     struct Official {
+        id: &'static str,
         name: &'static str,
         brand: ProviderBrand,
         detail: &'static str,
@@ -330,38 +311,35 @@ fn OfficialChatSurface(on_error: Callback<String>) -> impl IntoView {
     }
     const OFFICIAL: [Official; 4] = [
         Official {
+            id: "chatgpt",
             name: "ChatGPT",
             brand: ProviderBrand::Openai,
             detail: "Your signed-in ChatGPT subscription",
             url: "https://chatgpt.com/",
         },
         Official {
+            id: "claude",
             name: "Claude",
             brand: ProviderBrand::Anthropic,
             detail: "Your signed-in Claude subscription",
             url: "https://claude.ai/new",
         },
         Official {
+            id: "gemini",
             name: "Gemini",
             brand: ProviderBrand::Google,
             detail: "Your signed-in Gemini subscription",
             url: "https://gemini.google.com/app",
         },
         Official {
+            id: "grok",
             name: "Grok",
             brand: ProviderBrand::Xai,
             detail: "Your signed-in Grok subscription",
             url: "https://grok.com/",
         },
     ];
-
-    let open = Callback::new(move |url: String| {
-        spawn_local(async move {
-            if let Err(cause) = bridge::open_url(&url).await {
-                on_error.run(cause);
-            }
-        });
-    });
+    let selected = RwSignal::new(None::<Official>);
 
     view! {
         <div class="zai-provider-sidebar">
@@ -373,148 +351,72 @@ fn OfficialChatSurface(on_error: Callback<String>) -> impl IntoView {
                         <button
                             type="button"
                             title=provider.detail
-                            on:click=move |_| open.run(provider.url.to_owned())
+                            data-active=move || selected.get() == Some(provider)
+                            on:click=move |_| selected.set(Some(provider))
                         >
                             <ProviderBadge brand=Signal::derive(move || provider.brand) small=true />
                             <span>{provider.name}</span>
-                            <Icon icon=LuExternalLink width="12px" height="12px" />
                         </button>
                     }
                 />
             </nav>
             <div class="zai-provider-sidebar__host">
-                <div class="zai-provider-sidebar__empty">
-                    <Icon icon=LuMessageSquare width="22px" height="22px" />
-                    <strong>"Open an official chat"</strong>
-                    <span>"Subscription web apps open in your browser and keep their own signed-in sessions."</span>
-                </div>
-            </div>
-            <footer>"Official provider site · opens outside Onyx"</footer>
-        </div>
-    }
-}
-
-#[component]
-fn BrowserSurface(on_error: Callback<String>) -> impl IntoView {
-    let history = RwSignal::new(Vec::<String>::new());
-    let index = RwSignal::new(-1_i32);
-    let input = RwSignal::new(String::new());
-    let current = Signal::derive(move || {
-        let index = index.get();
-        (index >= 0)
-            .then(|| history.read().get(index as usize).cloned())
-            .flatten()
-            .unwrap_or_default()
-    });
-    let navigate = Callback::new(move |raw: String| match normalize_browser_url(&raw) {
-        Ok(url) => {
-            let keep = (index.get() + 1).max(0) as usize;
-            history.update(|entries| {
-                entries.truncate(keep);
-                entries.push(url.clone());
-            });
-            index.set(history.read().len() as i32 - 1);
-            input.set(url);
-        }
-        Err(cause) => on_error.run(cause),
-    });
-
-    view! {
-        <div class="zai-browser-surface">
-            <form
-                class="zai-browser-toolbar"
-                on:submit=move |event: SubmitEvent| {
-                    event.prevent_default();
-                    navigate.run(input.get());
-                }
-            >
-                <button
-                    type="button"
-                    aria-label="Back"
-                    disabled=move || index.get() <= 0
-                    on:click=move |_| {
-                        if index.get() > 0 {
-                            index.update(|value| *value -= 1);
-                            input.set(current.get());
-                        }
+                <Show
+                    when=move || selected.get().is_some()
+                    fallback=move || view! {
+                        <div class="zai-provider-sidebar__empty">
+                            <Icon icon=LuMessageSquare width="22px" height="22px" />
+                            <strong>"Open an official chat"</strong>
+                            <span>"Choose a provider. Its signed-in web app stays inside this Onyx panel."</span>
+                        </div>
                     }
                 >
-                    <Icon icon=LuArrowLeft width="15px" height="15px" />
-                </button>
-                <button
-                    type="button"
-                    aria-label="Forward"
-                    disabled=move || {
-                        index.get() < 0
-                            || (index.get() as usize)
-                                >= history.read().len().saturating_sub(1)
-                    }
-                    on:click=move |_| {
-                        if (index.get() as usize) < history.read().len().saturating_sub(1) {
-                            index.update(|value| *value += 1);
-                            input.set(current.get());
-                        }
-                    }
-                >
-                    <Icon icon=LuArrowRight width="15px" height="15px" />
-                </button>
-                <button type="button" aria-label="Reload" disabled=move || current.get().is_empty()>
-                    <Icon icon=LuRefreshCw width="15px" height="15px" />
-                </button>
-                <label>
-                    <Icon icon=LuGlobe width="15px" height="15px" />
-                    <span class="sr-only">"URL"</span>
-                    <input
-                        prop:value=move || input.get()
-                        spellcheck="false"
-                        autocomplete="off"
-                        on:input=move |event| input.set(event_target_value(&event))
-                    />
-                </label>
-                <button
-                    type="button"
-                    aria-label="Open in default browser"
-                    disabled=move || current.get().is_empty()
-                    on:click=move |_| {
-                        let url = current.get();
-                        spawn_local(async move {
-                            if let Err(cause) = bridge::open_url(&url).await {
-                                on_error.run(cause);
+                    <For
+                        each=move || selected.get()
+                        key=|provider| provider.id
+                        children={
+                            let browser_label = browser_label.clone();
+                            move |provider| view! {
+                                <InternalBrowser
+                                    label=format!("{browser_label}-{}", provider.id)
+                                    initial_url=provider.url.to_owned()
+                                    show_toolbar=false
+                                    on_error=on_error
+                                />
                             }
-                        });
-                    }
-                >
-                    <Icon icon=LuExternalLink width="15px" height="15px" />
-                </button>
-            </form>
-            <Show
-                when=move || !current.get().is_empty()
-                fallback=move || view! {
-                    <div class="zai-browser-empty">
-                        <Icon icon=LuGlobe width="23px" height="23px" />
-                        <strong>"Open a preview"</strong>
-                        <span>"Enter a localhost or HTTPS URL above."</span>
-                    </div>
-                }
-            >
-                <iframe
-                    src=move || current.get()
-                    title=move || format!("Browser: {}", current.get())
-                    sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
-                    referrerpolicy="strict-origin-when-cross-origin"
-                ></iframe>
-                <div class="zai-browser-hint">
-                    "Some sites block embedding; use the external-open icon when a page stays blank."
-                </div>
-            </Show>
+                        }
+                    />
+                </Show>
+            </div>
+            <footer>"Official provider site · isolated internal browser"</footer>
         </div>
     }
 }
 
 #[component]
-fn FilesSurface(workspace: Signal<String>, on_error: Callback<String>) -> impl IntoView {
+fn BrowserSurface(
+    browser_label: String,
+    initial_url: String,
+    on_error: Callback<String>,
+) -> impl IntoView {
+    view! {
+        <InternalBrowser
+            label=browser_label
+            initial_url=initial_url
+            show_toolbar=true
+            on_error=on_error
+        />
+    }
+}
+
+#[component]
+fn FilesSurface(
+    workspace: Signal<String>,
+    initial_path: Option<String>,
+    on_error: Callback<String>,
+) -> impl IntoView {
     let entries = RwSignal::new(Vec::<WorkspaceEntry>::new());
-    let selected = RwSignal::new(String::new());
+    let selected = RwSignal::new(initial_path.unwrap_or_default());
     let file = RwSignal::new(None::<WorkspaceFile>);
     let loading = RwSignal::new(false);
     let load = Callback::new(move |_: ()| {
@@ -529,6 +431,25 @@ fn FilesSurface(workspace: Signal<String>, on_error: Callback<String>) -> impl I
         });
     });
     Effect::new(move |_| load.run(()));
+    Effect::new(move |_| {
+        let path = selected.get();
+        if path.is_empty() {
+            file.set(None);
+            return;
+        }
+        let workspace = workspace.get();
+        loading.set(true);
+        spawn_local(async move {
+            match bridge::read_workspace_file(&workspace, &path).await {
+                Ok(result) => file.set(Some(result)),
+                Err(cause) => {
+                    file.set(None);
+                    on_error.run(cause);
+                }
+            }
+            loading.set(false);
+        });
+    });
 
     view! {
         <div class="zai-files-surface" aria-busy=move || loading.get()>
@@ -555,19 +476,6 @@ fn FilesSurface(workspace: Signal<String>, on_error: Callback<String>) -> impl I
                                     style=format!("padding-left:{}px", 10 + entry.depth.min(8) * 14)
                                     on:click=move |_| {
                                         selected.set(path.clone());
-                                        let workspace = workspace.get();
-                                        let path = path.clone();
-                                        loading.set(true);
-                                        spawn_local(async move {
-                                            match bridge::read_workspace_file(&workspace, &path).await {
-                                                Ok(result) => file.set(Some(result)),
-                                                Err(cause) => {
-                                                    file.set(None);
-                                                    on_error.run(cause);
-                                                }
-                                            }
-                                            loading.set(false);
-                                        });
                                     }
                                 >
                                     <Icon
@@ -605,18 +513,67 @@ fn FilesSurface(workspace: Signal<String>, on_error: Callback<String>) -> impl I
     }
 }
 
+fn diff_section_references_path(section: &str, path: &str) -> bool {
+    let old_path = format!("a/{path}");
+    let new_path = format!("b/{path}");
+    section.lines().any(|line| {
+        line == format!("--- {old_path}")
+            || line == format!("+++ {new_path}")
+            || line.strip_prefix("diff --git ").is_some_and(|header| {
+                header.contains(&format!("{old_path} "))
+                    || header.contains(&format!("{old_path}\""))
+                    || header.ends_with(&new_path)
+                    || header.ends_with(&format!("{new_path}\""))
+            })
+    })
+}
+
+fn diff_for_path(value: &str, path: Option<&str>) -> String {
+    let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) else {
+        return value.to_owned();
+    };
+    let path = path.strip_prefix("./").unwrap_or(path);
+    let mut selected = String::new();
+    let mut section = String::new();
+    for line in value.split_inclusive('\n') {
+        if line.starts_with("diff --git ") && !section.is_empty() {
+            if diff_section_references_path(&section, path) {
+                selected.push_str(&section);
+            }
+            section.clear();
+        }
+        section.push_str(line);
+    }
+    if diff_section_references_path(&section, path) {
+        selected.push_str(&section);
+    }
+    selected
+}
+
 #[component]
-fn DiffSurface(workspace: Signal<String>, on_error: Callback<String>) -> impl IntoView {
+fn DiffSurface(
+    workspace: Signal<String>,
+    initial_path: Option<String>,
+    on_error: Callback<String>,
+) -> impl IntoView {
     let diff = RwSignal::new(String::new());
     let loading = RwSignal::new(false);
+    let selected_path = initial_path.filter(|path| !path.trim().is_empty());
+    let has_selected_path = selected_path.is_some();
+    let selected_for_load = selected_path.clone();
+    let title = selected_path
+        .as_deref()
+        .map(|path| format!("Working tree diff · {path}"))
+        .unwrap_or_else(|| "Working tree diff".to_owned());
     let diff_lines =
         Signal::derive(move || diff.get().lines().map(str::to_owned).collect::<Vec<_>>());
     let load = Callback::new(move |_: ()| {
         let workspace = workspace.get();
+        let selected_path = selected_for_load.clone();
         loading.set(true);
         spawn_local(async move {
             match bridge::git_diff(&workspace).await {
-                Ok(value) => diff.set(value),
+                Ok(value) => diff.set(diff_for_path(&value, selected_path.as_deref())),
                 Err(cause) => {
                     diff.set(String::new());
                     on_error.run(cause);
@@ -630,7 +587,7 @@ fn DiffSurface(workspace: Signal<String>, on_error: Callback<String>) -> impl In
     view! {
         <div class="zai-diff-surface" aria-busy=move || loading.get()>
             <header>
-                <span>"Working tree diff"</span>
+                <span title=title.clone()>{title.clone()}</span>
                 <button on:click=move |_| load.run(()) aria-label="Refresh diff">
                     <Icon icon=LuRefreshCw width="14px" height="14px" />
                 </button>
@@ -639,7 +596,15 @@ fn DiffSurface(workspace: Signal<String>, on_error: Callback<String>) -> impl In
                 when=move || !diff.get().is_empty()
                 fallback=move || view! {
                     <div class="zai-surface-placeholder">
-                        <span>{move || if loading.get() { "Loading diff…" } else { "No working tree changes." }}</span>
+                        <span>{move || {
+                            if loading.get() {
+                                "Loading diff…"
+                            } else if has_selected_path {
+                                "No previewed changes for this file."
+                            } else {
+                                "No working tree changes."
+                            }
+                        }}</span>
                     </div>
                 }
             >
@@ -677,44 +642,59 @@ pub fn TerminalViewport(
     let mount_key = storage::unique_id("terminal-mount");
     let effect_key = mount_key.clone();
     let id_for_effect = session_id.clone();
+    let disposed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mount_started = std::rc::Rc::new(std::cell::Cell::new(false));
+    let disposed_for_effect = disposed.clone();
+    let mount_started_for_effect = mount_started.clone();
     Effect::new(move |_| {
-        if MOUNTED_TERMINALS.with(|items| items.borrow().contains_key(&effect_key)) {
+        if disposed_for_effect.load(std::sync::atomic::Ordering::Relaxed)
+            || mount_started_for_effect.get()
+            || MOUNTED_TERMINALS.with(|items| items.borrow().contains_key(&effect_key))
+        {
             return;
         }
         let Some(element) = mount.get() else {
             return;
         };
+        mount_started_for_effect.set(true);
         let write_id = id_for_effect.clone();
         let resize_id = id_for_effect.clone();
-        match bridge::mount_terminal(
-            &element,
-            &id_for_effect,
-            move |data| {
-                let session_id = write_id.clone();
-                spawn_local(async move {
-                    let _ = bridge::terminal_write(&session_id, &data).await;
-                });
-            },
-            move |cols, rows| {
-                let session_id = resize_id.clone();
-                spawn_local(async move {
-                    let _ = bridge::terminal_resize(&session_id, cols, rows).await;
-                });
-            },
-            autofocus,
-        ) {
-            Ok(handle) => MOUNTED_TERMINALS.with(|items| {
-                items.borrow_mut().insert(effect_key.clone(), handle);
-            }),
-            Err(cause) => {
-                let id = id_for_effect.clone();
-                spawn_local(async move {
+        let id = id_for_effect.clone();
+        let key = effect_key.clone();
+        let disposed = disposed_for_effect.clone();
+        spawn_local(async move {
+            match bridge::mount_terminal(
+                &element,
+                &id,
+                move |data| {
+                    let session_id = write_id.clone();
+                    spawn_local(async move {
+                        let _ = bridge::terminal_write(&session_id, &data).await;
+                    });
+                },
+                move |cols, rows| {
+                    let session_id = resize_id.clone();
+                    spawn_local(async move {
+                        let _ = bridge::terminal_resize(&session_id, cols, rows).await;
+                    });
+                },
+                autofocus,
+            )
+            .await
+            {
+                Ok(handle) if disposed.load(std::sync::atomic::Ordering::Relaxed) => drop(handle),
+                Ok(handle) => MOUNTED_TERMINALS.with(|items| {
+                    items.borrow_mut().insert(key, handle);
+                }),
+                Err(_) if disposed.load(std::sync::atomic::Ordering::Relaxed) => {}
+                Err(cause) => {
                     let _ = bridge::terminal_runtime_exit(&id, None, Some(&cause)).await;
-                });
+                }
             }
-        }
+        });
     });
     on_cleanup(move || {
+        disposed.store(true, std::sync::atomic::Ordering::Relaxed);
         MOUNTED_TERMINALS.with(|items| {
             items.borrow_mut().remove(&mount_key);
         });
@@ -855,25 +835,43 @@ pub fn RightWorkspacePanel(
                     }
                 >
                     <section class="zai-right-workspace-panel__content" role="tabpanel">
-                        {move || active.get().map(|surface| match surface.kind {
+                        {move || active.get().map(|surface| {
+                            let browser_label = format!("internal-browser-{}", surface.id);
+                            let resource_id = surface.resource_id.clone();
+                            match surface.kind {
                             WorkspaceSurfaceKind::Chat => view! {
-                                <OfficialChatSurface on_error=on_error />
+                                <OfficialChatSurface
+                                    browser_label=browser_label
+                                    on_error=on_error
+                                />
                             }.into_any(),
                             WorkspaceSurfaceKind::Browser => view! {
-                                <BrowserSurface on_error=on_error />
+                                <BrowserSurface
+                                    browser_label=browser_label
+                                    initial_url=resource_id.unwrap_or_default()
+                                    on_error=on_error
+                                />
                             }.into_any(),
-                            WorkspaceSurfaceKind::Terminal => surface.resource_id.map(|id| view! {
+                            WorkspaceSurfaceKind::Terminal => resource_id.map(|id| view! {
                                 <TerminalViewport session_id=id />
                             }.into_any()).unwrap_or_else(|| view! {
                                 <div class="zai-surface-placeholder"><span>"Terminal unavailable."</span></div>
                             }.into_any()),
                             WorkspaceSurfaceKind::Files => view! {
-                                <FilesSurface workspace=workspace on_error=on_error />
+                                <FilesSurface
+                                    workspace=workspace
+                                    initial_path=resource_id
+                                    on_error=on_error
+                                />
                             }.into_any(),
                             WorkspaceSurfaceKind::Diff => view! {
-                                <DiffSurface workspace=workspace on_error=on_error />
+                                <DiffSurface
+                                    workspace=workspace
+                                    initial_path=resource_id
+                                    on_error=on_error
+                                />
                             }.into_any(),
-                        })}
+                        }})}
                     </section>
                 </Show>
             </aside>
@@ -1079,5 +1077,39 @@ pub fn GitCommitDialog(
                 </section>
             </div>
         </Show>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::diff_for_path;
+
+    #[test]
+    fn selected_diff_only_keeps_the_requested_file() {
+        let diff = "\
+diff --git a/src/one.rs b/src/one.rs
+--- a/src/one.rs
++++ b/src/one.rs
+@@ -1 +1 @@
+-one
++ONE
+diff --git a/src/two.rs b/src/two.rs
+--- a/src/two.rs
++++ b/src/two.rs
+@@ -1 +1 @@
+-two
++TWO
+";
+
+        let selected = diff_for_path(diff, Some("src/two.rs"));
+        assert!(!selected.contains("src/one.rs"));
+        assert!(selected.contains("src/two.rs"));
+        assert!(selected.contains("+TWO"));
+    }
+
+    #[test]
+    fn whole_diff_is_preserved_without_a_selected_file() {
+        let diff = "diff --git a/a b/a\n+value\n";
+        assert_eq!(diff_for_path(diff, None), diff);
     }
 }

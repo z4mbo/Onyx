@@ -1,7 +1,7 @@
 use gloo_timers::future::TimeoutFuture;
 use icondata::{
-    LuChevronDown, LuEllipsis, LuExternalLink, LuImage, LuLoaderCircle, LuMenu, LuMessageSquare,
-    LuPanelLeftClose, LuPanelLeftOpen, LuPlus, LuSearch, LuSend, LuStar, LuTrash2, LuVideo,
+    LuChevronDown, LuEllipsis, LuImage, LuLoaderCircle, LuMenu, LuMessageSquare, LuPanelLeftClose,
+    LuPanelLeftOpen, LuPlus, LuSearch, LuSend, LuStar, LuTrash2, LuVideo, LuX,
 };
 use leptos::ev::{KeyboardEvent, SubmitEvent};
 use leptos::prelude::*;
@@ -21,12 +21,13 @@ use crate::{
     storage,
 };
 
-use super::ProviderBadge;
+use super::{InternalBrowser, ProviderBadge};
 
 const MAX_THREADS: usize = 80;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct SubscriptionApp {
+    id: &'static str,
     name: &'static str,
     brand: ProviderBrand,
     url: &'static str,
@@ -34,21 +35,25 @@ struct SubscriptionApp {
 
 const SUBSCRIPTION_APPS: [SubscriptionApp; 4] = [
     SubscriptionApp {
+        id: "chatgpt",
         name: "ChatGPT",
         brand: ProviderBrand::Openai,
         url: "https://chatgpt.com/",
     },
     SubscriptionApp {
+        id: "claude",
         name: "Claude",
         brand: ProviderBrand::Anthropic,
         url: "https://claude.ai/new",
     },
     SubscriptionApp {
+        id: "gemini",
         name: "Gemini",
         brand: ProviderBrand::Google,
         url: "https://gemini.google.com/app",
     },
     SubscriptionApp {
+        id: "grok",
         name: "Grok",
         brand: ProviderBrand::Xai,
         url: "https://grok.com/",
@@ -186,6 +191,7 @@ pub fn ChatView(
     );
     let mode = RwSignal::new(initial_mode);
     let web_search = RwSignal::new(false);
+    let web_app = RwSignal::new(None::<SubscriptionApp>);
     let error = RwSignal::new(None::<String>);
 
     let active = Signal::derive(move || {
@@ -332,13 +338,6 @@ pub fn ChatView(
         }
         storage::write_json(storage::CHAT_FAVORITES_KEY, &next);
         favorites.set(next);
-    });
-    let open_external = Callback::new(move |url: String| {
-        spawn_local(async move {
-            if let Err(cause) = bridge::open_url(&url).await {
-                error.set(Some(cause));
-            }
-        });
     });
     let submit = Callback::new(move |_: ()| {
         let prompt = draft.get_untracked().trim().to_owned();
@@ -574,12 +573,33 @@ pub fn ChatView(
                         </button>
                     </Show>
                     <div>
-                        <strong>{move || active.get().map(|thread| thread.title).unwrap_or_else(|| "New chat".to_owned())}</strong>
-                        <span>"Onyx Chat"</span>
+                        <strong>{move || web_app
+                            .get()
+                            .map(|app| app.name.to_owned())
+                            .or_else(|| active.get().map(|thread| thread.title))
+                            .unwrap_or_else(|| "New chat".to_owned())}</strong>
+                        <span>{move || if web_app.get().is_some() {
+                            "Official web app"
+                        } else {
+                            "Onyx Chat"
+                        }}</span>
                     </div>
-                    <button class="onyx-chat__icon-button" on:click=move |_| on_settings.run(()) aria-label="Open chat settings">
-                        <Icon icon=LuMenu width="17px" height="17px" />
-                    </button>
+                    <Show
+                        when=move || web_app.get().is_some()
+                        fallback=move || view! {
+                            <button class="onyx-chat__icon-button" on:click=move |_| on_settings.run(()) aria-label="Open chat settings">
+                                <Icon icon=LuMenu width="17px" height="17px" />
+                            </button>
+                        }
+                    >
+                        <button
+                            class="onyx-chat__icon-button"
+                            on:click=move |_| web_app.set(None)
+                            aria-label="Close official web app"
+                        >
+                            <Icon icon=LuX width="17px" height="17px" />
+                        </button>
+                    </Show>
                 </header>
 
                 <div class="onyx-chat__scroll">
@@ -594,16 +614,15 @@ pub fn ChatView(
                                         each=move || SUBSCRIPTION_APPS
                                         key=|app| app.name
                                         children=move |app| view! {
-                                            <button on:click=move |_| open_external.run(app.url.to_owned())>
+                                            <button on:click=move |_| web_app.set(Some(app))>
                                                 <ProviderBadge brand=Signal::derive(move || app.brand) small=true />
                                                 <span>{app.name}</span>
-                                                <Icon icon=LuExternalLink width="12px" height="12px" />
                                             </button>
                                         }
                                     />
                                 </div>
                                 <small class="onyx-chat__web-note">
-                                    "Open the provider’s signed-in web app for subscription-only tools."
+                                    "Open the provider’s signed-in web app inside Onyx."
                                 </small>
                             </div>
                         }
@@ -798,6 +817,22 @@ pub fn ChatView(
                     </Show>
                     <p class="onyx-chat__disclaimer">"Models can make mistakes. Verify important information."</p>
                 </div>
+                <Show when=move || web_app.get().is_some()>
+                    <For
+                        each=move || web_app.get()
+                        key=|app| app.id
+                        children=move |app| view! {
+                            <div class="onyx-chat__internal-browser">
+                                <InternalBrowser
+                                    label=format!("internal-browser-chat-{}", app.id)
+                                    initial_url=app.url.to_owned()
+                                    show_toolbar=true
+                                    on_error=Callback::new(move |cause| error.set(Some(cause)))
+                                />
+                            </div>
+                        }
+                    />
+                </Show>
             </main>
         </section>
     }

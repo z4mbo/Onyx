@@ -338,13 +338,9 @@ fn build_args(
 ) -> Vec<String> {
     let provider = config.provider;
     let model = config.model();
-    let effective_prompt = if config.interaction_mode == crate::model::InteractionMode::Plan
-        && provider == ProviderId::Gemini
-    {
-        format!("Plan the work without modifying files or running mutation commands.\n\n{prompt}")
-    } else {
-        prompt.to_string()
-    };
+    // Keep the user's prompt byte-for-byte intact. Provider-native mode flags
+    // carry planning and permission semantics just as they do in the CLI.
+    let effective_prompt = prompt.to_string();
     match provider {
         ProviderId::Claude => {
             let mut args = vec![
@@ -453,10 +449,11 @@ fn build_args(
                 "--output-format".to_string(),
                 "stream-json".to_string(),
                 "--approval-mode".to_string(),
-                match config.access_mode {
-                    crate::model::AccessMode::ApprovalRequired => "default",
-                    crate::model::AccessMode::AutoAcceptEdits => "auto_edit",
-                    crate::model::AccessMode::FullAccess => "yolo",
+                match (config.interaction_mode, config.access_mode) {
+                    (crate::model::InteractionMode::Plan, _) => "plan",
+                    (_, crate::model::AccessMode::ApprovalRequired) => "default",
+                    (_, crate::model::AccessMode::AutoAcceptEdits) => "auto_edit",
+                    (_, crate::model::AccessMode::FullAccess) => "yolo",
                 }
                 .to_string(),
             ];
@@ -567,7 +564,7 @@ mod tests {
         let args = build_args(&selected, Some("session-1"), "inspect");
         assert!(
             args.windows(2)
-                .any(|pair| pair == ["--approval-mode", "yolo"])
+                .any(|pair| pair == ["--approval-mode", "plan"])
         );
         assert!(
             args.windows(2)
@@ -577,7 +574,7 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["--model", "gemini-pro"])
         );
-        assert!(args.iter().any(|arg| arg.starts_with("Plan the work")));
+        assert!(args.iter().any(|arg| arg == "inspect"));
     }
 
     #[test]

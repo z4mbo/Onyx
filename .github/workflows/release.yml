@@ -1,12 +1,16 @@
 name: Release
 
-# Pushing a v* tag builds signed installers for macOS and Windows, publishes a
-# GitHub release, and uploads the updater manifest (latest.json) that installed
-# apps poll for the in-app "Update & restart" flow.
+# Pushing a v* tag builds the Windows installer and assembles a draft release.
+# The notarized macOS build is intentionally produced on a trusted local Mac;
+# `npm run release:macos:publish` verifies both platforms and publishes last.
 #
 # Required repository secrets:
 #   TAURI_SIGNING_PRIVATE_KEY          contents of ~/.tauri/onyx-updater.key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD the key password ("" when generated without one)
+# Optional cross-repository release configuration:
+#   variable ONYX_RELEASE_OWNER        public release repository owner
+#   variable ONYX_RELEASE_REPOSITORY   public release repository name (not OWNER/REPO)
+#   secret   ONYX_RELEASE_TOKEN        token with Contents write on that repository
 on:
   push:
     tags:
@@ -21,45 +25,220 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            args: "--target aarch64-apple-darwin"
-          - platform: macos-latest
-            args: "--target x86_64-apple-darwin"
           - platform: windows-latest
             args: ""
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
-          targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin
+          targets: wasm32-unknown-unknown
+
+      - name: Validate tagged source and public release target
+        id: release-target
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.ONYX_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          RELEASE_OWNER: ${{ vars.ONYX_RELEASE_OWNER || github.repository_owner }}
+          RELEASE_REPOSITORY_NAME: ${{ vars.ONYX_RELEASE_REPOSITORY || github.event.repository.name }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          SOURCE_TAG: ${{ github.ref_name }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $tauri = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $cargo = cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 --no-deps |
+            ConvertFrom-Json
+          $sourceRepositoryUrl = if ($package.repository -is [string]) {
+            $package.repository
+          } else {
+            $package.repository.url
+          }
+          $sourceRepositoryUrl = $sourceRepositoryUrl -replace '^git\+', '' -replace '\.git$', ''
+          if (
+            $sourceRepositoryUrl -notmatch 'github\.com[:/]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$' -or
+            $Matches[1] -ne $env:SOURCE_REPOSITORY
+          ) {
+            throw "package.json repository must match the tagged source repository."
+          }
+          $cargoVersion = ($cargo.packages | Where-Object name -eq "onyx-desktop").version
+          if ($package.version -ne $tauri.version -or $package.version -ne $cargoVersion) {
+            throw "package.json, Tauri, and Cargo versions must match."
+          }
+          if ($env:SOURCE_TAG -ne "v$($package.version)") {
+            throw "Tag '$env:SOURCE_TAG' does not match version '$($package.version)'."
+          }
+          $head = (git rev-parse HEAD).Trim()
+          $tagCommit = (git rev-parse "$env:SOURCE_TAG^{commit}").Trim()
+          if ($head -ne $env:SOURCE_COMMIT -or $tagCommit -ne $head) {
+            throw "The checked-out clean HEAD must be the commit referenced by the release tag."
+          }
+          if (@(git status --porcelain=v1 --untracked-files=all).Count -ne 0) {
+            throw "The release checkout is not clean."
+          }
+
+          $releaseRepository = "$env:RELEASE_OWNER/$env:RELEASE_REPOSITORY_NAME"
+          $releaseInfo = gh api "repos/$releaseRepository" | ConvertFrom-Json
+          if ($releaseInfo.visibility -ne "public") {
+            throw "Release repository '$releaseRepository' must be public for updater downloads."
+          }
+          if (-not $releaseInfo.permissions.push) {
+            throw "The configured token has no push permission on '$releaseRepository'."
+          }
+          if (-not $releaseInfo.default_branch) {
+            throw "Release repository '$releaseRepository' needs a default branch and an initial commit."
+          }
+          $expectedEndpoint =
+            "https://github.com/$releaseRepository/releases/latest/download/latest.json"
+          if ($tauri.plugins.updater.endpoints[0] -ne $expectedEndpoint) {
+            throw "The embedded updater endpoint must be '$expectedEndpoint'."
+          }
+
+          "owner=$env:RELEASE_OWNER" >> $env:GITHUB_OUTPUT
+          "repo=$env:RELEASE_REPOSITORY_NAME" >> $env:GITHUB_OUTPUT
+          "repository=$releaseRepository" >> $env:GITHUB_OUTPUT
+          "commitish=$($releaseInfo.default_branch)" >> $env:GITHUB_OUTPUT
+          "endpoint=$expectedEndpoint" >> $env:GITHUB_OUTPUT
 
       - uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
         with:
           tool: trunk@0.21.14
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: src-tauri
 
       - run: npm ci
 
-      - uses: tauri-apps/tauri-action@v0
+      - name: Build Windows bundles into the draft
+        id: tauri
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.ONYX_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          owner: ${{ steps.release-target.outputs.owner }}
+          repo: ${{ steps.release-target.outputs.repo }}
           tagName: ${{ github.ref_name }}
+          releaseCommitish: ${{ steps.release-target.outputs.commitish }}
           releaseName: "Onyx ${{ github.ref_name }}"
           releaseBody: "See the assets below to download and install this version."
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
+          updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
+
+      - name: Verify and upload Windows build provenance
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS_JSON: ${{ steps.tauri.outputs.artifactPaths }}
+          GITHUB_TOKEN: ${{ secrets.ONYX_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          RELEASE_REPOSITORY: ${{ steps.release-target.outputs.repository }}
+          UPDATER_ENDPOINT: ${{ steps.release-target.outputs.endpoint }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          SOURCE_TAG: ${{ github.ref_name }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $unexpectedChanges = @(
+            git status --porcelain=v1 --untracked-files=all |
+              Where-Object { $_ -ne "?? latest.json" }
+          )
+          if (
+            (git rev-parse HEAD).Trim() -ne $env:SOURCE_COMMIT -or
+            $unexpectedChanges.Count -ne 0
+          ) {
+            throw "The build changed the tagged source checkout."
+          }
+          $paths = @($env:ARTIFACT_PATHS_JSON | ConvertFrom-Json)
+          if ($paths.Count -eq 0) {
+            throw "tauri-action returned no Windows artifacts."
+          }
+
+          $artifacts = [System.Collections.Generic.List[object]]::new()
+          foreach ($path in $paths) {
+            $item = Get-Item -LiteralPath $path
+            if (-not $item.PSIsContainer) {
+              $assetName = $item.Name.Normalize(
+                [System.Text.NormalizationForm]::FormD
+              ) -replace '[ ()\[\]{}]', '.'
+              while ($assetName.Contains("..")) {
+                $assetName = $assetName.Replace("..", ".")
+              }
+              $artifacts.Add([ordered]@{
+                file = $assetName
+                sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $item.FullName).Hash.ToLowerInvariant()
+                bytes = $item.Length
+              })
+            }
+          }
+
+          $signaturePaths = @($paths | Where-Object { $_.EndsWith(".sig") })
+          if ($signaturePaths.Count -eq 0) {
+            throw "No signed Windows updater artifact was produced."
+          }
+          $verifiedSignatures = 0
+          foreach ($signaturePath in $signaturePaths) {
+            $archivePath = $signaturePath.Substring(0, $signaturePath.Length - 4)
+            if (Test-Path -LiteralPath $archivePath -PathType Leaf) {
+              cargo run --quiet --manifest-path src-tauri/Cargo.toml `
+                --example verify_updater_signature -- `
+                src-tauri/tauri.conf.json $archivePath $signaturePath
+              if ($LASTEXITCODE -ne 0) {
+                throw "Updater signature verification failed for '$archivePath'."
+              }
+              $verifiedSignatures += 1
+            }
+          }
+          if ($verifiedSignatures -eq 0) {
+            throw "No Windows updater archive had a matching signature."
+          }
+
+          $latest = Get-Content latest.json -Raw | ConvertFrom-Json
+          if (
+            $latest.version -ne $package.version -or
+            -not $latest.platforms.'windows-x86_64'
+          ) {
+            throw "latest.json has no complete Windows x86_64 updater entry."
+          }
+
+          $provenance = [ordered]@{
+            schemaVersion = 1
+            platform = "windows"
+            target = "x86_64-pc-windows-msvc"
+            version = $package.version
+            source = [ordered]@{
+              repository = $env:SOURCE_REPOSITORY
+              tag = $env:SOURCE_TAG
+              commit = $env:SOURCE_COMMIT
+              clean = $true
+            }
+            release = [ordered]@{
+              repository = $env:RELEASE_REPOSITORY
+              updaterEndpoint = $env:UPDATER_ENDPOINT
+            }
+            builtAt = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
+            artifacts = $artifacts
+          }
+          $provenance |
+            ConvertTo-Json -Depth 8 |
+            Set-Content -Encoding utf8NoBOM onyx-windows-release-provenance.json
+
+          gh release upload $env:SOURCE_TAG `
+            onyx-windows-release-provenance.json `
+            --repo $env:RELEASE_REPOSITORY `
+            --clobber

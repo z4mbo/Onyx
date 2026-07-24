@@ -21,7 +21,10 @@
   };
 
   const showFailure = (summary, detail) => {
-    if (failed) return;
+    // This watchdog owns only the pre-mount phase. Once Leptos has mounted,
+    // background command failures belong to the Rust UI and must never replace
+    // the entire application shell.
+    if (failed || root?.dataset.onyxMounted === "true") return;
     failed = true;
     if (!root) return;
 

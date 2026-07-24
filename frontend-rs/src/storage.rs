@@ -9,6 +9,8 @@ pub const COLOR_SCHEME_KEY: &str = "onyx.color-scheme";
 pub const CHAT_THREADS_KEY: &str = "onyx.chat.threads.v1";
 pub const CHAT_FAVORITES_KEY: &str = "onyx.chat.favorite-models.v1";
 pub const VOICE_HISTORY_KEY: &str = "onyx.voice-history.v1";
+pub const RELEASE_NOTES_SEEN_KEY: &str = "onyx.release-notes.seen";
+pub const ENVIRONMENT_PANEL_KEY: &str = "onyx.environment-panel.open";
 
 fn local_storage() -> Option<web_sys::Storage> {
     web_sys::window()

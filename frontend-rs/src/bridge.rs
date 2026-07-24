@@ -6,10 +6,11 @@ use wasm_bindgen_futures::JsFuture;
 use crate::model::{
     AccountProfile, ActiveAppContext, AgentSession, CapturedAudio, ChatReply, ChatRequest,
     ConnectionStatus, CreateSessionInput, EditorTarget, GitActionResult, MediaGenerationRequest,
-    NativeVoicePermissions, OAuthStart, OpenRouterModel, ProviderId, ProviderModelOption,
-    ProviderStatus, ProviderUsage, RepoSummary, TerminalSession, TranscriptionReply, UpdateInfo,
-    UpdateSessionOptionsInput, VideoJob, VoiceSettings, WorkspaceEntry, WorkspaceFile,
-    demo_providers,
+    NativeVoicePermissions, OAuthStart, OpenRouterModel, OpenRouterVoiceCatalog, ProviderId,
+    ProviderModelOption, ProviderStatus, ProviderUsage, ProviderUserInputAnswers,
+    RenameSessionInput, RepoSummary, TerminalSession, TranscriptionReply, UpdateInfo,
+    UpdateProgress, UpdateSessionOptionsInput, VideoJob, VoiceSettings, WorkspaceEntry,
+    WorkspaceFile, demo_providers,
 };
 
 #[wasm_bindgen(inline_js = r#"
@@ -48,22 +49,16 @@ export function onyxAudioStart(callback) {
   return fn(level => callback(level));
 }
 
-export function onyxTerminalMount(element, sessionId, onData, onResize, autofocus) {
+export async function onyxTerminalMount(element, sessionId, onData, onResize, autofocus) {
   const fn = window.__ONYX_RUNTIME__?.mountTerminal;
   if (!fn) throw new Error("Terminal runtime is unavailable.");
-  return fn(
+  return await fn(
     element,
     sessionId,
     data => onData(data),
     (cols, rows) => onResize(cols, rows),
     autofocus,
   );
-}
-
-export function onyxUpdateInstall(callback) {
-  const fn = window.__ONYX_RUNTIME__?.installUpdate;
-  if (!fn) return Promise.reject(new Error("Updater runtime is unavailable."));
-  return fn((downloaded, total) => callback(downloaded, total));
 }
 
 export function onyxCloudStart(callback) {
@@ -95,10 +90,7 @@ extern "C" {
         on_data: &Function,
         on_resize: &Function,
         autofocus: bool,
-    ) -> Result<u32, JsValue>;
-
-    #[wasm_bindgen(catch, js_name = onyxUpdateInstall)]
-    fn raw_update_install(callback: &Function) -> Result<Promise, JsValue>;
+    ) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(catch, js_name = onyxCloudStart)]
     fn raw_cloud_start(callback: &Function) -> Result<bool, JsValue>;
@@ -195,7 +187,7 @@ pub async fn create_session(input: CreateSessionInput) -> Result<AgentSession, S
             .unwrap_or_default();
         return Ok(AgentSession {
             id: format!("browser-session-{}", js_sys::Date::now()),
-            title: "New session".to_owned(),
+            title: input.title.clone(),
             provider: input.provider,
             provider_brand: input.provider_brand,
             model: input.model,
@@ -213,6 +205,19 @@ pub async fn create_session(input: CreateSessionInput) -> Result<AgentSession, S
         });
     }
     invoke("create_session", &serde_json::json!({ "input": input })).await
+}
+
+pub async fn rename_session(session_id: &str, title: &str) -> Result<AgentSession, String> {
+    invoke(
+        "rename_session",
+        &serde_json::json!({
+            "input": RenameSessionInput {
+                session_id: session_id.to_owned(),
+                title: title.to_owned(),
+            },
+        }),
+    )
+    .await
 }
 
 pub async fn delete_session(session_id: &str) -> Result<(), String> {
@@ -320,6 +325,22 @@ pub async fn repo_summary(workspace: &str) -> Result<RepoSummary, String> {
     .await
 }
 
+pub async fn local_git_branches(workspace: &str) -> Result<Vec<String>, String> {
+    invoke(
+        "workspace_git_branches",
+        &serde_json::json!({ "workspace": workspace }),
+    )
+    .await
+}
+
+pub async fn switch_git_branch(workspace: &str, branch: &str) -> Result<RepoSummary, String> {
+    invoke(
+        "workspace_git_switch_branch",
+        &serde_json::json!({ "workspace": workspace, "branch": branch }),
+    )
+    .await
+}
+
 pub async fn init_git(workspace: &str) -> Result<GitActionResult, String> {
     invoke(
         "workspace_git_init",
@@ -345,6 +366,9 @@ pub async fn read_workspace_file(workspace: &str, path: &str) -> Result<Workspac
 }
 
 pub async fn workspace_editors() -> Result<Vec<EditorTarget>, String> {
+    if !is_tauri() {
+        return Ok(Vec::new());
+    }
     invoke("workspace_editors", &serde_json::json!({})).await
 }
 
@@ -445,6 +469,13 @@ pub async fn openrouter_models() -> Result<Vec<OpenRouterModel>, String> {
     invoke("openrouter_models", &serde_json::json!({})).await
 }
 
+pub async fn openrouter_voice_models() -> Result<OpenRouterVoiceCatalog, String> {
+    if !is_tauri() {
+        return Ok(OpenRouterVoiceCatalog::default());
+    }
+    invoke("openrouter_voice_models", &serde_json::json!({})).await
+}
+
 pub async fn openai_status() -> Result<ConnectionStatus, String> {
     invoke("openai_status", &serde_json::json!({})).await
 }
@@ -458,6 +489,9 @@ pub async fn clear_openai_key() -> Result<ConnectionStatus, String> {
 }
 
 pub async fn get_voice_settings() -> Result<VoiceSettings, String> {
+    if !is_tauri() {
+        return Ok(VoiceSettings::default());
+    }
     invoke("get_voice_settings", &serde_json::json!({})).await
 }
 
@@ -474,6 +508,9 @@ pub async fn request_microphone_permission() -> Result<String, String> {
 }
 
 pub async fn native_voice_permissions() -> Result<NativeVoicePermissions, String> {
+    if !is_tauri() {
+        return Ok(NativeVoicePermissions::default());
+    }
     invoke("native_voice_permissions", &serde_json::json!({})).await
 }
 
@@ -553,7 +590,32 @@ pub async fn respond_approval(id: &str, allow: bool, for_session: bool) -> Resul
     .await
 }
 
+pub async fn respond_user_input(
+    request_id: &str,
+    answers: &ProviderUserInputAnswers,
+) -> Result<(), String> {
+    invoke(
+        "respond_user_input",
+        &serde_json::json!({
+            "id": request_id,
+            "answers": answers,
+        }),
+    )
+    .await
+}
+
+pub async fn cancel_user_input(request_id: &str) -> Result<(), String> {
+    invoke(
+        "cancel_user_input",
+        &serde_json::json!({ "id": request_id }),
+    )
+    .await
+}
+
 pub async fn account_profile() -> Result<Option<AccountProfile>, String> {
+    if !is_tauri() {
+        return Ok(None);
+    }
     invoke("clerk_account_profile", &serde_json::json!({})).await
 }
 
@@ -598,7 +660,10 @@ pub async fn copy_text(text: &str) -> Result<(), String> {
 }
 
 pub async fn check_update() -> Result<Option<UpdateInfo>, String> {
-    runtime("checkUpdate", &serde_json::json!([])).await
+    if !is_tauri() {
+        return Ok(None);
+    }
+    invoke("check_update", &serde_json::json!({})).await
 }
 
 pub async fn cloud_configured() -> Result<bool, String> {
@@ -649,7 +714,7 @@ impl Drop for MountedTerminal {
     }
 }
 
-pub fn mount_terminal<F, R>(
+pub async fn mount_terminal<F, R>(
     element: &web_sys::HtmlElement,
     session_id: &str,
     mut on_data: F,
@@ -669,7 +734,7 @@ where
             rows.min(u32::from(u16::MAX)) as u16,
         );
     }) as Box<dyn FnMut(u32, u32)>);
-    let handle_id = raw_terminal_mount(
+    let promise = raw_terminal_mount(
         element,
         session_id,
         data_callback.as_ref().unchecked_ref(),
@@ -677,6 +742,13 @@ where
         autofocus,
     )
     .map_err(error_text)?;
+    let handle_id = JsFuture::from(promise)
+        .await
+        .map_err(error_text)?
+        .as_f64()
+        .filter(|value| value.is_finite() && *value >= 0.0 && *value <= f64::from(u32::MAX))
+        .map(|value| value as u32)
+        .ok_or_else(|| "Terminal runtime returned an invalid handle.".to_owned())?;
     Ok(MountedTerminal {
         handle_id,
         session_id: session_id.to_owned(),
@@ -713,17 +785,13 @@ pub async fn install_update<F>(mut on_progress: F) -> Result<(), String>
 where
     F: FnMut(u64, Option<u64>) + 'static,
 {
-    let callback = Closure::wrap(Box::new(move |downloaded: f64, total: JsValue| {
-        let total = if total.is_null() || total.is_undefined() {
-            None
-        } else {
-            total.as_f64().map(|value| value as u64)
-        };
-        on_progress(downloaded as u64, total);
-    }) as Box<dyn FnMut(f64, JsValue)>);
-    let promise = raw_update_install(callback.as_ref().unchecked_ref()).map_err(error_text)?;
-    JsFuture::from(promise).await.map_err(error_text)?;
-    Ok(())
+    let listener = listen::<UpdateProgress, _>("onyx://update-progress", move |progress| {
+        on_progress(progress.downloaded, progress.total);
+    })
+    .await?;
+    let result = invoke("install_update", &serde_json::json!({})).await;
+    drop(listener);
+    result
 }
 
 pub struct CloudAuthHandle {

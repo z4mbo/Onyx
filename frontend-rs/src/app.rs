@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use gloo_timers::future::TimeoutFuture;
-use icondata::{LuGauge, LuGitBranch, LuTimerReset};
+use icondata::{LuCheck, LuGauge, LuGitBranch, LuPanelRight, LuPencil, LuTimerReset, LuX};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use wasm_bindgen::{JsCast, closure::Closure};
@@ -10,23 +10,144 @@ use wasm_bindgen_futures::spawn_local;
 use crate::{
     bridge,
     catalog::{fallback_catalogs, models_for_brand, runtime_for_brand, selected_or_default},
+    components::environment::{
+        EnvironmentAgent, EnvironmentCompare, EnvironmentPanel, EnvironmentSource,
+        EnvironmentSourceKind, LocalWorkspace,
+    },
     components::{
         AccountGate, AgentOverlay, BottomTerminalPanel, ChatView, ColorScheme, Composer,
         GitCommitDialog, HomeView, Hud, RightWorkspacePanel, SessionWorkspaceUi, SettingsDialog,
-        Titlebar, TitlebarSession, TitlebarTab, Transcript, VoiceHistoryView, WorkspaceSurface,
-        WorkspaceSurfaceKind, WorkspaceTerminal, WorkspaceTopbarActions,
+        Titlebar, TitlebarSession, TitlebarTab, Transcript, UpdateDialog, UserInputCard,
+        VoiceHistoryView, WorkspaceSurface, WorkspaceSurfaceKind, WorkspaceTerminal,
+        WorkspaceTopbarActions,
     },
     model::{
         AccessMode, AccountEvent, AccountProfile, AgentSession, ApprovalRequest, ConnectionStatus,
-        CreateSessionInput, EditorTarget, InteractionMode, NativeVoicePermissions, OpenRouterModel,
-        ProviderBrand, ProviderId, ProviderUsage, ReasoningEffort, RepoSummary, SessionEvent,
-        SpeedMode, TerminalEvent, UpdateInfo, UpdateSessionOptionsInput, apply_session_event,
-        demo_providers, replace_session, workspace_name,
+        CreateSessionInput, EditorTarget, InteractionMode, MessageKind, MessageRole,
+        NativeVoicePermissions, OpenRouterModel, ProviderBrand, ProviderId, ProviderUsage,
+        ProviderUserInputRequest, ReasoningEffort, RepoSummary, SessionEvent, SessionStatus,
+        SpeedMode, TerminalEvent, UpdateInfo, UpdateProgress, UpdateSessionOptionsInput,
+        apply_session_event, demo_providers, replace_session, workspace_name,
     },
     storage, theme,
 };
 
 const DRAFT_TAB_ID: &str = "onyx:draft";
+
+fn referenced_paths(content: &str) -> Vec<String> {
+    let bytes = content.as_bytes();
+    let mut paths = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'@' {
+            index += 1;
+            continue;
+        }
+        index += 1;
+        if index >= bytes.len() {
+            break;
+        }
+        let quoted = bytes[index] == b'"';
+        if quoted {
+            index += 1;
+        }
+        let start = index;
+        while index < bytes.len()
+            && if quoted {
+                bytes[index] != b'"'
+            } else {
+                !bytes[index].is_ascii_whitespace()
+            }
+        {
+            index += 1;
+        }
+        let value = content[start..index]
+            .trim_matches(|character: char| ",.;:!?)]}".contains(character))
+            .trim();
+        if !value.is_empty() && !value.contains("://") {
+            paths.push(value.to_owned());
+        }
+        if quoted && index < bytes.len() {
+            index += 1;
+        }
+    }
+    paths
+}
+
+fn environment_sources(session: &AgentSession) -> Vec<EnvironmentSource> {
+    let mut seen = HashSet::new();
+    let mut sources = Vec::new();
+    for message in session.messages.iter().rev() {
+        if message.role == MessageRole::User {
+            for path in referenced_paths(&message.content) {
+                let is_directory = path.ends_with('/');
+                let id = format!("{}:{path}", if is_directory { "directory" } else { "file" });
+                if seen.insert(id.clone()) {
+                    let label = std::path::Path::new(&path)
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or(&path)
+                        .to_owned();
+                    sources.push(EnvironmentSource {
+                        id,
+                        label,
+                        detail: Some(path.clone()),
+                        kind: if is_directory {
+                            EnvironmentSourceKind::Directory
+                        } else {
+                            EnvironmentSourceKind::File
+                        },
+                    });
+                }
+            }
+        }
+        for word in message.content.split_whitespace() {
+            let url = word.trim_matches(|character: char| {
+                matches!(character, '"' | '\'' | '(' | ')' | '[' | ']' | ',' | '.')
+            });
+            if (url.starts_with("https://") || url.starts_with("http://")) && url.len() <= 8 * 1024
+            {
+                let id = format!("url:{url}");
+                if seen.insert(id.clone()) {
+                    sources.push(EnvironmentSource {
+                        id,
+                        label: url
+                            .split("//")
+                            .nth(1)
+                            .and_then(|value| value.split('/').next())
+                            .unwrap_or(url)
+                            .to_owned(),
+                        detail: Some(url.to_owned()),
+                        kind: EnvironmentSourceKind::Url,
+                    });
+                }
+            }
+        }
+        if message.kind == MessageKind::Tool {
+            let title = message
+                .content
+                .lines()
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("Tool activity");
+            let id = format!("tool:{}", message.id);
+            if seen.insert(id.clone()) {
+                sources.push(EnvironmentSource {
+                    id,
+                    label: title.to_owned(),
+                    detail: Some("Recorded in this conversation".to_owned()),
+                    kind: EnvironmentSourceKind::Tool,
+                });
+            }
+        }
+        if sources.len() >= 24 {
+            break;
+        }
+    }
+    sources.reverse();
+    sources
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Page {
@@ -133,6 +254,7 @@ fn consume_session_event(
     event: SessionEvent,
     sessions: RwSignal<Vec<AgentSession>>,
     approvals: RwSignal<Vec<ApprovalRequest>>,
+    user_inputs: RwSignal<Vec<ProviderUserInputRequest>>,
     open_session_ids: RwSignal<Vec<String>>,
     current_id: RwSignal<Option<String>>,
     page: RwSignal<Page>,
@@ -163,6 +285,7 @@ fn consume_session_event(
         }
         sessions.update(|items| items.retain(|session| session.id != id));
         approvals.update(|items| items.retain(|request| request.session_id != id));
+        user_inputs.update(|items| items.retain(|request| request.session_id != id));
         open_session_ids.update(|items| items.retain(|item| item != &id));
         if current_id.read().as_deref() == Some(id.as_str()) {
             current_id.set(None);
@@ -195,6 +318,7 @@ fn consume_session_event(
     sessions.update(|items| apply_session_event(items, event, &storage::timestamp()));
     if let Some(id) = completed_snapshot {
         approvals.update(|items| items.retain(|request| request.session_id != id));
+        user_inputs.update(|items| items.retain(|request| request.session_id != id));
     }
     let mut buffered = None;
     pending_events.update(|items| {
@@ -206,6 +330,7 @@ fn consume_session_event(
                 buffered_event,
                 sessions,
                 approvals,
+                user_inputs,
                 open_session_ids,
                 current_id,
                 page,
@@ -316,6 +441,7 @@ pub fn App() -> impl IntoView {
     let open_session_ids = RwSignal::new(Vec::<String>::new());
 
     let draft_provider = RwSignal::new(ProviderId::Claude);
+    let draft_title = RwSignal::new(String::new());
     let draft_brand = RwSignal::new(ProviderBrand::Anthropic);
     let draft_model = RwSignal::new(Some("fable".to_owned()));
     let draft_reasoning = RwSignal::new(Some(ReasoningEffort::Medium));
@@ -335,12 +461,19 @@ pub fn App() -> impl IntoView {
     let openrouter_models = RwSignal::new(Vec::<OpenRouterModel>::new());
     let color_scheme = RwSignal::new(ColorScheme::stored());
     let approvals = RwSignal::new(Vec::<ApprovalRequest>::new());
+    let user_inputs = RwSignal::new(Vec::<ProviderUserInputRequest>::new());
     let approval_busy = RwSignal::new(false);
     let notice = RwSignal::new(None::<String>);
     let notice_kind = RwSignal::new("error".to_owned());
     let notice_generation = RwSignal::new(0_u64);
     let available_update = RwSignal::new(None::<UpdateInfo>);
     let installing_update = RwSignal::new(false);
+    let update_progress = RwSignal::new(None::<UpdateProgress>);
+    let update_dialog_open = RwSignal::new(
+        storage::get(storage::RELEASE_NOTES_SEEN_KEY).as_deref() != Some(env!("CARGO_PKG_VERSION")),
+    );
+    let renaming_session = RwSignal::new(None::<String>);
+    let rename_value = RwSignal::new(String::new());
 
     let workspace_states = RwSignal::new(HashMap::<String, SessionWorkspaceUi>::new());
     let pending_events = RwSignal::new(HashMap::<String, Vec<SessionEvent>>::new());
@@ -348,12 +481,14 @@ pub fn App() -> impl IntoView {
     let tombstones = RwSignal::new(HashSet::<String>::new());
     let events_ready = RwSignal::new(false);
     let repo = RwSignal::new(None::<RepoSummary>);
-    let repo_loading = RwSignal::new(false);
+    let local_branches = RwSignal::new(Vec::<String>::new());
     let editors = RwSignal::new(Vec::<EditorTarget>::new());
     let preferred_editor =
         RwSignal::new(storage::get(storage::PREFERRED_EDITOR_KEY).unwrap_or_default());
     let git_busy = RwSignal::new(None::<String>);
     let commit_open = RwSignal::new(false);
+    let environment_open =
+        RwSignal::new(storage::get(storage::ENVIRONMENT_PANEL_KEY).as_deref() != Some("false"));
 
     let account_profile = RwSignal::new(None::<AccountProfile>);
     let account_loading = RwSignal::new(true);
@@ -375,6 +510,14 @@ pub fn App() -> impl IntoView {
     let active_approval = Signal::derive(move || {
         let id = current_id.get()?;
         approvals
+            .read()
+            .iter()
+            .find(|request| request.session_id == id)
+            .cloned()
+    });
+    let active_user_input = Signal::derive(move || {
+        let id = current_id.get()?;
+        user_inputs
             .read()
             .iter()
             .find(|request| request.session_id == id)
@@ -427,6 +570,18 @@ pub fn App() -> impl IntoView {
         });
     });
     Effect::new(move |_| {
+        let visible = !settings_open.get() && !commit_open.get() && !update_dialog_open.get();
+        if bridge::is_tauri() {
+            spawn_local(async move {
+                let _ = bridge::invoke::<(), _>(
+                    "internal_browsers_set_visible",
+                    &serde_json::json!({ "visible": visible }),
+                )
+                .await;
+            });
+        }
+    });
+    Effect::new(move |_| {
         let Some(session) = current.get() else {
             current_usage.set(None);
             return;
@@ -442,26 +597,40 @@ pub fn App() -> impl IntoView {
     Effect::new(move |_| {
         let Some(session) = current.get() else {
             repo.set(None);
+            local_branches.set(Vec::new());
             return;
         };
-        let version = session.updated_at.clone();
         let status = session.status;
-        let _ = version;
+        local_branches.set(Vec::new());
         if status.is_running() {
             return;
         }
-        repo_loading.set(true);
         spawn_local(async move {
             let result = bridge::repo_summary(&session.workspace).await;
+            let branches = match result.as_ref() {
+                Ok(summary) if summary.is_repo => {
+                    bridge::local_git_branches(&session.workspace).await
+                }
+                _ => Ok(Vec::new()),
+            };
             if current_id.read().as_deref() == Some(session.id.as_str()) {
                 match result {
-                    Ok(summary) => repo.set(Some(summary)),
+                    Ok(summary) => {
+                        repo.set(Some(summary));
+                        match branches {
+                            Ok(branches) => local_branches.set(branches),
+                            Err(cause) => {
+                                local_branches.set(Vec::new());
+                                show_error.run(cause);
+                            }
+                        }
+                    }
                     Err(cause) => {
                         repo.set(None);
+                        local_branches.set(Vec::new());
                         show_error.run(cause);
                     }
                 }
-                repo_loading.set(false);
             }
         });
     });
@@ -484,6 +653,9 @@ pub fn App() -> impl IntoView {
     });
 
     let open_draft = Callback::new(move |workspace: Option<String>| {
+        if !draft_open.get_untracked() {
+            draft_title.set(String::new());
+        }
         if let Some(workspace) = workspace {
             draft_workspace.set(workspace);
             draft_git_ready.set(false);
@@ -557,6 +729,7 @@ pub fn App() -> impl IntoView {
                         SessionEvent::Removed { session_id: id },
                         sessions,
                         approvals,
+                        user_inputs,
                         open_session_ids,
                         current_id,
                         page,
@@ -565,6 +738,25 @@ pub fn App() -> impl IntoView {
                         pending_events,
                         tombstones,
                     );
+                }
+                Err(cause) => show_error.run(cause),
+            }
+        });
+    });
+    let begin_rename = Callback::new(move |session: AgentSession| {
+        rename_value.set(session.title);
+        renaming_session.set(Some(session.id));
+    });
+    let save_rename = Callback::new(move |_: ()| {
+        let Some(id) = renaming_session.get_untracked() else {
+            return;
+        };
+        let title = rename_value.get_untracked();
+        spawn_local(async move {
+            match bridge::rename_session(&id, &title).await {
+                Ok(session) => {
+                    merge_live_command_session(sessions, tombstones, session);
+                    renaming_session.set(None);
                 }
                 Err(cause) => show_error.run(cause),
             }
@@ -601,6 +793,11 @@ pub fn App() -> impl IntoView {
     });
     let start_session = Callback::new(move |content: String| {
         spawn_local(async move {
+            let title = draft_title.get();
+            if title.trim().is_empty() {
+                show_error.run("Choose a name for this session.".to_owned());
+                return;
+            }
             let workspace = if draft_workspace.get().trim().is_empty() {
                 match bridge::choose_workspace().await {
                     Ok(Some(workspace)) => {
@@ -623,6 +820,7 @@ pub fn App() -> impl IntoView {
                 return;
             }
             let input = CreateSessionInput {
+                title,
                 provider: draft_provider.get(),
                 provider_brand: draft_brand.get(),
                 model: draft_model.get(),
@@ -639,6 +837,7 @@ pub fn App() -> impl IntoView {
                     items.remove(&id);
                 });
                 sessions.update(|items| replace_session(items, session));
+                draft_title.set(String::new());
                 draft_open.set(false);
                 open_session_ids.update(|items| {
                     if !items.contains(&id) {
@@ -790,7 +989,19 @@ pub fn App() -> impl IntoView {
             match bridge::init_git(&session.workspace).await {
                 Ok(result) => {
                     show_notice.run((result.message, "success"));
-                    repo.set(bridge::repo_summary(&session.workspace).await.ok());
+                    match bridge::repo_summary(&session.workspace).await {
+                        Ok(summary) => {
+                            repo.set(Some(summary));
+                            match bridge::local_git_branches(&session.workspace).await {
+                                Ok(branches) => local_branches.set(branches),
+                                Err(cause) => {
+                                    local_branches.set(Vec::new());
+                                    show_error.run(cause);
+                                }
+                            }
+                        }
+                        Err(cause) => show_error.run(cause),
+                    }
                 }
                 Err(cause) => show_error.run(cause),
             }
@@ -829,10 +1040,53 @@ pub fn App() -> impl IntoView {
         });
     });
 
+    let switch_workspace_branch = Callback::new(move |branch: String| {
+        let Some(session) = current.get() else {
+            return;
+        };
+        if session.status.is_running() {
+            show_error.run("Wait for the active agent turn before switching branches.".to_owned());
+            return;
+        }
+        if git_busy.get_untracked().is_some()
+            || repo
+                .read()
+                .as_ref()
+                .and_then(|summary| summary.branch.as_deref())
+                == Some(branch.as_str())
+        {
+            return;
+        }
+
+        let session_id = session.id.clone();
+        git_busy.set(Some("branch".to_owned()));
+        spawn_local(async move {
+            match bridge::switch_git_branch(&session.workspace, &branch).await {
+                Ok(summary) => {
+                    if current_id.read().as_deref() == Some(session_id.as_str()) {
+                        repo.set(Some(summary));
+                    }
+                    show_notice.run((format!("Switched to branch {branch}"), "success"));
+                }
+                Err(cause) => show_error.run(cause),
+            }
+            if git_busy.read().as_deref() == Some("branch") {
+                git_busy.set(None);
+            }
+        });
+    });
+
     let commit_workspace = Callback::new(move |message: Option<String>| {
         let Some(session) = current.get() else {
             return;
         };
+        if session.status.is_running() {
+            show_error.run("Wait for the active agent turn before committing.".to_owned());
+            return;
+        }
+        if git_busy.get_untracked().is_some() {
+            return;
+        }
         git_busy.set(Some("commit".to_owned()));
         spawn_local(async move {
             match bridge::commit_workspace(&session.workspace, message).await {
@@ -850,6 +1104,13 @@ pub fn App() -> impl IntoView {
         let Some(session) = current.get() else {
             return;
         };
+        if session.status.is_running() {
+            show_error.run("Wait for the active agent turn before pushing.".to_owned());
+            return;
+        }
+        if git_busy.get_untracked().is_some() {
+            return;
+        }
         git_busy.set(Some("push".to_owned()));
         spawn_local(async move {
             match bridge::push_workspace(&session.workspace).await {
@@ -866,6 +1127,13 @@ pub fn App() -> impl IntoView {
         let Some(session) = current.get() else {
             return;
         };
+        if session.status.is_running() {
+            show_error.run("Wait for the active agent turn before creating a PR.".to_owned());
+            return;
+        }
+        if git_busy.get_untracked().is_some() {
+            return;
+        }
         git_busy.set(Some("create-pr".to_owned()));
         spawn_local(async move {
             match bridge::create_pull_request(&session.workspace).await {
@@ -936,6 +1204,26 @@ pub fn App() -> impl IntoView {
             });
         });
     });
+    let add_resource_surface = Callback::new(
+        move |(kind, title, resource_id): (WorkspaceSurfaceKind, String, Option<String>)| {
+            let Some(session) = current.get() else {
+                return;
+            };
+            let surface = WorkspaceSurface {
+                id: storage::unique_id("surface"),
+                kind,
+                title,
+                resource_id,
+                pending: false,
+            };
+            let active = surface.id.clone();
+            update_workspace_ui(workspace_states, &session.id, |ui| {
+                ui.right_panel_open = true;
+                ui.surfaces.push(surface);
+                ui.active_surface_id = Some(active);
+            });
+        },
+    );
     let close_surface = Callback::new(move |surface_id: String| {
         let Some(session) = current.get() else {
             return;
@@ -1129,6 +1417,7 @@ pub fn App() -> impl IntoView {
                     event,
                     sessions,
                     approvals,
+                    user_inputs,
                     open_session_ids,
                     current_id,
                     page,
@@ -1206,6 +1495,7 @@ pub fn App() -> impl IntoView {
                             event,
                             sessions,
                             approvals,
+                            user_inputs,
                             open_session_ids,
                             current_id,
                             page,
@@ -1232,6 +1522,23 @@ pub fn App() -> impl IntoView {
                         }
                     });
                 })
+                .await
+                {
+                    Ok(listener) => listener.forget(),
+                    Err(cause) => show_error.run(cause),
+                }
+            });
+            spawn_local(async move {
+                match bridge::listen::<ProviderUserInputRequest, _>(
+                    "onyx://user-input",
+                    move |request| {
+                        user_inputs.update(|items| {
+                            if !items.iter().any(|item| item.id == request.id) {
+                                items.push(request);
+                            }
+                        });
+                    },
+                )
                 .await
                 {
                     Ok(listener) => listener.forget(),
@@ -1364,8 +1671,18 @@ pub fn App() -> impl IntoView {
 
     let install_banner_update = Callback::new(move |_: ()| {
         installing_update.set(true);
+        update_progress.set(None);
+        update_dialog_open.set(true);
         spawn_local(async move {
-            if let Err(cause) = bridge::install_update(|_, _| {}).await {
+            if let Err(cause) = bridge::install_update(move |downloaded, total| {
+                update_progress.set(Some(UpdateProgress {
+                    downloaded,
+                    total,
+                    finished: false,
+                }));
+            })
+            .await
+            {
                 installing_update.set(false);
                 show_error.run(cause);
             }
@@ -1455,6 +1772,17 @@ pub fn App() -> impl IntoView {
                 <section class="zai-new-session">
                     <div class="zai-new-session__stage">
                         <div class="zai-new-session__content">
+                            <label class="zai-new-session__name">
+                                <span>"Session name"</span>
+                                <input
+                                    maxlength="80"
+                                    autofocus=true
+                                    autocomplete="off"
+                                    placeholder="What are you working on?"
+                                    prop:value=move || draft_title.get()
+                                    on:input=move |event| draft_title.set(event_target_value(&event))
+                                />
+                            </label>
                             <div class="zai-new-session__composer">
                                 <Composer
                                     provider=Signal::derive(move || draft_provider.get())
@@ -1472,7 +1800,7 @@ pub fn App() -> impl IntoView {
                                     approval=Signal::derive(move || None)
                                     approval_busy=Signal::derive(move || false)
                                     hero=true
-                                    autofocus=true
+                                    autofocus=false
                                     on_brand=select_draft_brand
                                     on_model=select_draft_model
                                     on_reasoning=Callback::new(move |value| draft_reasoning.set(Some(value)))
@@ -1541,6 +1869,108 @@ pub fn App() -> impl IntoView {
                     .map(|session| session.workspace)
                     .unwrap_or_default()
             });
+            let environment_workspace = Signal::derive(move || {
+                current.get().map(|session| LocalWorkspace {
+                    label: workspace_name(&session.workspace),
+                    path: session.workspace,
+                })
+            });
+            let environment_agent = Signal::derive(move || {
+                current.get().map(|session| {
+                    let waiting = approvals
+                        .read()
+                        .iter()
+                        .any(|request| request.session_id == session.id)
+                        || user_inputs
+                            .read()
+                            .iter()
+                            .any(|request| request.session_id == session.id);
+                    EnvironmentAgent {
+                        id: session.id,
+                        label: session.provider.display_name().to_owned(),
+                        detail: session
+                            .model
+                            .or_else(|| Some("Official CLI runtime".to_owned())),
+                        brand: session.provider_brand,
+                        status: if waiting {
+                            SessionStatus::WaitingApproval
+                        } else {
+                            session.status
+                        },
+                    }
+                })
+            });
+            let environment_subagents = Signal::derive(move || {
+                let Some(active) = current.get() else {
+                    return Vec::new();
+                };
+                sessions
+                    .read()
+                    .iter()
+                    .filter(|session| {
+                        session.id != active.id
+                            && session.workspace == active.workspace
+                            && session.status.is_running()
+                    })
+                    .take(8)
+                    .map(|session| {
+                        let waiting = approvals
+                            .read()
+                            .iter()
+                            .any(|request| request.session_id == session.id)
+                            || user_inputs
+                                .read()
+                                .iter()
+                                .any(|request| request.session_id == session.id);
+                        EnvironmentAgent {
+                            id: session.id.clone(),
+                            label: session.title.clone(),
+                            detail: Some(format!(
+                                "{} · {}",
+                                session.provider.display_name(),
+                                session
+                                    .model
+                                    .clone()
+                                    .unwrap_or_else(|| "default model".to_owned())
+                            )),
+                            brand: session.provider_brand,
+                            status: if waiting {
+                                SessionStatus::WaitingApproval
+                            } else {
+                                session.status
+                            },
+                        }
+                    })
+                    .collect()
+            });
+            let environment_compare = Signal::derive(move || {
+                let repo = repo.get()?;
+                if let Some(url) = repo.pr_url {
+                    Some(EnvironmentCompare {
+                        id: url,
+                        label: "Compare branch".to_owned(),
+                        detail: repo
+                            .pr_commit_count
+                            .map(|count| format!("{count} branch commits")),
+                    })
+                } else if repo.has_remote && repo.pr_commit_count.unwrap_or_default() > 0 {
+                    Some(EnvironmentCompare {
+                        id: "create-pr".to_owned(),
+                        label: "Compare branch".to_owned(),
+                        detail: repo
+                            .pr_commit_count
+                            .map(|count| format!("{count} branch commits")),
+                    })
+                } else {
+                    None
+                }
+            });
+            let environment_source_list = Signal::derive(move || {
+                current
+                    .get()
+                    .map(|session| environment_sources(&session))
+                    .unwrap_or_default()
+            });
             let context_label = Signal::derive(move || {
                 let Some(session) = current.get() else {
                     return "Context not reported".to_owned();
@@ -1582,7 +2012,53 @@ pub fn App() -> impl IntoView {
                                             <span class="zai-project-avatar">{project.chars().next().unwrap_or('P').to_ascii_uppercase()}</span>
                                             <span class="zai-workspace-header__project">{project}</span>
                                             <span class="zai-workspace-header__slash">"/"</span>
-                                            <h2 title=session.title.clone()>{session.title.clone()}</h2>
+                                            <Show
+                                                when=move || renaming_session.read().as_deref() == Some(session_id.as_str())
+                                                fallback={
+                                                    let rename_session = session.clone();
+                                                    move || view! {
+                                                        <div class="zai-session-title">
+                                                            <h2 title=rename_session.title.clone()>{rename_session.title.clone()}</h2>
+                                                            <button
+                                                                type="button"
+                                                                aria-label="Rename session"
+                                                                title="Rename session"
+                                                                on:click={
+                                                                    let rename_session = rename_session.clone();
+                                                                    move |_| begin_rename.run(rename_session.clone())
+                                                                }
+                                                            >
+                                                                <Icon icon=LuPencil width="12px" height="12px" />
+                                                            </button>
+                                                        </div>
+                                                    }
+                                                }
+                                            >
+                                                <form
+                                                    class="zai-session-title-editor"
+                                                    on:submit=move |event: web_sys::SubmitEvent| {
+                                                        event.prevent_default();
+                                                        save_rename.run(());
+                                                    }
+                                                >
+                                                    <input
+                                                        maxlength="80"
+                                                        aria-label="Session name"
+                                                        prop:value=move || rename_value.get()
+                                                        on:input=move |event| rename_value.set(event_target_value(&event))
+                                                    />
+                                                    <button type="submit" aria-label="Save session name">
+                                                        <Icon icon=LuCheck width="13px" height="13px" />
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        aria-label="Cancel rename"
+                                                        on:click=move |_| renaming_session.set(None)
+                                                    >
+                                                        <Icon icon=LuX width="13px" height="13px" />
+                                                    </button>
+                                                </form>
+                                            </Show>
                                             <Show when=move || repo.get().and_then(|repo| repo.branch).is_some()>
                                                 <span class="zai-workspace-header__branch">
                                                     <Icon icon=LuGitBranch width="13px" height="13px" />
@@ -1590,6 +2066,23 @@ pub fn App() -> impl IntoView {
                                                 </span>
                                             </Show>
                                         </div>
+                                        <button
+                                            type="button"
+                                            class="onyx-environment-toggle"
+                                            data-active=move || if environment_open.get() { "true" } else { "false" }
+                                            aria-label="Toggle environment panel"
+                                            aria-pressed=move || environment_open.get()
+                                            title="Environment"
+                                            on:click=move |_| {
+                                                environment_open.update(|open| *open = !*open);
+                                                storage::set(
+                                                    storage::ENVIRONMENT_PANEL_KEY,
+                                                    if environment_open.get_untracked() { "true" } else { "false" },
+                                                );
+                                            }
+                                        >
+                                            <Icon icon=LuPanelRight width="15px" height="15px" />
+                                        </button>
                                         <WorkspaceTopbarActions
                                             repo=Signal::derive(move || repo.get())
                                             editors=Signal::derive(move || editors.get())
@@ -1608,6 +2101,25 @@ pub fn App() -> impl IntoView {
                                     </header>
 
                                     <Transcript session=Signal::derive(move || current.get()) />
+                                    <For
+                                        each=move || active_user_input.get().into_iter()
+                                        key=|request| request.id.clone()
+                                        children=move |request| {
+                                            let resolved_id = request.id.clone();
+                                            view! {
+                                                <UserInputCard
+                                                    request
+                                                    disabled=Signal::derive(move || false)
+                                                    on_resolved=Callback::new(move |_| {
+                                                        user_inputs.update(|items| {
+                                                            items.retain(|item| item.id != resolved_id);
+                                                        });
+                                                    })
+                                                    on_error=show_error
+                                                />
+                                            }
+                                        }
+                                    />
                                     <div class="zai-session-composer">
                                         <Composer
                                             provider=Signal::derive(move || current.get().map(|session| session.provider).unwrap_or(ProviderId::Claude))
@@ -1656,6 +2168,87 @@ pub fn App() -> impl IntoView {
                                             <span><Icon icon=LuTimerReset width="14px" height="14px" />{move || current_usage.get().filter(|usage| !usage.windows.is_empty()).map(|usage| usage.windows.into_iter().map(|window| format!("{} {:.0}%", window.label, window.used_percent)).collect::<Vec<_>>().join(" · ")).unwrap_or_else(|| "Usage not reported".to_owned())}</span>
                                         </div>
                                     </div>
+                                    <Show when=move || environment_open.get()>
+                                        <div class="onyx-environment-popover">
+                                            <EnvironmentPanel
+                                                workspace=environment_workspace
+                                                repo=Signal::derive(move || repo.get())
+                                                branches=Signal::derive(move || local_branches.get())
+                                                compare=environment_compare
+                                                agent=environment_agent
+                                                subagents=environment_subagents
+                                                sources=environment_source_list
+                                                git_busy=Signal::derive(move || {
+                                                    if current
+                                                        .get()
+                                                        .is_some_and(|session| session.status.is_running())
+                                                    {
+                                                        Some("agent".to_owned())
+                                                    } else {
+                                                        git_busy.get()
+                                                    }
+                                                })
+                                                on_change=Callback::new(move |path: String| {
+                                                    let title = std::path::Path::new(&path)
+                                                        .file_name()
+                                                        .and_then(|value| value.to_str())
+                                                        .unwrap_or("Changes")
+                                                        .to_owned();
+                                                    add_resource_surface.run((
+                                                        WorkspaceSurfaceKind::Diff,
+                                                        title,
+                                                        Some(path),
+                                                    ));
+                                                })
+                                                on_open_workspace=Callback::new(move |_| open_workspace.run(()))
+                                                on_branch=switch_workspace_branch
+                                                on_commit=Callback::new(move |_| commit_open.set(true))
+                                                on_push=push_workspace
+                                                on_compare=Callback::new(move |target| {
+                                                    if target == "create-pr" {
+                                                        create_pr.run(());
+                                                    } else {
+                                                        add_resource_surface.run((
+                                                            WorkspaceSurfaceKind::Browser,
+                                                            "Compare".to_owned(),
+                                                            Some(target),
+                                                        ));
+                                                    }
+                                                })
+                                                on_agent=Callback::new(move |id| current_id.set(Some(id)))
+                                                on_source=Callback::new(move |source: String| {
+                                                    if let Some(path) = source.strip_prefix("file:") {
+                                                        add_resource_surface.run((
+                                                            WorkspaceSurfaceKind::Files,
+                                                            std::path::Path::new(path)
+                                                                .file_name()
+                                                                .and_then(|value| value.to_str())
+                                                                .unwrap_or("File")
+                                                                .to_owned(),
+                                                            Some(path.to_owned()),
+                                                        ));
+                                                    } else if source.starts_with("directory:") {
+                                                        add_resource_surface.run((
+                                                            WorkspaceSurfaceKind::Files,
+                                                            "Files".to_owned(),
+                                                            None,
+                                                        ));
+                                                    } else if let Some(url) = source.strip_prefix("url:") {
+                                                        add_resource_surface.run((
+                                                            WorkspaceSurfaceKind::Browser,
+                                                            "Source".to_owned(),
+                                                            Some(url.to_owned()),
+                                                        ));
+                                                    } else {
+                                                        show_notice.run((
+                                                            "This tool activity is recorded in the conversation.".to_owned(),
+                                                            "success",
+                                                        ));
+                                                    }
+                                                })
+                                            />
+                                        </div>
+                                    </Show>
                                 </section>
 
                                 <RightWorkspacePanel
@@ -1699,6 +2292,8 @@ pub fn App() -> impl IntoView {
                 on_home=Callback::new(move |_| page.set(Page::Home))
                 on_settings=Callback::new(move |_| settings_open.set(true))
                 on_sign_out=sign_out
+                update=Signal::derive(move || available_update.get())
+                on_update=Callback::new(move |_| update_dialog_open.set(true))
                 profile=Signal::derive(move || account_profile.get())
                 show_layout_controls=Signal::derive(move || false)
                 bottom_panel_open=Signal::derive(move || page.get() == Page::Session && active_ui.get().bottom_panel_open)
@@ -1733,23 +2328,26 @@ pub fn App() -> impl IntoView {
                 on_close=Callback::new(move |_| commit_open.set(false))
                 on_commit=commit_workspace
             />
+            <UpdateDialog
+                open=Signal::derive(move || update_dialog_open.get())
+                update=Signal::derive(move || available_update.get())
+                installing=Signal::derive(move || installing_update.get())
+                progress=Signal::derive(move || update_progress.get())
+                on_close=Callback::new(move |_| {
+                    update_dialog_open.set(false);
+                    if available_update.read().is_none() {
+                        storage::set(
+                            storage::RELEASE_NOTES_SEEN_KEY,
+                            env!("CARGO_PKG_VERSION"),
+                        );
+                    }
+                })
+                on_install=install_banner_update
+            />
 
             <Show when=move || notice.get().is_some()>
                 <div class="zai-toast" data-kind=move || notice_kind.get() role="status">
                     {move || notice.get().unwrap_or_default()}
-                </div>
-            </Show>
-            <Show when=move || available_update.get().is_some()>
-                <div class="zai-update-banner" role="status">
-                    <span><strong>{move || format!("Onyx {}", available_update.get().map(|update| update.version).unwrap_or_default())}</strong>" is ready to install."</span>
-                    <button
-                        class="zai-neutral-button zai-update-install"
-                        disabled=move || installing_update.get()
-                        on:click=move |_| install_banner_update.run(())
-                    >
-                        {move || if installing_update.get() { "Installing…" } else { "Update & restart" }}
-                    </button>
-                    <button class="zai-update-dismiss" on:click=move |_| available_update.set(None) aria-label="Dismiss update">"✕"</button>
                 </div>
             </Show>
             </div>

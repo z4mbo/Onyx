@@ -255,10 +255,12 @@ enum AgentSource {
 struct AgentState {
     mode: RwSignal<OverlayMode>,
     phase: RwSignal<String>,
+    notice: RwSignal<Option<String>>,
     level: RwSignal<f64>,
     draft: RwSignal<String>,
     messages: RwSignal<Vec<IslandMessage>>,
     busy: RwSignal<bool>,
+    generation: RwSignal<u64>,
     recording: RwSignal<bool>,
     starting: RwSignal<bool>,
     finishing: RwSignal<bool>,
@@ -295,6 +297,9 @@ async fn ask_agent(text: String, source: AgentSource, state: AgentState) {
     if prompt.is_empty() || state.busy.get_untracked() {
         return;
     }
+    let generation = state.generation.get_untracked().wrapping_add(1);
+    state.generation.set(generation);
+    state.notice.set(None);
     let user = IslandMessage {
         id: storage::unique_id("agent-message"),
         user: true,
@@ -376,20 +381,50 @@ async fn ask_agent(text: String, source: AgentSource, state: AgentState) {
                 app_name: Some(active.name),
                 model: Some(reply.model),
             });
-            if settings.speak_responses
-                && matches!(source, AgentSource::Voice)
-                && let Ok(source) = bridge::speak_text(&reply.content).await
-                && !source.is_empty()
-            {
-                let _ = bridge::play_audio(&source).await;
+            state.busy.set(false);
+            if settings.speak_responses && matches!(source, AgentSource::Voice) {
+                let content = reply.content;
+                spawn_local(async move {
+                    let result = bridge::speak_text(&content).await;
+                    if state.generation.get_untracked() != generation {
+                        return;
+                    }
+                    match result {
+                        Ok(source) if source.is_empty() => {
+                            state.phase.set("Speech unavailable".to_owned());
+                            state.notice.set(Some(
+                                "The reply is ready, but speech synthesis returned no audio. Check the Speech model in Settings."
+                                    .to_owned(),
+                            ));
+                        }
+                        Ok(source) => {
+                            if bridge::play_audio(&source).await.is_err()
+                                && state.generation.get_untracked() == generation
+                            {
+                                state.phase.set("Audio playback failed".to_owned());
+                                state.notice.set(Some(
+                                    "The reply is ready, but Onyx couldn’t play the generated audio. Check the current audio output and try again."
+                                        .to_owned(),
+                                ));
+                            }
+                        }
+                        Err(_) => {
+                            state.phase.set("Speech unavailable".to_owned());
+                            state.notice.set(Some(
+                                "The reply is ready, but speech synthesis failed. Check the Speech model and API connection in Settings."
+                                    .to_owned(),
+                            ));
+                        }
+                    }
+                });
             }
         }
         Err(cause) => {
             state.phase.set("Couldn’t answer".to_owned());
             append_agent_error(state.messages, cause);
+            state.busy.set(false);
         }
     }
-    state.busy.set(false);
 }
 
 async fn finish_agent(state: AgentState) {
@@ -465,10 +500,12 @@ async fn collapse_agent(state: AgentState) {
 pub fn AgentOverlay() -> impl IntoView {
     let mode = RwSignal::new(OverlayMode::Inactive);
     let phase = RwSignal::new("Ask Onyx".to_owned());
+    let notice = RwSignal::new(None::<String>);
     let level = RwSignal::new(0.0_f64);
     let draft = RwSignal::new(String::new());
     let messages = RwSignal::new(Vec::<IslandMessage>::new());
     let busy = RwSignal::new(false);
+    let generation = RwSignal::new(0_u64);
     let recording = RwSignal::new(false);
     let starting = RwSignal::new(false);
     let finishing = RwSignal::new(false);
@@ -476,10 +513,12 @@ pub fn AgentOverlay() -> impl IntoView {
     let state = AgentState {
         mode,
         phase,
+        notice,
         level,
         draft,
         messages,
         busy,
+        generation,
         recording,
         starting,
         finishing,
@@ -494,6 +533,7 @@ pub fn AgentOverlay() -> impl IntoView {
     Effect::new(move |_| {
         let _ = messages.get();
         let _ = busy.get();
+        let _ = notice.get();
         let conversation = conversation;
         spawn_local(async move {
             TimeoutFuture::new(0).await;
@@ -607,6 +647,17 @@ pub fn AgentOverlay() -> impl IntoView {
                         </Show>
                         <Show when=move || busy.get()>
                             <div class="onyx-agent__typing" aria-label="Onyx is thinking"><i /><i /><i /></div>
+                        </Show>
+                        <Show when=move || notice.get().is_some()>
+                            <article
+                                class="onyx-agent__message"
+                                data-role="assistant"
+                                role="status"
+                            >
+                                <div class="zai-message-markdown">
+                                    <p>{move || notice.get().unwrap_or_default()}</p>
+                                </div>
+                            </article>
                         </Show>
                     </div>
 

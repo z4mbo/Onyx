@@ -1,6 +1,7 @@
 mod active_app;
 mod clerk_oauth;
 mod credentials;
+mod internal_browser;
 mod microphone;
 mod model;
 mod modifier_hold;
@@ -16,10 +17,11 @@ use crate::{
     model::{
         ActiveAppContext, AgentSession, ApprovalDecision, ChatReply, ChatRequest,
         CreateSessionInput, MediaGenerationRequest, Message, MessageKind, MessageRole,
-        OpenAiStatus, OpenRouterModel, OpenRouterStatus, ProviderBrand, ProviderId,
-        ProviderModelOption, ProviderStatus, ProviderUsage, SendMessageInput, SessionEvent,
-        SessionStatus, TranscriptionReply, TranscriptionRequest, UpdateSessionOptionsInput,
-        VideoJob, VoiceSettings, WorkspaceEntry,
+        OpenAiStatus, OpenRouterModel, OpenRouterStatus, OpenRouterVoiceCatalog, ProviderBrand,
+        ProviderId, ProviderModelOption, ProviderStatus, ProviderUsage, ProviderUserInputAnswers,
+        RenameSessionInput, SendMessageInput, SessionEvent, SessionStatus, TranscriptionReply,
+        TranscriptionRequest, UpdateInfo, UpdateProgress, UpdateSessionOptionsInput, VideoJob,
+        VoiceSettings, WorkspaceEntry,
     },
     openrouter::ApprovalRegistry,
     storage::SessionStore,
@@ -34,7 +36,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -43,6 +45,7 @@ use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
+use tauri_plugin_updater::UpdaterExt;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -60,6 +63,42 @@ struct AppState {
 }
 
 const VOICE_SETTINGS_MAX_BYTES: u64 = 64 * 1024;
+static UPDATE_INSTALLING: AtomicBool = AtomicBool::new(false);
+const SHUTDOWN_TURN_GRACE: Duration = Duration::from_secs(5);
+
+struct UpdateInstallGuard;
+
+impl Drop for UpdateInstallGuard {
+    fn drop(&mut self) {
+        UPDATE_INSTALLING.store(false, Ordering::Release);
+    }
+}
+
+async fn shutdown_runtime(
+    running: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    approvals: ApprovalRegistry,
+    providers: Arc<providers::ProviderRuntime>,
+    terminals: terminal::TerminalRegistry,
+) {
+    let tokens = running.lock().values().cloned().collect::<Vec<_>>();
+    for token in &tokens {
+        token.cancel();
+    }
+    approvals.lock().clear();
+
+    let terminal_shutdown = tokio::task::spawn_blocking(move || terminals.shutdown_all());
+    let provider_shutdown = providers.shutdown_all();
+    let (terminal_result, ()) = tokio::join!(terminal_shutdown, provider_shutdown);
+    let _ = terminal_result;
+
+    if tokens.is_empty() {
+        return;
+    }
+    let deadline = tokio::time::Instant::now() + SHUTDOWN_TURN_GRACE;
+    while !running.lock().is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
 
 fn load_voice_settings(path: &Path) -> VoiceSettings {
     let Ok(metadata) = std::fs::metadata(path) else {
@@ -135,6 +174,7 @@ fn create_session(
     input: CreateSessionInput,
     state: State<'_, AppState>,
 ) -> Result<AgentSession, String> {
+    let title = storage::normalized_session_title(&input.title)?;
     let workspace = Path::new(input.workspace.trim())
         .canonicalize()
         .map_err(|error| format!("Workspace is unavailable: {error}"))?;
@@ -144,7 +184,7 @@ fn create_session(
     let now = Utc::now();
     state.store.insert(AgentSession {
         id: Uuid::new_v4().to_string(),
-        title: "New session".to_string(),
+        title,
         provider: input.provider,
         provider_brand: input
             .provider_brand
@@ -165,13 +205,37 @@ fn create_session(
 }
 
 #[tauri::command]
+fn rename_session(
+    app: AppHandle,
+    input: RenameSessionInput,
+    state: State<'_, AppState>,
+) -> Result<AgentSession, String> {
+    let session = state.store.rename(input)?;
+    let _ = app.emit(
+        "onyx://session",
+        SessionEvent::Snapshot {
+            session: session.clone(),
+        },
+    );
+    Ok(session)
+}
+
+#[tauri::command]
 async fn update_session_options(
     app: AppHandle,
     input: UpdateSessionOptionsInput,
     state: State<'_, AppState>,
 ) -> Result<AgentSession, String> {
-    state.providers.remove_session(&input.session_id).await;
-    let session = state.store.update_options(input)?;
+    let session_id = input.session_id.clone();
+    state.store.update_options(input)?;
+    state.providers.remove_session(&session_id).await;
+    // Provider shutdown can overlap a rename or another options update. Return
+    // the current persisted snapshot instead of replaying the stale value that
+    // existed before the await.
+    let session = state
+        .store
+        .get(&session_id)
+        .ok_or_else(|| "Session not found".to_string())?;
     let _ = app.emit(
         "onyx://session",
         SessionEvent::Snapshot {
@@ -190,8 +254,8 @@ async fn delete_session(
     if let Some(token) = state.running.lock().remove(&session_id) {
         token.cancel();
     }
-    state.providers.remove_session(&session_id).await;
-    if state.store.remove(&session_id)? {
+    let removed = state.store.remove(&session_id)?;
+    if removed {
         let _ = app.emit(
             "onyx://session",
             SessionEvent::Removed {
@@ -199,6 +263,10 @@ async fn delete_session(
             },
         );
     }
+    let providers = state.providers.clone();
+    tauri::async_runtime::spawn(async move {
+        providers.remove_session(&session_id).await;
+    });
     Ok(())
 }
 
@@ -385,6 +453,12 @@ async fn send_message(
         if let Some(session) = final_session {
             let _ = app_for_task.emit("onyx://session", SessionEvent::Snapshot { session });
         }
+        // Deletion intentionally returns before an adapter finishes shutting
+        // down. If it raced with provider acquisition, the first cleanup may
+        // have observed no slot; repeat it after the turn settles.
+        if store.get(&session_id).is_none() {
+            provider_runtime.remove_session(&session_id).await;
+        }
     });
     Ok(snapshot)
 }
@@ -407,6 +481,11 @@ async fn openrouter_clear_key() -> Result<OpenRouterStatus, String> {
 #[tauri::command]
 async fn openrouter_models() -> Result<Vec<OpenRouterModel>, String> {
     openrouter::models().await
+}
+
+#[tauri::command]
+async fn openrouter_voice_models() -> Result<OpenRouterVoiceCatalog, String> {
+    openrouter::voice_models().await
 }
 
 #[tauri::command]
@@ -700,6 +779,20 @@ fn respond_approval(
 }
 
 #[tauri::command]
+fn respond_user_input(
+    id: String,
+    answers: ProviderUserInputAnswers,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.providers.respond_user_input(&id, answers)
+}
+
+#[tauri::command]
+fn cancel_user_input(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.providers.cancel_user_input(&id)
+}
+
+#[tauri::command]
 fn workspace_entries(workspace: String) -> Result<Vec<WorkspaceEntry>, String> {
     let root = Path::new(&workspace)
         .canonicalize()
@@ -738,6 +831,19 @@ fn workspace_entries(workspace: String) -> Result<Vec<WorkspaceEntry>, String> {
 #[tauri::command]
 async fn workspace_repo_summary(workspace: String) -> Result<workspace::RepoSummary, String> {
     workspace::repo_summary(workspace).await
+}
+
+#[tauri::command]
+async fn workspace_git_branches(workspace: String) -> Result<Vec<String>, String> {
+    workspace::local_branches(workspace).await
+}
+
+#[tauri::command]
+async fn workspace_git_switch_branch(
+    workspace: String,
+    branch: String,
+) -> Result<workspace::RepoSummary, String> {
+    workspace::switch_branch(workspace, branch).await
 }
 
 #[tauri::command]
@@ -901,11 +1007,92 @@ async fn clerk_sign_out(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    let update = app
+        .updater()
+        .map_err(|error| format!("Updater is unavailable: {error}"))?
+        .check()
+        .await
+        .map_err(|error| format!("Unable to check for updates: {error}"))?;
+    Ok(update.map(|update| UpdateInfo {
+        version: update.version,
+        current_version: update.current_version,
+        notes: update.body,
+        published_at: update.date.map(|value| value.to_string()),
+    }))
+}
+
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    if UPDATE_INSTALLING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err("An update is already being installed".to_owned());
+    }
+    let _install_guard = UpdateInstallGuard;
+    let update = app
+        .updater()
+        .map_err(|error| format!("Updater is unavailable: {error}"))?
+        .check()
+        .await
+        .map_err(|error| format!("Unable to check for updates: {error}"))?
+        .ok_or_else(|| "No update is ready to install".to_string())?;
+
+    let progress_app = app.clone();
+    let finished_app = app.clone();
+    let downloaded = Arc::new(AtomicU64::new(0));
+    let progress_downloaded = downloaded.clone();
+    let finished_downloaded = downloaded;
+    update
+        .download_and_install(
+            move |chunk, total| {
+                let downloaded =
+                    progress_downloaded.fetch_add(chunk as u64, Ordering::Relaxed) + chunk as u64;
+                let _ = progress_app.emit(
+                    "onyx://update-progress",
+                    UpdateProgress {
+                        downloaded,
+                        total,
+                        finished: false,
+                    },
+                );
+            },
+            move || {
+                let downloaded = finished_downloaded.load(Ordering::Relaxed);
+                let _ = finished_app.emit(
+                    "onyx://update-progress",
+                    UpdateProgress {
+                        downloaded,
+                        total: Some(downloaded),
+                        finished: true,
+                    },
+                );
+            },
+        )
+        .await
+        .map_err(|error| format!("Unable to install the update: {error}"))?;
+
+    if let Some(state) = app.try_state::<AppState>() {
+        state
+            .exiting
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| "Onyx is already shutting down".to_owned())?;
+        let running = state.running.clone();
+        let approvals = state.approvals.clone();
+        let providers = state.providers.clone();
+        let terminals = state.terminals.clone();
+        shutdown_runtime(running, approvals, providers, terminals).await;
+    }
+    app.request_restart();
+    Ok(())
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             list_providers,
@@ -916,6 +1103,7 @@ pub fn run() {
             request_native_voice_permissions,
             list_sessions,
             create_session,
+            rename_session,
             update_session_options,
             delete_session,
             send_message,
@@ -925,6 +1113,7 @@ pub fn run() {
             openrouter_save_key,
             openrouter_clear_key,
             openrouter_models,
+            openrouter_voice_models,
             openai_status,
             openai_save_key,
             openai_clear_key,
@@ -944,8 +1133,12 @@ pub fn run() {
             start_video,
             poll_video,
             respond_approval,
+            respond_user_input,
+            cancel_user_input,
             workspace_entries,
             workspace_repo_summary,
+            workspace_git_branches,
+            workspace_git_switch_branch,
             workspace_git_init,
             workspace_git_diff,
             workspace_read_file,
@@ -959,10 +1152,20 @@ pub fn run() {
             terminal_write,
             terminal_resize,
             terminal_close,
+            internal_browser::internal_browser_open,
+            internal_browser::internal_browsers_set_visible,
+            internal_browser::internal_browser_navigate,
+            internal_browser::internal_browser_back,
+            internal_browser::internal_browser_forward,
+            internal_browser::internal_browser_reload,
+            internal_browser::internal_browser_set_bounds,
+            internal_browser::internal_browser_close,
             start_clerk_oauth,
             clerk_account_profile,
             clerk_account_token,
             clerk_sign_out,
+            check_update,
+            install_update,
         ])
         .setup(|app| {
             let data_dir = app
@@ -1015,6 +1218,9 @@ pub fn run() {
         .expect("failed to build Onyx");
 
     app.run(|handle, event| match event {
+        RunEvent::Reopen { .. } => {
+            let _ = windowing::show_main(handle);
+        }
         RunEvent::ExitRequested { api, code, .. } => {
             if let Some(state) = handle.try_state::<AppState>() {
                 let had_running_turns = !state.running.lock().is_empty();
@@ -1023,19 +1229,13 @@ pub fn run() {
                     && !state.exiting.swap(true, Ordering::SeqCst)
                 {
                     api.prevent_exit();
-                    for token in state.running.lock().values() {
-                        token.cancel();
-                    }
-                    state.approvals.lock().clear();
                     let handle = handle.clone();
+                    let running = state.running.clone();
+                    let approvals = state.approvals.clone();
                     let providers = state.providers.clone();
                     let terminals = state.terminals.clone();
                     tauri::async_runtime::spawn(async move {
-                        let _ = tokio::task::spawn_blocking(move || terminals.shutdown_all()).await;
-                        providers.shutdown_all().await;
-                        if had_running_turns {
-                            tokio::time::sleep(Duration::from_millis(2_500)).await;
-                        }
+                        shutdown_runtime(running, approvals, providers, terminals).await;
                         handle.exit(code.unwrap_or(0));
                     });
                 }
@@ -1084,4 +1284,38 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn managed_shutdown_cancels_and_waits_for_running_turns() {
+        let running = Arc::new(Mutex::new(HashMap::new()));
+        let cancellation = CancellationToken::new();
+        running
+            .lock()
+            .insert("session".to_owned(), cancellation.clone());
+
+        let task_running = running.clone();
+        let task_cancellation = cancellation.clone();
+        let completion = tokio::spawn(async move {
+            task_cancellation.cancelled().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            task_running.lock().remove("session");
+        });
+
+        shutdown_runtime(
+            running.clone(),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(providers::ProviderRuntime::new()),
+            terminal::TerminalRegistry::default(),
+        )
+        .await;
+
+        completion.await.expect("turn cleanup task should finish");
+        assert!(cancellation.is_cancelled());
+        assert!(running.lock().is_empty());
+    }
 }

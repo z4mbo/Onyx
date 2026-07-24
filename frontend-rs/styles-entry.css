@@ -2,9 +2,12 @@
 @import "./styles/account.css";
 @import "./styles/chat.css";
 @import "./styles/composer.css";
+@import "./styles/environment.css";
 @import "./styles/overlay.css";
 @import "./styles/workspace-panels.css";
 @import "./styles/git-dialog.css";
+@import "./styles/update.css";
+@import "./styles/user-input.css";
 @import "./styles/surface-views.css";
 @import "@xterm/xterm/css/xterm.css";
 

@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -238,6 +238,7 @@ pub struct AgentSession {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSessionInput {
+    pub title: String,
     pub provider: ProviderId,
     #[serde(default)]
     pub provider_brand: Option<ProviderBrand>,
@@ -251,6 +252,13 @@ pub struct CreateSessionInput {
     #[serde(default)]
     pub access_mode: AccessMode,
     pub workspace: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameSessionInput {
+    pub session_id: String,
+    pub title: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -355,6 +363,46 @@ pub struct ApprovalRequest {
     pub created_at: DateTime<Utc>,
 }
 
+pub type ProviderUserInputAnswers = BTreeMap<String, Vec<String>>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUserInputOption {
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUserInputQuestion {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    pub options: Vec<ProviderUserInputOption>,
+    pub multi_select: bool,
+    pub allow_other: bool,
+    pub secret: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUserInputPrompt {
+    pub title: String,
+    pub questions: Vec<ProviderUserInputQuestion>,
+    pub auto_resolution_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUserInputRequest {
+    pub id: String,
+    pub session_id: String,
+    pub title: String,
+    pub questions: Vec<ProviderUserInputQuestion>,
+    pub auto_resolution_ms: Option<u64>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceEntry {
@@ -378,6 +426,24 @@ pub struct OpenRouterModel {
     pub input_modalities: Vec<String>,
     #[serde(default)]
     pub output_modalities: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenRouterVoiceModel {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub supported_voices: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenRouterVoiceCatalog {
+    #[serde(default)]
+    pub transcription: Vec<OpenRouterVoiceModel>,
+    #[serde(default)]
+    pub speech: Vec<OpenRouterVoiceModel>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -545,4 +611,81 @@ pub struct VideoJob {
     pub polling_url: String,
     pub content_url: Option<String>,
     pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    pub version: String,
+    pub current_version: String,
+    pub notes: Option<String>,
+    pub published_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProgress {
+    pub downloaded: u64,
+    pub total: Option<u64>,
+    pub finished: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ProviderUserInputAnswers, ProviderUserInputOption, ProviderUserInputQuestion,
+        ProviderUserInputRequest,
+    };
+    use chrono::{TimeZone, Utc};
+    use serde_json::json;
+
+    #[test]
+    fn provider_user_input_uses_a_provider_neutral_camel_case_contract() {
+        let request = ProviderUserInputRequest {
+            id: "request-1".to_string(),
+            session_id: "session-1".to_string(),
+            title: "Input needed".to_string(),
+            questions: vec![ProviderUserInputQuestion {
+                id: "scope".to_string(),
+                header: "Scope".to_string(),
+                question: "Which scope?".to_string(),
+                options: vec![ProviderUserInputOption {
+                    label: "Focused".to_string(),
+                    description: "Only this module".to_string(),
+                }],
+                multi_select: false,
+                allow_other: true,
+                secret: false,
+            }],
+            auto_resolution_ms: Some(30_000),
+            created_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({
+                "id": "request-1",
+                "sessionId": "session-1",
+                "title": "Input needed",
+                "questions": [{
+                    "id": "scope",
+                    "header": "Scope",
+                    "question": "Which scope?",
+                    "options": [{
+                        "label": "Focused",
+                        "description": "Only this module"
+                    }],
+                    "multiSelect": false,
+                    "allowOther": true,
+                    "secret": false
+                }],
+                "autoResolutionMs": 30_000,
+                "createdAt": "2023-11-14T22:13:20Z"
+            })
+        );
+
+        let answers: ProviderUserInputAnswers =
+            serde_json::from_value(json!({"scope": ["Focused"]})).unwrap();
+        assert_eq!(answers["scope"], ["Focused"]);
+    }
 }

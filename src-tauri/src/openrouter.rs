@@ -5,7 +5,8 @@ use crate::{
     model::{
         AccessMode, AgentSession, ApprovalDecision, ApprovalRequest, ChatMedia, ChatMessageInput,
         ChatReply, Message, MessageKind, MessageRole, OpenRouterModel, OpenRouterStatus,
-        SessionEvent, TranscriptionReply, TranscriptionRequest, VideoJob,
+        OpenRouterVoiceCatalog, OpenRouterVoiceModel, SessionEvent, TranscriptionReply,
+        TranscriptionRequest, VideoJob,
     },
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -33,6 +34,7 @@ use tokio::{
     time::timeout,
 };
 use tokio_util::sync::CancellationToken;
+use url::Url;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -52,6 +54,8 @@ const MAX_SPEECH_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ERROR_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_ERROR_MESSAGE_BYTES: usize = 2 * 1024;
 const MAX_ASSISTANT_CONTENT_BYTES: usize = 1024 * 1024;
+const MAX_SUPPORTED_VOICES_PER_MODEL: usize = 256;
+const MAX_VOICE_ID_BYTES: usize = 128;
 const MAX_TOOL_CALLS_PER_ROUND: usize = 16;
 const MAX_TOOL_CALLS_PER_TURN: usize = 64;
 const MAX_TOOL_CALL_ID_BYTES: usize = 256;
@@ -143,6 +147,16 @@ pub async fn clear_key() -> Result<OpenRouterStatus, String> {
 pub async fn models() -> Result<Vec<OpenRouterModel>, String> {
     let key = read_key().await?;
     fetch_models(&key).await
+}
+
+pub async fn voice_models() -> Result<OpenRouterVoiceCatalog, String> {
+    let key = read_key().await?;
+    let client = model_catalog_client()?;
+    let body = fetch_model_document(&client, &key, Some("all")).await?;
+    Ok(OpenRouterVoiceCatalog {
+        transcription: parse_voice_models(&body, "transcription")?,
+        speech: parse_voice_models(&body, "speech")?,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -612,13 +626,6 @@ pub(crate) async fn read_key() -> Result<String, String> {
     .map_err(|error| error.to_string())?
 }
 
-/// Speech-to-text-only models (Whisper, GPT-4o Transcribe) must use the
-/// dedicated `/audio/transcriptions` endpoint; audio-capable chat models
-/// (for example google/gemini-2.5-flash) go through chat completions.
-fn uses_transcription_endpoint(model: &str) -> bool {
-    model.contains("whisper") || model.contains("transcribe")
-}
-
 fn transcription_endpoint_payload(
     model: &str,
     language: Option<&str>,
@@ -636,31 +643,15 @@ fn transcription_endpoint_payload(
     payload
 }
 
-fn transcription_chat_payload(
+fn transcription_request(
     model: &str,
     language: Option<&str>,
     request: &TranscriptionRequest,
-) -> Value {
-    let mut instruction = String::from(
-        "Transcribe this audio recording verbatim in the language spoken. Reply with only the transcribed text with natural punctuation - no commentary, no quotes, no labels.",
-    );
-    if let Some(language) = language.filter(|value| !value.trim().is_empty()) {
-        instruction.push_str(&format!(" The speaker's language is {language}."));
-    }
-    json!({
-        "model": model,
-        "messages": [{
-            "role": "user",
-            "content": [
-                { "type": "text", "text": instruction },
-                {
-                    "type": "input_audio",
-                    "input_audio": { "data": request.audio_base64, "format": request.format }
-                }
-            ]
-        }],
-        "temperature": 0
-    })
+) -> (&'static str, Value) {
+    (
+        "/audio/transcriptions",
+        transcription_endpoint_payload(model, language, request),
+    )
 }
 
 pub async fn transcribe(
@@ -674,18 +665,7 @@ pub async fn transcribe(
     if model.is_empty() || model.len() > MAX_MODEL_ID_BYTES {
         return Err("The transcription model is invalid".into());
     }
-    let dedicated = uses_transcription_endpoint(model);
-    let (path, payload) = if dedicated {
-        (
-            "/audio/transcriptions",
-            transcription_endpoint_payload(model, language, request),
-        )
-    } else {
-        (
-            "/chat/completions",
-            transcription_chat_payload(model, language, request),
-        )
-    };
+    let (path, payload) = transcription_request(model, language, request);
     let key = read_key().await?;
     let response = transcription_client()?
         .post(format!("{API_BASE}{path}"))
@@ -716,16 +696,9 @@ pub async fn transcribe(
                 .to_string(),
         );
     }
-    let text = if dedicated {
-        extract_content_limited(value.get("text"), MAX_ASSISTANT_CONTENT_BYTES)?
-    } else {
-        extract_content_limited(
-            value.pointer("/choices/0/message/content"),
-            MAX_ASSISTANT_CONTENT_BYTES,
-        )?
-    }
-    .trim()
-    .to_string();
+    let text = extract_content_limited(value.get("text"), MAX_ASSISTANT_CONTENT_BYTES)?
+        .trim()
+        .to_string();
     if text.is_empty() {
         return Err("No understandable speech was detected".into());
     }
@@ -1054,12 +1027,29 @@ pub async fn poll_video(id: &str) -> Result<VideoJob, String> {
     })
 }
 
-async fn fetch_models(key: &str) -> Result<Vec<OpenRouterModel>, String> {
-    let response = Client::builder()
+fn model_catalog_client() -> Result<Client, String> {
+    Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
-        .map_err(|error| error.to_string())?
-        .get(format!("{API_BASE}/models"))
+        .map_err(|error| error.to_string())
+}
+
+fn model_catalog_url(output_modality: Option<&str>) -> Result<Url, String> {
+    let mut url = Url::parse(&format!("{API_BASE}/models")).map_err(|error| error.to_string())?;
+    if let Some(output_modality) = output_modality {
+        url.query_pairs_mut()
+            .append_pair("output_modalities", output_modality);
+    }
+    Ok(url)
+}
+
+async fn fetch_model_document(
+    client: &Client,
+    key: &str,
+    output_modality: Option<&str>,
+) -> Result<Value, String> {
+    let response = client
+        .get(model_catalog_url(output_modality)?)
         .bearer_auth(key)
         .header("HTTP-Referer", "https://github.com/z4mbo/Onyx")
         .header("X-OpenRouter-Title", "Onyx")
@@ -1087,8 +1077,13 @@ async fn fetch_models(key: &str) -> Result<Vec<OpenRouterModel>, String> {
             String::from_utf8_lossy(&response_body),
         ));
     }
-    let body: Value = serde_json::from_slice(&response_body)
-        .map_err(|_| "OpenRouter returned invalid model data".to_string())?;
+    serde_json::from_slice(&response_body)
+        .map_err(|_| "OpenRouter returned invalid model data".to_string())
+}
+
+async fn fetch_models(key: &str) -> Result<Vec<OpenRouterModel>, String> {
+    let client = model_catalog_client()?;
+    let body = fetch_model_document(&client, key, None).await?;
     let mut models = body
         .get("data")
         .and_then(Value::as_array)
@@ -1139,6 +1134,69 @@ async fn fetch_models(key: &str) -> Result<Vec<OpenRouterModel>, String> {
     if models.is_empty() {
         return Err("No OpenRouter models were returned for this key".to_string());
     }
+    Ok(models)
+}
+
+fn parse_voice_models(
+    body: &Value,
+    output_modality: &str,
+) -> Result<Vec<OpenRouterVoiceModel>, String> {
+    let data = body
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "OpenRouter returned invalid voice model data".to_string())?;
+    let mut models = data
+        .iter()
+        .filter(|model| {
+            model
+                .pointer("/architecture/output_modalities")
+                .and_then(Value::as_array)
+                .is_some_and(|modalities| {
+                    modalities.iter().any(|modality| {
+                        modality
+                            .as_str()
+                            .is_some_and(|value| value.eq_ignore_ascii_case(output_modality))
+                    })
+                })
+        })
+        .filter_map(|model| {
+            let id = model.get("id")?.as_str()?.trim();
+            if id.is_empty() || id.len() > MAX_MODEL_ID_BYTES || id.chars().any(char::is_control) {
+                return None;
+            }
+            let mut supported_voices = model
+                .get("supported_voices")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|voice| {
+                    !voice.is_empty()
+                        && voice.len() <= MAX_VOICE_ID_BYTES
+                        && !voice.chars().any(char::is_control)
+                })
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            supported_voices.sort_unstable();
+            supported_voices.dedup();
+            supported_voices.truncate(MAX_SUPPORTED_VOICES_PER_MODEL);
+            Some(OpenRouterVoiceModel {
+                id: id.to_owned(),
+                name: model
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(id)
+                    .to_owned(),
+                supported_voices,
+            })
+        })
+        .collect::<Vec<_>>();
+    models.sort_by(|left, right| left.id.cmp(&right.id));
+    models.dedup_by(|left, right| left.id == right.id);
+    models.sort_by_key(|model| model.name.to_lowercase());
     Ok(models)
 }
 
@@ -1988,51 +2046,73 @@ mod tests {
         MAX_HISTORY_CONTENT_BYTES, MAX_HISTORY_MESSAGES, MAX_REQUEST_CONTEXT_BYTES,
         MAX_TOOL_CALLS_PER_ROUND, MAX_TOOL_NAME_BYTES, MAX_TURN_CONTEXT_GROWTH_BYTES,
         TRUNCATION_MARKER, bounded_activity_detail, build_initial_messages,
-        extract_content_limited, parse_tool_calls, push_turn_context_message, read_workspace_text,
-        run_shell_command, safe_path, secure_write, transcription_chat_payload,
-        transcription_endpoint_payload, truncate_utf8_with_marker, uses_transcription_endpoint,
+        extract_content_limited, model_catalog_url, parse_tool_calls, parse_voice_models,
+        push_turn_context_message, read_workspace_text, run_shell_command, safe_path, secure_write,
+        transcription_endpoint_payload, transcription_request, truncate_utf8_with_marker,
     };
     use crate::model::{Message, MessageKind, MessageRole, TranscriptionRequest};
     use serde_json::json;
     use std::fs;
 
     #[test]
-    fn transcription_builds_an_audio_chat_completion() {
+    fn every_openrouter_stt_model_uses_the_transcription_endpoint() {
         let request = TranscriptionRequest {
             audio_base64: "audio".into(),
             format: "wav".into(),
         };
-        let unset = transcription_chat_payload("model", None, &request);
-        assert_eq!(unset.get("model"), Some(&json!("model")));
+        let (path, payload) = transcription_request("deepgram/nova-3", None, &request);
+        assert_eq!(path, "/audio/transcriptions");
+        assert_eq!(payload.get("model"), Some(&json!("deepgram/nova-3")));
         assert_eq!(
-            unset.pointer("/messages/0/content/1/input_audio"),
+            payload.get("input_audio"),
             Some(&json!({ "data": "audio", "format": "wav" }))
-        );
-        let instruction = |payload: &serde_json::Value| {
-            payload
-                .pointer("/messages/0/content/0/text")
-                .and_then(serde_json::Value::as_str)
-                .unwrap()
-                .to_string()
-        };
-        assert!(!instruction(&unset).contains("speaker's language"));
-        assert!(
-            !instruction(&transcription_chat_payload("model", Some("  "), &request))
-                .contains("speaker's language")
-        );
-        assert!(
-            instruction(&transcription_chat_payload("model", Some("it"), &request))
-                .contains("language is it")
         );
     }
 
     #[test]
-    fn speech_to_text_models_route_to_the_transcription_endpoint() {
-        assert!(uses_transcription_endpoint("openai/whisper-large-v3"));
-        assert!(uses_transcription_endpoint("openai/whisper-large-v3-turbo"));
-        assert!(uses_transcription_endpoint("openai/gpt-4o-mini-transcribe"));
-        assert!(!uses_transcription_endpoint("google/gemini-2.5-flash"));
-        assert!(!uses_transcription_endpoint("openai/gpt-audio-mini"));
+    fn voice_catalog_url_requests_all_modalities_once() {
+        let url = model_catalog_url(Some("all")).expect("catalog URL");
+        assert_eq!(url.path(), "/api/v1/models");
+        assert_eq!(
+            url.query_pairs().collect::<Vec<_>>(),
+            vec![("output_modalities".into(), "all".into())]
+        );
+    }
+
+    #[test]
+    fn voice_catalog_parser_filters_modalities_and_normalizes_voices() {
+        let body = json!({
+            "data": [
+                {
+                    "id": "deepgram/nova-3",
+                    "name": "Nova 3",
+                    "architecture": { "output_modalities": ["transcription"] },
+                    "supported_voices": null
+                },
+                {
+                    "id": "provider/voice",
+                    "name": "Voice",
+                    "architecture": { "output_modalities": ["speech"] },
+                    "supported_voices": ["voice-b", "voice-a", "voice-a", ""]
+                },
+                {
+                    "id": "provider/audio-chat",
+                    "name": "Audio chat",
+                    "architecture": { "output_modalities": ["audio", "text"] },
+                    "supported_voices": ["wrong"]
+                }
+            ]
+        });
+
+        let transcription = parse_voice_models(&body, "transcription").expect("STT models");
+        assert_eq!(transcription.len(), 1);
+        assert_eq!(transcription[0].id, "deepgram/nova-3");
+        assert!(transcription[0].supported_voices.is_empty());
+
+        let speech = parse_voice_models(&body, "speech").expect("TTS models");
+        assert_eq!(speech.len(), 1);
+        assert_eq!(speech[0].id, "provider/voice");
+        assert_eq!(speech[0].supported_voices, ["voice-a", "voice-b"]);
     }
 
     #[test]

@@ -1,8 +1,10 @@
 use super::{
     cli::CliSession,
     driver::{
-        DriverFuture, ProviderActivity, ProviderApproval, ProviderDriver, ProviderEvent,
-        ProviderSession, ProviderSessionConfig,
+        DriverFuture, MAX_USER_INPUT_OPTIONS, MAX_USER_INPUT_QUESTIONS, ProviderActivity,
+        ProviderApproval, ProviderDriver, ProviderEvent, ProviderSession, ProviderSessionConfig,
+        ProviderUserInput, ProviderUserInputAnswers, ProviderUserInputOption,
+        ProviderUserInputPrompt, ProviderUserInputQuestion, ProviderUserInputResponse,
     },
     normalize::{NormalizedEvent, StreamNormalizer},
     process::{JsonProcess, ProcessOutput, find_executable, platform_command},
@@ -289,17 +291,9 @@ impl ClaudeSession {
                 .await;
         }
 
-        // Onyx has no interactive multiple-choice prompt, so route questions
-        // through the normal reply where the user can actually answer them.
         if tool_name == "AskUserQuestion" {
             return self
-                .process
-                .send_json(&control_response(
-                    request_id,
-                    permission_deny(
-                        "Onyx cannot render interactive question prompts. Ask the user directly in your reply text and end the turn so they can answer.",
-                    ),
-                ))
+                .handle_ask_user_question(request_id, input, cancellation, events)
                 .await;
         }
 
@@ -345,6 +339,142 @@ impl ClaudeSession {
             .send_json(&control_response(request_id, permission))
             .await
     }
+
+    async fn handle_ask_user_question(
+        &mut self,
+        request_id: &str,
+        input: Value,
+        cancellation: &CancellationToken,
+        events: &mpsc::Sender<ProviderEvent>,
+    ) -> Result<(), String> {
+        let prompt = claude_user_input_prompt(&input)?;
+        let prompt_for_response = prompt.clone();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        send_event(
+            events,
+            ProviderEvent::UserInput(ProviderUserInput {
+                prompt,
+                responder: sender,
+            }),
+        )
+        .await?;
+        let response = tokio::select! {
+            _ = cancellation.cancelled() => {
+                self.process.shutdown().await;
+                return Err("Turn cancelled".to_string());
+            }
+            response = receiver => response.unwrap_or(ProviderUserInputResponse::Cancelled),
+        };
+        let permission = match response {
+            ProviderUserInputResponse::Answered(answers) => {
+                claude_user_input_permission(input, &prompt_for_response, &answers)?
+            }
+            ProviderUserInputResponse::Cancelled => {
+                permission_deny("User cancelled the interactive question")
+            }
+        };
+        self.process
+            .send_json(&control_response(request_id, permission))
+            .await
+    }
+}
+
+fn claude_user_input_prompt(input: &Value) -> Result<ProviderUserInputPrompt, String> {
+    let raw_questions = input
+        .get("questions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Claude AskUserQuestion did not include questions".to_string())?;
+    if raw_questions.len() > MAX_USER_INPUT_QUESTIONS {
+        return Err(format!(
+            "Claude AskUserQuestion exceeded the {MAX_USER_INPUT_QUESTIONS}-question limit"
+        ));
+    }
+
+    let mut questions = Vec::with_capacity(raw_questions.len());
+    for (index, raw) in raw_questions.iter().enumerate() {
+        let question = required_field(raw, "question", "Claude question text")?;
+        let raw_options = match raw.get("options") {
+            Some(Value::Array(options)) => options.as_slice(),
+            Some(Value::Null) | None => &[],
+            Some(_) => return Err("Claude question options were not an array".to_string()),
+        };
+        if raw_options.len() > MAX_USER_INPUT_OPTIONS {
+            return Err(format!(
+                "Claude question exceeded the {MAX_USER_INPUT_OPTIONS}-option limit"
+            ));
+        }
+        let options = raw_options
+            .iter()
+            .map(|option| {
+                Ok(ProviderUserInputOption {
+                    label: required_field(option, "label", "Claude question option label")?
+                        .to_string(),
+                    description: option
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        questions.push(ProviderUserInputQuestion {
+            // Claude Code indexes the returned answer map by the full question
+            // text rather than an independent tool-provided id.
+            id: question.to_string(),
+            header: raw
+                .get("header")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("Question {}", index + 1)),
+            question: question.to_string(),
+            options,
+            multi_select: raw
+                .get("multiSelect")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            // Claude Code always offers an "Other" free-text answer.
+            allow_other: true,
+            secret: false,
+        });
+    }
+    ProviderUserInputPrompt::new("Claude needs your input", questions, None)
+}
+
+fn claude_user_input_permission(
+    mut input: Value,
+    prompt: &ProviderUserInputPrompt,
+    answers: &ProviderUserInputAnswers,
+) -> Result<Value, String> {
+    let input = input
+        .as_object_mut()
+        .ok_or_else(|| "Claude AskUserQuestion input was not an object".to_string())?;
+    let mut encoded = serde_json::Map::new();
+    for question in &prompt.questions {
+        let values = answers
+            .get(&question.id)
+            .ok_or_else(|| format!("Missing answer for {}", question.header))?;
+        let value = if question.multi_select {
+            json!(values)
+        } else {
+            json!(
+                values
+                    .first()
+                    .ok_or_else(|| format!("Missing answer for {}", question.header))?
+            )
+        };
+        encoded.insert(question.id.clone(), value);
+    }
+    input.insert("answers".to_string(), Value::Object(encoded));
+    Ok(permission_allow(Value::Object(input.clone()), None))
+}
+
+fn required_field<'a>(value: &'a Value, field: &str, label: &str) -> Result<&'a str, String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{label} is missing"))
 }
 
 fn parse_context_usage(value: &Value) -> Option<ContextUsage> {
@@ -529,12 +659,12 @@ async fn send_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        control_error, control_response, initialize_request, permission_allow, permission_deny,
-        persistent_args, user_message,
+        claude_user_input_permission, claude_user_input_prompt, control_error, control_response,
+        initialize_request, permission_allow, permission_deny, persistent_args, user_message,
     };
     use crate::{
         model::{AccessMode, InteractionMode, ProviderId, ReasoningEffort, SpeedMode},
-        providers::driver::ProviderSessionConfig,
+        providers::driver::{ProviderSessionConfig, ProviderUserInputAnswers},
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -655,5 +785,45 @@ mod tests {
         let response = control_error("request-2", "unsupported");
         assert_eq!(response["response"]["subtype"], "error");
         assert_eq!(response["response"]["request_id"], "request-2");
+    }
+
+    #[test]
+    fn ask_user_question_round_trips_structured_answers() {
+        let input = json!({
+            "questions": [{
+                "header": "Scope",
+                "question": "Which scope should I use?",
+                "options": [
+                    {"label": "Focused", "description": "Only this module"},
+                    {"label": "Broad", "description": "The whole workspace"}
+                ],
+                "multiSelect": false
+            }]
+        });
+        let prompt = claude_user_input_prompt(&input).expect("valid AskUserQuestion");
+        assert_eq!(prompt.questions[0].id, "Which scope should I use?");
+        assert!(prompt.questions[0].allow_other);
+        let answers = ProviderUserInputAnswers::from([(
+            "Which scope should I use?".to_string(),
+            vec!["Focused".to_string()],
+        )]);
+        let permission =
+            claude_user_input_permission(input, &prompt, &answers).expect("permission");
+        assert_eq!(permission["behavior"], "allow");
+        assert_eq!(
+            permission["updatedInput"]["answers"]["Which scope should I use?"],
+            "Focused"
+        );
+    }
+
+    #[test]
+    fn malformed_ask_user_question_is_not_auto_denied_or_answered() {
+        assert!(claude_user_input_prompt(&json!({"questions": []})).is_err());
+        assert!(
+            claude_user_input_prompt(&json!({
+                "questions": [{"header": "Missing prompt"}]
+            }))
+            .is_err()
+        );
     }
 }

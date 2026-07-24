@@ -1,20 +1,14 @@
 @import "@opencode-ai/ui/v2/styles/tailwind.css";
 
-@font-face {
-  font-family: "Inter";
-  src: url("@opencode-ai/ui/fonts/Inter.ttf") format("truetype");
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-}
-
 :root {
-  font-family: "Inter", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--v2-text-text-base);
   background: var(--v2-background-bg-deep);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --zai-content-width: 920px;
+  --font-family-text: "DM Sans Variable", "DM Sans", sans-serif;
+  --v2-font-family-sans: "DM Sans Variable", "DM Sans", sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -173,6 +167,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   width: min(var(--zai-content-width), calc(100% - 48px));
   transform: translateX(-50%);
 }
+.zai-new-session__name { display: flex; width: min(920px, calc(100vw - 48px)); margin: 0 auto 12px; flex-direction: column; gap: 6px; color: var(--v2-text-text-faint); font-size: 11px; font-weight: 600; letter-spacing: .01em; }
+.zai-new-session__name input { width: 100%; height: 42px; border: .5px solid var(--v2-border-border-base); border-radius: 12px; padding: 0 14px; outline: none; background: var(--v2-background-bg-base); color: var(--v2-text-text-base); font: 500 14px/1.2 inherit; box-shadow: var(--v2-elevation-surface); }
+.zai-new-session__name input:focus { border-color: var(--v2-border-border-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--v2-text-text-accent) 14%, transparent); }
 .zai-new-session__composer { position: relative; z-index: 2; width: min(920px, calc(100vw - 48px)); margin-left: 50%; transform: translateX(-50%); }
 .zai-new-session__workspace-row {
   display: flex;
@@ -450,10 +447,31 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .zai-workspace-header__project { max-width: 140px; overflow: hidden; color: var(--v2-text-text-muted); font-size: 13px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
 .zai-workspace-header__slash { color: var(--v2-text-text-faint); opacity: .5; }
 .zai-workspace-header h2 { min-width: 40px; margin: 0; overflow: hidden; color: var(--v2-text-text-base); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.zai-session-title { display: flex; min-width: 40px; align-items: center; gap: 3px; overflow: hidden; }
+.zai-session-title h2 { flex: 0 1 auto; }
+.zai-session-title button,.zai-session-title-editor button { display: inline-flex; width: 24px; height: 24px; flex: 0 0 24px; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: var(--v2-text-text-faint); cursor: pointer; }
+.zai-session-title button { opacity: 0; transition: opacity 120ms ease,background 120ms ease; }
+.zai-session-title:hover button,.zai-session-title:focus-within button { opacity: 1; }
+.zai-session-title button:hover,.zai-session-title-editor button:hover { background: var(--v2-overlay-simple-overlay-hover); color: var(--v2-text-text-base); }
+.zai-session-title-editor { display: flex; min-width: 180px; align-items: center; gap: 2px; }
+.zai-session-title-editor input { min-width: 100px; width: min(280px, 25vw); height: 28px; border: .5px solid var(--v2-border-border-focus); border-radius: 7px; padding: 0 8px; outline: none; background: var(--v2-background-bg-base); color: var(--v2-text-text-base); font: 600 13px/1 inherit; }
 .zai-workspace-header__branch { display: inline-flex; min-width: 0; flex: 0 1 auto; align-items: center; gap: 5px; overflow: hidden; color: var(--v2-text-text-faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .zai-workspace-header__branch svg { width: 12px; height: 12px; flex: 0 0 12px; }
-.zai-transcript { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
+.zai-transcript-shell { position: relative; display: flex; min-height: 0; flex: 1; }
+.zai-transcript { flex: 1; min-width: 0; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
 .zai-transcript__inner { width: min(800px, calc(100% - 48px)); min-height: 100%; margin: 0 auto; padding: 72px 0 210px; }
+.zai-prompt-rail { position: absolute; top: 50%; left: 18px; z-index: 8; display: flex; width: 52px; max-height: min(360px, calc(100% - 100px)); flex-direction: column; align-items: flex-start; transform: translateY(-50%); }
+.zai-prompt-rail__track { display: flex; width: 52px; max-height: inherit; flex-direction: column; align-items: flex-start; gap: var(--prompt-rail-gap, 8px); overflow-y: auto; scrollbar-width: none; }
+.zai-prompt-rail__track::-webkit-scrollbar { display: none; }
+.zai-prompt-rail button { position: relative; display: flex; width: 52px; min-height: 1px; height: 12px; max-height: 12px; flex: 1 1 12px; align-items: center; border: 0; padding: 0; background: transparent; cursor: pointer; }
+.zai-prompt-rail__mark { display: block; width: 28px; height: min(2px, 100%); min-height: 1px; border-radius: 999px; background: var(--v2-text-text-faint); opacity: .42; transition: width 120ms ease,background 120ms ease,opacity 120ms ease; }
+.zai-prompt-rail button:hover .zai-prompt-rail__mark,.zai-prompt-rail button:focus-visible .zai-prompt-rail__mark { width: 40px; opacity: .72; }
+.zai-prompt-rail button.active .zai-prompt-rail__mark { width: 52px; height: min(3px, 100%); background: var(--v2-text-text-base); opacity: 1; }
+.zai-prompt-rail__preview { position: absolute; top: 50%; left: 68px; display: block; width: min(520px, calc(100vw - 132px)); max-height: 210px; overflow: hidden; transform: translateY(-50%); border: .5px solid var(--v2-border-border-base); border-radius: 14px; padding: 14px 16px; background: color-mix(in srgb, var(--v2-background-bg-base) 96%, transparent); box-shadow: var(--v2-elevation-overlay); color: var(--v2-text-text-muted); text-align: left; pointer-events: none; backdrop-filter: blur(18px); }
+.zai-prompt-rail__preview strong,.zai-prompt-rail__preview span { display: block; overflow: hidden; text-overflow: ellipsis; }
+.zai-prompt-rail__preview strong { color: var(--v2-text-text-base); font-size: 13px; line-height: 18px; white-space: nowrap; }
+.zai-prompt-rail__preview span { margin-top: 8px; font-size: 12px; line-height: 19px; }
+.zai-message--user { scroll-margin-top: 72px; }
 .zai-transcript__empty { display: flex; min-height: 280px; align-items: center; justify-content: center; color: var(--v2-text-text-faint); font-size: 12px; }
 .zai-message { position: relative; margin: 0 0 24px; color: var(--v2-text-text-base); font-size: 13px; font-weight: 440; line-height: 20px; }
 .zai-message--user { display: flex; justify-content: flex-end; }

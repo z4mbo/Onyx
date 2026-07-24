@@ -3,21 +3,21 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { check } from "@tauri-apps/plugin-updater";
-import { FitAddon } from "@xterm/addon-fit";
-import { Terminal } from "@xterm/xterm";
-import { ConvexClient } from "convex/browser";
-import { anyApi } from "convex/server";
 const terminalHandles = /* @__PURE__ */ new Map();
 const terminalHandlesBySession = /* @__PURE__ */ new Map();
 const terminalReplay = /* @__PURE__ */ new Map();
 const closedTerminals = /* @__PURE__ */ new Set();
 let nextTerminalHandle = 1;
+let terminalRuntimeLoad = null;
 const MAX_TERMINAL_REPLAY = 1048576;
-let pendingUpdate = null;
 const convexUrl = import.meta.env.VITE_CONVEX_URL?.trim() ?? "";
 let convex = null;
+let convexApi = null;
+let convexLoad = null;
+function nativeRuntimeAvailable() {
+  return typeof window.__TAURI_INTERNALS__?.invoke === "function"
+    || typeof window.__TAURI__?.core?.invoke === "function";
+}
 function terminalTheme(element) {
   const styles = getComputedStyle(element);
   return {
@@ -44,7 +44,27 @@ function terminalTheme(element) {
     brightWhite: "#fff"
   };
 }
-function mountTerminal(element, sessionId, onData, onResize, autofocus) {
+async function loadTerminalRuntime() {
+  terminalRuntimeLoad ??= Promise.all([
+    import("@xterm/xterm"),
+    import("@xterm/addon-fit")
+  ]).then(([xterm, addonFit]) => ({
+    Terminal: xterm.Terminal,
+    FitAddon: addonFit.FitAddon
+  })).catch((error) => {
+    terminalRuntimeLoad = null;
+    throw error;
+  });
+  return await terminalRuntimeLoad;
+}
+async function mountTerminal(element, sessionId, onData, onResize, autofocus) {
+  if (!element.isConnected) {
+    throw new Error("Terminal view was closed before it finished loading.");
+  }
+  const { Terminal, FitAddon } = await loadTerminalRuntime();
+  if (!element.isConnected) {
+    throw new Error("Terminal view was closed before it finished loading.");
+  }
   const terminal = new Terminal({
     allowTransparency: true,
     convertEol: false,
@@ -95,7 +115,11 @@ function mountTerminal(element, sessionId, onData, onResize, autofocus) {
   sessionHandles.add(handleId);
   terminalHandlesBySession.set(sessionId, sessionHandles);
   resize();
-  if (autofocus) queueMicrotask(() => terminal.focus());
+  if (autofocus) {
+    queueMicrotask(() => {
+      if (element.isConnected && terminalHandles.has(handleId)) terminal.focus();
+    });
+  }
   return handleId;
 }
 function unmountTerminal(handleId, sessionId) {
@@ -298,42 +322,55 @@ function toBase64(blob) {
   });
 }
 const speechCapture = new SpeechCapture();
-async function checkUpdate() {
-  pendingUpdate = await check();
-  return pendingUpdate ? { version: pendingUpdate.version } : null;
-}
-async function installUpdate(onProgress) {
-  if (!pendingUpdate) throw new Error("No update is ready to install");
-  let downloaded = 0;
-  let total = null;
-  await pendingUpdate.downloadAndInstall((event) => {
-    if (event.event === "Started") total = event.data.contentLength ?? null;
-    else if (event.event === "Progress") downloaded += event.data.chunkLength;
-    onProgress?.(downloaded, total);
-  });
-  await relaunch();
-}
 function cloudConfigured() {
-  return Boolean(convexUrl);
+  return Boolean(convexUrl && nativeRuntimeAvailable());
+}
+async function loadConvex() {
+  if (!convexUrl) throw new Error("Cloud sync is not configured");
+  if (convex) return convex;
+  convexLoad ??= Promise.all([
+    import("convex/browser"),
+    import("convex/server")
+  ]).then(([browser, server]) => {
+    convexApi = server.anyApi;
+    convex = new browser.ConvexClient(convexUrl);
+    return convex;
+  }).catch((error) => {
+    convex = null;
+    convexApi = null;
+    convexLoad = null;
+    throw error;
+  });
+  return await convexLoad;
 }
 function startCloudAuth(onAuthenticated) {
-  if (!convexUrl) return false;
-  convex ??= new ConvexClient(convexUrl);
-  convex.setAuth(
-    async ({ forceRefreshToken }) => await invoke("clerk_account_token", {
-      forceRefresh: forceRefreshToken
-    }),
-    onAuthenticated
-  );
+  if (!convexUrl || !nativeRuntimeAvailable()) return false;
+  const start = () => {
+    void loadConvex()
+      .then((client) => {
+        client.setAuth(
+          async ({ forceRefreshToken }) => await invoke("clerk_account_token", {
+            forceRefresh: forceRefreshToken
+          }),
+          onAuthenticated
+        );
+      })
+      .catch(() => onAuthenticated(false));
+  };
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(start, { timeout: 1500 });
+  } else {
+    window.setTimeout(start, 500);
+  }
   return true;
 }
 async function pushCloud(payload) {
-  if (!convex) throw new Error("Cloud sync is not configured");
-  await convex.mutation(anyApi.sync.upsertSnapshot, { payload });
+  const client = await loadConvex();
+  await client.mutation(convexApi.sync.upsertSnapshot, { payload });
 }
 async function pullCloud() {
-  if (!convex) throw new Error("Cloud sync is not configured");
-  return await convex.query(anyApi.sync.latestSnapshot, {});
+  const client = await loadConvex();
+  return await client.query(convexApi.sync.latestSnapshot, {});
 }
 const runtime = {
   invoke,
@@ -357,8 +394,6 @@ const runtime = {
     if (source) await new Audio(source).play();
   },
   copyText: (text) => navigator.clipboard.writeText(text),
-  checkUpdate,
-  installUpdate,
   cloudConfigured,
   startCloudAuth,
   pushCloud,

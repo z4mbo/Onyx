@@ -1,6 +1,7 @@
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -385,6 +386,7 @@ pub enum SessionEvent {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSessionInput {
+    pub title: String,
     pub provider: ProviderId,
     pub provider_brand: ProviderBrand,
     pub model: Option<String>,
@@ -393,6 +395,13 @@ pub struct CreateSessionInput {
     pub interaction_mode: InteractionMode,
     pub access_mode: AccessMode,
     pub workspace: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameSessionInput {
+    pub session_id: String,
+    pub title: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -416,6 +425,42 @@ pub struct ApprovalRequest {
     pub title: String,
     pub detail: String,
     pub risk: String,
+    pub created_at: String,
+}
+
+pub type ProviderUserInputAnswers = BTreeMap<String, Vec<String>>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUserInputOption {
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUserInputQuestion {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    #[serde(default)]
+    pub options: Vec<ProviderUserInputOption>,
+    #[serde(default)]
+    pub multi_select: bool,
+    #[serde(default)]
+    pub allow_other: bool,
+    #[serde(default)]
+    pub secret: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUserInputRequest {
+    pub id: String,
+    pub session_id: String,
+    pub title: String,
+    pub questions: Vec<ProviderUserInputQuestion>,
+    pub auto_resolution_ms: Option<u64>,
     pub created_at: String,
 }
 
@@ -507,6 +552,66 @@ pub struct OpenRouterModel {
     pub input_modalities: Vec<String>,
     #[serde(default)]
     pub output_modalities: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenRouterVoiceModel {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub supported_voices: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenRouterVoiceCatalog {
+    #[serde(default)]
+    pub transcription: Vec<OpenRouterVoiceModel>,
+    #[serde(default)]
+    pub speech: Vec<OpenRouterVoiceModel>,
+}
+
+pub const OPENAI_SPEECH_VOICES: [&str; 11] = [
+    "alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse",
+];
+
+pub fn supported_speech_voices(
+    catalog: &OpenRouterVoiceCatalog,
+    provider: &str,
+    model: &str,
+) -> Option<Vec<String>> {
+    if provider.eq_ignore_ascii_case("openai") {
+        return Some(
+            OPENAI_SPEECH_VOICES
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        );
+    }
+    if !provider.eq_ignore_ascii_case("openrouter") {
+        return None;
+    }
+    if let Some(model) = catalog.speech.iter().find(|entry| entry.id == model) {
+        return (!model.supported_voices.is_empty()).then(|| model.supported_voices.clone());
+    }
+    model.starts_with("openai/").then(|| {
+        OPENAI_SPEECH_VOICES
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    })
+}
+
+pub fn normalized_speech_voice(
+    catalog: &OpenRouterVoiceCatalog,
+    provider: &str,
+    model: &str,
+    current_voice: &str,
+) -> Option<String> {
+    let voices = supported_speech_voices(catalog, provider, model)?;
+    (!voices.is_empty() && !voices.iter().any(|entry| entry == current_voice))
+        .then(|| voices[0].clone())
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -768,13 +873,18 @@ pub struct CapturedAudio {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
     pub version: String,
+    pub current_version: String,
+    pub notes: Option<String>,
+    pub published_at: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateProgress {
     pub downloaded: u64,
     pub total: Option<u64>,
+    #[serde(default)]
+    pub finished: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -792,6 +902,7 @@ pub struct VoiceHistoryItem {
 impl Default for CreateSessionInput {
     fn default() -> Self {
         Self {
+            title: "New session".to_owned(),
             provider: ProviderId::Claude,
             provider_brand: ProviderBrand::Anthropic,
             model: None,
@@ -950,6 +1061,7 @@ mod tests {
         let value = serde_json::to_value(input).expect("serialize create-session input");
 
         assert_eq!(value["provider"], "claude");
+        assert_eq!(value["title"], "New session");
         assert_eq!(value["providerBrand"], "anthropic");
         assert_eq!(value["speedMode"], "standard");
         assert_eq!(value["interactionMode"], "build");
@@ -962,6 +1074,27 @@ mod tests {
         assert_eq!(workspace_name("/Users/onyx/Dev/project/"), "project");
         assert_eq!(workspace_name(r"C:\Users\onyx\project"), "project");
         assert_eq!(workspace_name(""), "Project");
+    }
+
+    #[test]
+    fn incompatible_speech_voice_resets_to_the_selected_models_catalog() {
+        let catalog = OpenRouterVoiceCatalog {
+            transcription: Vec::new(),
+            speech: vec![OpenRouterVoiceModel {
+                id: "provider/tts".to_owned(),
+                name: "Provider TTS".to_owned(),
+                supported_voices: vec!["voice-a".to_owned(), "voice-b".to_owned()],
+            }],
+        };
+
+        assert_eq!(
+            normalized_speech_voice(&catalog, "openrouter", "provider/tts", "old-voice"),
+            Some("voice-a".to_owned())
+        );
+        assert_eq!(
+            normalized_speech_voice(&catalog, "openrouter", "provider/tts", "voice-b"),
+            None
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use crate::providers::process::{JsonProcess, ProcessOutput, find_executable, platform_command};
 use serde::Serialize;
 use std::{
+    collections::BTreeSet,
     io::Read,
     path::{Component, Path, PathBuf},
     process::Stdio,
@@ -13,6 +14,8 @@ const MAX_DIFF_OUTPUT: usize = 4 * 1024 * 1024;
 const MAX_FILE_BYTES: usize = 1024 * 1024;
 const MAX_CHANGED_FILES: usize = 1_000;
 const MAX_UNTRACKED_DIFF_FILES: usize = 256;
+const MAX_LOCAL_BRANCHES: usize = 256;
+const MAX_LOCAL_BRANCH_BYTES: usize = 512;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,6 +132,114 @@ pub async fn repo_summary(workspace: String) -> Result<RepoSummary, String> {
     if repository_root != workspace {
         return Ok(RepoSummary::not_repo());
     }
+    repo_summary_at(&git, &workspace).await
+}
+
+pub async fn local_branches(workspace: String) -> Result<Vec<String>, String> {
+    let (git, workspace) = repository_root(&workspace).await?;
+    let output = checked(
+        "List local Git branches",
+        run_command_owned(
+            &git,
+            &workspace,
+            vec![
+                "for-each-ref".to_string(),
+                format!("--count={}", MAX_LOCAL_BRANCHES + 1),
+                "--format=%(refname)".to_string(),
+                "--sort=refname".to_string(),
+                "refs/heads/".to_string(),
+            ],
+            "List local Git branches",
+            Duration::from_secs(8),
+        )
+        .await?,
+    )?;
+    parse_local_branches(&output.stdout)
+}
+
+pub async fn switch_branch(workspace: String, branch: String) -> Result<RepoSummary, String> {
+    validate_local_branch_name(&branch)?;
+    let (git, workspace) = repository_root(&workspace).await?;
+
+    checked(
+        "Validate local Git branch name",
+        run_command_owned(
+            &git,
+            &workspace,
+            vec![
+                "check-ref-format".to_string(),
+                "--branch".to_string(),
+                branch.clone(),
+            ],
+            "Validate local Git branch name",
+            Duration::from_secs(8),
+        )
+        .await?,
+    )
+    .map_err(|_| "The selected local branch name is invalid".to_string())?;
+
+    let full_ref = format!("refs/heads/{branch}");
+    let exists = run_command_owned(
+        &git,
+        &workspace,
+        vec![
+            "show-ref".to_string(),
+            "--verify".to_string(),
+            "--quiet".to_string(),
+            full_ref,
+        ],
+        "Verify local Git branch",
+        Duration::from_secs(8),
+    )
+    .await?;
+    if !exists.success {
+        return Err("The selected local branch does not exist".to_string());
+    }
+
+    let status = checked(
+        "Check Git working tree before switching branches",
+        run_command(
+            &git,
+            &workspace,
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            "Check Git working tree before switching branches",
+            Duration::from_secs(15),
+        )
+        .await?,
+    )?;
+    if !status.stdout.is_empty() {
+        return Err("Commit or stash local changes before switching branches".to_string());
+    }
+
+    let current = run_command(
+        &git,
+        &workspace,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        "Read current Git branch",
+        Duration::from_secs(8),
+    )
+    .await?;
+    if current.success && current.stdout.trim() == branch {
+        return repo_summary_at(&git, &workspace).await;
+    }
+
+    checked(
+        "Switch local Git branch",
+        run_command_owned(
+            &git,
+            &workspace,
+            vec![
+                "switch".to_string(),
+                "--no-guess".to_string(),
+                "--".to_string(),
+                branch,
+            ],
+            "Switch local Git branch",
+            Duration::from_secs(30),
+        )
+        .await?,
+    )?;
+
     repo_summary_at(&git, &workspace).await
 }
 
@@ -1089,6 +1200,44 @@ fn parse_porcelain_status(value: &str) -> ParsedStatus {
     }
 }
 
+fn validate_local_branch_name(branch: &str) -> Result<(), String> {
+    if branch.is_empty() {
+        return Err("Choose a local branch".to_string());
+    }
+    if branch.len() > MAX_LOCAL_BRANCH_BYTES {
+        return Err(format!(
+            "Local branch names are limited to {MAX_LOCAL_BRANCH_BYTES} bytes"
+        ));
+    }
+    if branch.trim() != branch
+        || branch.starts_with('-')
+        || branch.starts_with("refs/")
+        || branch.contains("@{")
+        || branch
+            .as_bytes()
+            .iter()
+            .any(|value| value.is_ascii_control() || *value == 0x7f)
+    {
+        return Err("The selected local branch name is invalid".to_string());
+    }
+    Ok(())
+}
+
+fn parse_local_branches(value: &str) -> Result<Vec<String>, String> {
+    let mut branches = BTreeSet::new();
+    for reference in value.lines() {
+        let branch = reference
+            .strip_prefix("refs/heads/")
+            .ok_or_else(|| "Git returned an invalid local branch reference".to_string())?;
+        validate_local_branch_name(branch)?;
+        branches.insert(branch.to_string());
+        if branches.len() == MAX_LOCAL_BRANCHES {
+            break;
+        }
+    }
+    Ok(branches.into_iter().collect())
+}
+
 fn parse_ahead_behind(value: &str) -> (u32, u32) {
     let mut values = value.split_whitespace();
     let behind = values
@@ -1221,9 +1370,10 @@ fn open_editor(workspace: &Path, command_name: &str, mac_name: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::{
-        RepoFileChange, RepoSummary, commit, extract_https_url, git_diff,
-        normalized_commit_message, parse_ahead_behind, parse_porcelain_status, redact_credentials,
-        repo_summary,
+        MAX_LOCAL_BRANCHES, RepoFileChange, RepoSummary, commit, extract_https_url, git_diff,
+        local_branches, normalized_commit_message, parse_ahead_behind, parse_local_branches,
+        parse_porcelain_status, redact_credentials, repo_summary, switch_branch,
+        validate_local_branch_name,
     };
     use std::{path::PathBuf, process::Command};
     use uuid::Uuid;
@@ -1259,6 +1409,45 @@ mod tests {
     fn parses_upstream_counts_in_behind_ahead_order() {
         assert_eq!(parse_ahead_behind("3\t7\n"), (3, 7));
         assert_eq!(parse_ahead_behind("garbage"), (0, 0));
+    }
+
+    #[test]
+    fn parses_bounded_sorted_local_branches() {
+        let mut references = (0..MAX_LOCAL_BRANCHES + 8)
+            .rev()
+            .map(|index| format!("refs/heads/feature/{index:03}"))
+            .collect::<Vec<_>>();
+        references.push("refs/heads/feature/010".to_string());
+        let parsed = parse_local_branches(&references.join("\n")).expect("parse local branches");
+        assert_eq!(parsed.len(), MAX_LOCAL_BRANCHES);
+        assert!(parsed.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(
+            parsed
+                .iter()
+                .filter(|branch| branch.as_str() == "feature/010")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_unbounded_local_branch_names() {
+        assert!(validate_local_branch_name("feature/safe-name").is_ok());
+        for invalid in [
+            "",
+            " branch",
+            "branch ",
+            "-detach",
+            "refs/heads/main",
+            "@{-1}",
+            "feature\nother",
+        ] {
+            assert!(
+                validate_local_branch_name(invalid).is_err(),
+                "accepted invalid branch {invalid:?}"
+            );
+        }
+        assert!(validate_local_branch_name(&"x".repeat(513)).is_err());
     }
 
     #[test]
@@ -1368,5 +1557,68 @@ mod tests {
         assert_eq!(after.staged_count, 0);
         assert_eq!(after.unstaged_count, 0);
         assert_eq!(after.untracked_count, 0);
+    }
+
+    #[tokio::test]
+    async fn lists_and_switches_only_clean_existing_local_branches() {
+        if which::which("git").is_err() {
+            return;
+        }
+        let directory = TestDirectory::new();
+        for args in [
+            vec!["init", "--quiet", "--initial-branch=main"],
+            vec!["config", "user.email", "onyx-tests@example.invalid"],
+            vec!["config", "user.name", "Onyx tests"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(&directory.0)
+                    .status()
+                    .expect("run git fixture command")
+                    .success()
+            );
+        }
+        std::fs::write(directory.0.join("tracked.txt"), "first\n").expect("write fixture");
+        for args in [
+            vec!["add", "tracked.txt"],
+            vec!["commit", "--quiet", "-m", "Initial commit"],
+            vec!["branch", "feature/safe"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(&directory.0)
+                    .status()
+                    .expect("prepare Git fixture")
+                    .success()
+            );
+        }
+
+        let workspace = directory.0.to_string_lossy().into_owned();
+        assert_eq!(
+            local_branches(workspace.clone())
+                .await
+                .expect("list local branches"),
+            vec!["feature/safe".to_string(), "main".to_string()]
+        );
+
+        let switched = switch_branch(workspace.clone(), "feature/safe".to_string())
+            .await
+            .expect("switch existing local branch");
+        assert_eq!(switched.branch.as_deref(), Some("feature/safe"));
+
+        std::fs::write(directory.0.join("dirty.txt"), "uncommitted\n")
+            .expect("write dirty fixture");
+        let dirty_error = switch_branch(workspace.clone(), "main".to_string())
+            .await
+            .expect_err("reject dirty working tree");
+        assert!(dirty_error.contains("Commit or stash"));
+        std::fs::remove_file(directory.0.join("dirty.txt")).expect("clean fixture");
+
+        let missing_error = switch_branch(workspace, "missing".to_string())
+            .await
+            .expect_err("reject missing local branch");
+        assert!(missing_error.contains("does not exist"));
     }
 }

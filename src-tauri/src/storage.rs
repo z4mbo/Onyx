@@ -1,5 +1,6 @@
 use crate::model::{
-    AgentSession, ContextUsage, Message, ProviderBrand, SessionStatus, UpdateSessionOptionsInput,
+    AgentSession, ContextUsage, Message, ProviderBrand, RenameSessionInput, SessionStatus,
+    UpdateSessionOptionsInput,
 };
 use chrono::Utc;
 use parking_lot::RwLock;
@@ -10,6 +11,24 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
+
+const MAX_SESSION_TITLE_CHARS: usize = 80;
+
+pub fn normalized_session_title(value: &str) -> Result<String, String> {
+    let title = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        return Err("Choose a name for this session".to_string());
+    }
+    if title.chars().count() > MAX_SESSION_TITLE_CHARS {
+        return Err(format!(
+            "Session names can contain at most {MAX_SESSION_TITLE_CHARS} characters"
+        ));
+    }
+    if title.chars().any(char::is_control) {
+        return Err("The session name contains unsupported characters".to_string());
+    }
+    Ok(title)
+}
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,7 +132,13 @@ impl SessionStore {
         ) {
             return Err("Stop the running turn before changing its runtime options".into());
         }
-        let connection_changed = session.provider != input.provider || session.model != input.model;
+        if session.provider != input.provider && !session.messages.is_empty() {
+            return Err(
+                "A session keeps its original CLI runtime. Create a new session to switch provider."
+                    .into(),
+            );
+        }
+        let connection_changed = session.provider != input.provider;
         session.provider = input.provider;
         session.provider_brand = input.provider_brand;
         session.model = input.model;
@@ -132,6 +157,23 @@ impl SessionStore {
         Ok(result)
     }
 
+    pub fn rename(&self, input: RenameSessionInput) -> Result<AgentSession, String> {
+        let title = normalized_session_title(&input.title)?;
+        let mut state = self.state.write();
+        let mut next = state.clone();
+        let session = next
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == input.session_id)
+            .ok_or_else(|| "Session not found".to_string())?;
+        session.title = title;
+        session.updated_at = Utc::now();
+        let result = session.clone();
+        self.persist_state(&next)?;
+        *state = next;
+        Ok(result)
+    }
+
     pub fn begin_turn(&self, id: &str, message: Message) -> Result<AgentSession, String> {
         let mut state = self.state.write();
         let mut next = state.clone();
@@ -142,9 +184,6 @@ impl SessionStore {
             .ok_or_else(|| "Session not found".to_string())?;
         if session.status != SessionStatus::Idle && session.status != SessionStatus::Failed {
             return Err("This session already has a running turn".to_string());
-        }
-        if session.messages.is_empty() {
-            session.title = title_from(&message.content);
         }
         session.messages.push(message);
         session.status = SessionStatus::Running;
@@ -243,34 +282,49 @@ impl SessionStore {
     }
 }
 
-fn title_from(content: &str) -> String {
-    let compact = content.split_whitespace().collect::<Vec<_>>().join(" ");
-    let title = compact.chars().take(54).collect::<String>();
-    if compact.chars().count() > 54 {
-        format!("{title}…")
-    } else if title.is_empty() {
-        "New session".to_string()
-    } else {
-        title
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{PersistedState, SessionStore, title_from};
+    use super::{PersistedState, SessionStore, normalized_session_title};
     use crate::model::{
         AccessMode, AgentSession, InteractionMode, Message, MessageKind, MessageRole,
-        ProviderBrand, ProviderId, SessionStatus, SpeedMode,
+        ProviderBrand, ProviderId, RenameSessionInput, SessionStatus, SpeedMode,
+        UpdateSessionOptionsInput,
     };
     use chrono::Utc;
     use parking_lot::RwLock;
-    use std::path::PathBuf;
+    use std::{fs, path::PathBuf};
     use uuid::Uuid;
 
+    fn test_session(id: String) -> AgentSession {
+        let now = Utc::now();
+        AgentSession {
+            id,
+            title: "Original session".to_string(),
+            provider: ProviderId::Codex,
+            provider_brand: ProviderBrand::Openai,
+            model: Some("gpt-5".to_string()),
+            reasoning: None,
+            speed_mode: SpeedMode::Standard,
+            interaction_mode: InteractionMode::Build,
+            access_mode: AccessMode::ApprovalRequired,
+            workspace: PathBuf::from("."),
+            provider_session_id: Some("provider-continuation".to_string()),
+            status: SessionStatus::Idle,
+            messages: Vec::new(),
+            context_usage: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     #[test]
-    fn title_is_compact_and_bounded() {
-        assert_eq!(title_from("  hello\n   world  "), "hello world");
-        assert!(title_from(&"x".repeat(80)).ends_with('…'));
+    fn session_title_is_required_compact_and_bounded() {
+        assert_eq!(
+            normalized_session_title("  hello\n   world  ").unwrap(),
+            "hello world"
+        );
+        assert!(normalized_session_title("   ").is_err());
+        assert!(normalized_session_title(&"x".repeat(81)).is_err());
     }
 
     #[test]
@@ -323,5 +377,77 @@ mod tests {
                 .map(|message| message.content.as_str()),
             Some("done")
         );
+    }
+
+    #[test]
+    fn removing_a_session_is_persisted_across_reload() {
+        let data_dir = std::env::temp_dir().join(format!("onyx-session-remove-{}", Uuid::new_v4()));
+        let id = Uuid::new_v4().to_string();
+        let store = SessionStore::load(&data_dir).expect("store should load");
+        store
+            .insert(test_session(id.clone()))
+            .expect("session should persist");
+
+        assert!(store.remove(&id).expect("session should be removed"));
+        assert!(store.get(&id).is_none());
+        drop(store);
+
+        let restored = SessionStore::load(&data_dir).expect("store should reload");
+        assert!(restored.get(&id).is_none());
+        fs::remove_dir_all(data_dir).expect("temporary store should be removable");
+    }
+
+    #[test]
+    fn rename_is_normalized_and_persisted() {
+        let data_dir = std::env::temp_dir().join(format!("onyx-session-rename-{}", Uuid::new_v4()));
+        let id = Uuid::new_v4().to_string();
+        let store = SessionStore::load(&data_dir).expect("store should load");
+        store
+            .insert(test_session(id.clone()))
+            .expect("session should persist");
+
+        let renamed = store
+            .rename(RenameSessionInput {
+                session_id: id.clone(),
+                title: "  Renamed\n session ".to_string(),
+            })
+            .expect("session should rename");
+        assert_eq!(renamed.title, "Renamed session");
+        drop(store);
+
+        let restored = SessionStore::load(&data_dir).expect("store should reload");
+        assert_eq!(
+            restored.get(&id).map(|session| session.title),
+            Some("Renamed session".to_string())
+        );
+        fs::remove_dir_all(data_dir).expect("temporary store should be removable");
+    }
+
+    #[test]
+    fn changing_a_model_keeps_the_cli_continuation() {
+        let data_dir = std::env::temp_dir().join(format!("onyx-session-model-{}", Uuid::new_v4()));
+        let id = Uuid::new_v4().to_string();
+        let store = SessionStore::load(&data_dir).expect("store should load");
+        store
+            .insert(test_session(id.clone()))
+            .expect("session should persist");
+
+        let updated = store
+            .update_options(UpdateSessionOptionsInput {
+                session_id: id,
+                provider: ProviderId::Codex,
+                provider_brand: ProviderBrand::Openai,
+                model: Some("gpt-5.1".to_string()),
+                reasoning: None,
+                speed_mode: SpeedMode::Standard,
+                interaction_mode: InteractionMode::Build,
+                access_mode: AccessMode::ApprovalRequired,
+            })
+            .expect("model should update");
+        assert_eq!(
+            updated.provider_session_id.as_deref(),
+            Some("provider-continuation")
+        );
+        fs::remove_dir_all(data_dir).expect("temporary store should be removable");
     }
 }

@@ -12,7 +12,9 @@ use crate::{
     catalog::ProviderCatalogs,
     model::{
         AccountProfile, AgentSession, ConnectionStatus, NativeVoicePermissions, OpenRouterModel,
-        OverlayPosition, ProviderBrand, ProviderId, ProviderStatus, UpdateProgress, VoiceSettings,
+        OpenRouterVoiceCatalog, OpenRouterVoiceModel, OverlayPosition, ProviderBrand, ProviderId,
+        ProviderStatus, UpdateProgress, VoiceSettings, normalized_speech_voice,
+        supported_speech_voices,
     },
     storage, theme,
 };
@@ -78,6 +80,199 @@ fn page_label(page: SettingsPage) -> &'static str {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct VoiceChoice {
+    value: String,
+    label: String,
+    disabled: bool,
+}
+
+fn add_choice(choices: &mut Vec<VoiceChoice>, value: String, label: String) {
+    add_choice_with_state(choices, value, label, false);
+}
+
+fn add_choice_with_state(
+    choices: &mut Vec<VoiceChoice>,
+    value: String,
+    label: String,
+    disabled: bool,
+) {
+    if !choices.iter().any(|choice| choice.value == value) {
+        choices.push(VoiceChoice {
+            value,
+            label,
+            disabled,
+        });
+    }
+}
+
+fn encoded_choice(provider: &str, model: &str) -> String {
+    format!("{provider}|{model}")
+}
+
+fn dictation_choices(
+    models: &[OpenRouterVoiceModel],
+    current_provider: &str,
+    current_model: &str,
+) -> Vec<VoiceChoice> {
+    let mut choices = Vec::new();
+    for (id, name) in [
+        ("gpt-4o-mini-transcribe", "OpenAI · GPT-4o mini Transcribe"),
+        ("gpt-4o-transcribe", "OpenAI · GPT-4o Transcribe"),
+        ("whisper-1", "OpenAI · Whisper"),
+    ] {
+        add_choice(&mut choices, encoded_choice("openai", id), name.to_owned());
+    }
+    for model in models {
+        add_choice(
+            &mut choices,
+            encoded_choice("openrouter", &model.id),
+            format!("OpenRouter · {}", model.name),
+        );
+    }
+    if !current_model.trim().is_empty() {
+        add_choice(
+            &mut choices,
+            encoded_choice(current_provider, current_model),
+            format!("Saved · {current_model}"),
+        );
+    }
+    choices
+}
+
+fn agent_choices(
+    catalogs: &ProviderCatalogs,
+    router_models: &[OpenRouterModel],
+    providers: &[ProviderStatus],
+    current_provider: ProviderId,
+    current_model: &str,
+) -> Vec<VoiceChoice> {
+    let mut choices = Vec::new();
+    for provider in [
+        ProviderId::Claude,
+        ProviderId::Codex,
+        ProviderId::Gemini,
+        ProviderId::Kimi,
+    ]
+    .into_iter()
+    .filter(|provider| {
+        providers
+            .iter()
+            .any(|status| status.id == *provider && status.available)
+    }) {
+        for model in catalogs.get(&provider).into_iter().flatten() {
+            add_choice(
+                &mut choices,
+                encoded_choice(provider.as_str(), &model.id),
+                format!("{} · {}", provider.display_name(), model.name),
+            );
+        }
+    }
+    let openrouter_available = providers
+        .iter()
+        .any(|status| status.id == ProviderId::Openrouter && status.available);
+    if openrouter_available {
+        for model in router_models.iter().filter(|model| {
+            (model.input_modalities.is_empty()
+                || model
+                    .input_modalities
+                    .iter()
+                    .any(|modality| modality.eq_ignore_ascii_case("text")))
+                && (model.output_modalities.is_empty()
+                    || model
+                        .output_modalities
+                        .iter()
+                        .any(|modality| modality.eq_ignore_ascii_case("text")))
+        }) {
+            add_choice(
+                &mut choices,
+                encoded_choice("openrouter", &model.id),
+                format!("OpenRouter · {}", model.name),
+            );
+        }
+    }
+    if !current_model.trim().is_empty() {
+        let value = encoded_choice(current_provider.as_str(), current_model);
+        if !choices.iter().any(|choice| choice.value == value) {
+            choices.push(VoiceChoice {
+                value,
+                label: format!(
+                    "Saved · {} · {current_model} (unavailable)",
+                    current_provider.display_name()
+                ),
+                disabled: true,
+            });
+        }
+    }
+    choices
+}
+
+fn speech_choices(
+    models: &[OpenRouterVoiceModel],
+    current_provider: &str,
+    current_model: &str,
+) -> Vec<VoiceChoice> {
+    let mut choices = Vec::new();
+    for (id, name) in [
+        ("gpt-4o-mini-tts", "OpenAI · GPT-4o mini TTS"),
+        ("tts-1", "OpenAI · TTS 1"),
+        ("tts-1-hd", "OpenAI · TTS 1 HD"),
+    ] {
+        add_choice(&mut choices, encoded_choice("openai", id), name.to_owned());
+    }
+    for model in models {
+        let value = encoded_choice("openrouter", &model.id);
+        let is_current =
+            current_provider == "openrouter" && current_model.trim() == model.id.as_str();
+        let voices_unavailable = model.supported_voices.is_empty();
+        add_choice_with_state(
+            &mut choices,
+            value,
+            if voices_unavailable {
+                format!("OpenRouter · {} · voice list unavailable", model.name)
+            } else {
+                format!("OpenRouter · {}", model.name)
+            },
+            voices_unavailable && !is_current,
+        );
+    }
+    if !current_model.trim().is_empty() {
+        add_choice(
+            &mut choices,
+            encoded_choice(current_provider, current_model),
+            format!("Saved · {current_model}"),
+        );
+    }
+    choices
+}
+
+fn speech_voice_choices(
+    catalog: &OpenRouterVoiceCatalog,
+    provider: &str,
+    model: &str,
+    current_voice: &str,
+) -> Vec<VoiceChoice> {
+    let mut choices = Vec::new();
+    if let Some(voices) = supported_speech_voices(catalog, provider, model) {
+        for voice in voices {
+            add_choice(&mut choices, voice.clone(), voice);
+        }
+    } else if !current_voice.trim().is_empty() {
+        add_choice(
+            &mut choices,
+            current_voice.trim().to_owned(),
+            format!("Saved · {}", current_voice.trim()),
+        );
+    }
+    choices
+}
+
+fn provider_id(value: &str) -> Option<ProviderId> {
+    ProviderId::ALL
+        .into_iter()
+        .find(|provider| provider.as_str() == value)
+}
+
 #[component]
 fn NavButton(
     target: SettingsPage,
@@ -111,13 +306,15 @@ pub fn SettingsDialog(
     on_close: Callback<()>,
     on_sign_out: Callback<()>,
 ) -> impl IntoView {
-    let _ = catalogs;
     let page = RwSignal::new(SettingsPage::General);
     let router_key = RwSignal::new(String::new());
     let openai_key = RwSignal::new(String::new());
     let saving = RwSignal::new(false);
     let message = RwSignal::new(None::<String>);
     let voice = RwSignal::new(None::<VoiceSettings>);
+    let openrouter_voice_catalog = RwSignal::new(OpenRouterVoiceCatalog::default());
+    let voice_catalog_loaded = RwSignal::new(false);
+    let voice_catalog_loading = RwSignal::new(false);
     let microphone_status = RwSignal::new("idle".to_owned());
     let microphone_message = RwSignal::new(String::new());
     let native_permissions = RwSignal::new(None::<NativeVoicePermissions>);
@@ -134,6 +331,41 @@ pub fn SettingsDialog(
     let update_state = RwSignal::new("idle".to_owned());
     let update_message = RwSignal::new(String::new());
     let update_progress = RwSignal::new(None::<UpdateProgress>);
+    let dictation_models = Signal::derive(move || {
+        let current = voice.get().unwrap_or_default();
+        dictation_choices(
+            &openrouter_voice_catalog.get().transcription,
+            &current.transcription_provider,
+            &current.transcription_model,
+        )
+    });
+    let agent_models = Signal::derive(move || {
+        let current = voice.get().unwrap_or_default();
+        agent_choices(
+            &catalogs.get(),
+            &openrouter_models.get(),
+            &providers.get(),
+            current.agent_provider,
+            &current.agent_model,
+        )
+    });
+    let speech_models = Signal::derive(move || {
+        let current = voice.get().unwrap_or_default();
+        speech_choices(
+            &openrouter_voice_catalog.get().speech,
+            &current.voice_provider,
+            &current.voice_model,
+        )
+    });
+    let speech_voices = Signal::derive(move || {
+        let current = voice.get().unwrap_or_default();
+        speech_voice_choices(
+            &openrouter_voice_catalog.get(),
+            &current.voice_provider,
+            &current.voice_model,
+            &current.voice_id,
+        )
+    });
 
     Effect::new(move |_| {
         if !open.get() {
@@ -149,6 +381,46 @@ pub fn SettingsDialog(
         }
         spawn_local(async move {
             native_permissions.set(bridge::native_voice_permissions().await.ok());
+        });
+    });
+    Effect::new(move |_| {
+        if !open.get()
+            || page.get() != SettingsPage::Voice
+            || !openrouter.get().connected
+            || voice_catalog_loaded.get()
+            || voice_catalog_loading.get()
+        {
+            return;
+        }
+        voice_catalog_loading.set(true);
+        spawn_local(async move {
+            match bridge::openrouter_voice_models().await {
+                Ok(catalog) => openrouter_voice_catalog.set(catalog),
+                Err(cause) => message.set(Some(format!(
+                    "Could not load OpenRouter voice models: {cause}"
+                ))),
+            }
+            voice_catalog_loaded.set(true);
+            voice_catalog_loading.set(false);
+        });
+    });
+    Effect::new(move |_| {
+        let Some(current) = voice.get() else {
+            return;
+        };
+        let catalog = openrouter_voice_catalog.get();
+        let Some(next) = normalized_speech_voice(
+            &catalog,
+            &current.voice_provider,
+            &current.voice_model,
+            &current.voice_id,
+        ) else {
+            return;
+        };
+        voice.update(|settings| {
+            if let Some(settings) = settings {
+                settings.voice_id = next;
+            }
         });
     });
     Effect::new(move |_| {
@@ -184,6 +456,12 @@ pub fn SettingsDialog(
             match bridge::save_openrouter_key(&key).await {
                 Ok(status) => {
                     openrouter.set(status);
+                    openrouter_voice_catalog.set(OpenRouterVoiceCatalog::default());
+                    voice_catalog_loaded.set(false);
+                    voice_catalog_loading.set(false);
+                    if let Ok(value) = bridge::list_providers().await {
+                        providers.set(value);
+                    }
                     match bridge::openrouter_models().await {
                         Ok(models) => {
                             let count = models.len();
@@ -260,7 +538,11 @@ pub fn SettingsDialog(
         update_message.set("Downloading update…".to_owned());
         spawn_local(async move {
             if let Err(cause) = bridge::install_update(move |downloaded, total| {
-                update_progress.set(Some(UpdateProgress { downloaded, total }));
+                update_progress.set(Some(UpdateProgress {
+                    downloaded,
+                    total,
+                    finished: false,
+                }));
             })
             .await
             {
@@ -372,7 +654,7 @@ pub fn SettingsDialog(
                         </div>
                         <div class="zai-settings-version">
                             <strong>"Onyx Desktop"</strong>
-                            <span>"v0.2.0 · Rust"</span>
+                            <span>{concat!("v", env!("CARGO_PKG_VERSION"), " · Rust")}</span>
                         </div>
                     </aside>
 
@@ -602,6 +884,12 @@ pub fn SettingsDialog(
                                                             Ok(status) => {
                                                                 openrouter.set(status);
                                                                 openrouter_models.set(Vec::new());
+                                                                openrouter_voice_catalog.set(OpenRouterVoiceCatalog::default());
+                                                                voice_catalog_loaded.set(false);
+                                                                voice_catalog_loading.set(false);
+                                                                if let Ok(value) = bridge::list_providers().await {
+                                                                    providers.set(value);
+                                                                }
                                                             }
                                                             Err(cause) => message.set(Some(cause)),
                                                         }
@@ -708,35 +996,108 @@ pub fn SettingsDialog(
                                     <div class="zai-setting-row"><div><strong>"Agentic voice"</strong><span>"Hold anywhere to ask Onyx about the active app"</span></div><kbd>"Control Option"</kbd></div>
                                     <div class="zai-setting-row">
                                         <div><strong>"Dictation model"</strong><span>"Fast multilingual transcription with automatic language detection"</span></div>
-                                        <input
-                                            class="zai-settings-inline-input"
-                                            prop:value=move || voice.get().map(|value| value.transcription_model).unwrap_or_default()
-                                            on:input=move |event| voice.update(|value| if let Some(value) = value { value.transcription_model = event_target_value(&event) })
-                                        />
+                                        <label class="zai-setting-select">
+                                            <select
+                                                aria-label="Dictation model"
+                                                prop:value=move || voice.get().map(|value| encoded_choice(&value.transcription_provider, &value.transcription_model)).unwrap_or_default()
+                                                on:change=move |event| {
+                                                    if let Some((provider, model)) = event_target_value(&event).split_once('|') {
+                                                        voice.update(|value| if let Some(value) = value {
+                                                            value.transcription_provider = provider.to_owned();
+                                                            value.transcription_model = model.to_owned();
+                                                        });
+                                                    }
+                                                }
+                                            >
+                                                <For
+                                                    each=move || dictation_models.get()
+                                                    key=|choice| choice.value.clone()
+                                                    children=|choice| view! {
+                                                        <option value=choice.value disabled=choice.disabled>
+                                                            {choice.label}
+                                                        </option>
+                                                    }
+                                                />
+                                            </select>
+                                            <Icon icon=LuChevronDown width="13px" height="13px" />
+                                        </label>
                                     </div>
                                     <div class="zai-setting-row">
                                         <div><strong>"Agent model"</strong><span>"Model used for general voice questions"</span></div>
-                                        <input
-                                            class="zai-settings-inline-input"
-                                            prop:value=move || voice.get().map(|value| value.agent_model).unwrap_or_default()
-                                            on:input=move |event| voice.update(|value| if let Some(value) = value { value.agent_model = event_target_value(&event) })
-                                        />
+                                        <label class="zai-setting-select">
+                                            <select
+                                                aria-label="Voice agent model"
+                                                prop:value=move || voice.get().map(|value| encoded_choice(value.agent_provider.as_str(), &value.agent_model)).unwrap_or_default()
+                                                on:change=move |event| {
+                                                    if let Some((provider, model)) = event_target_value(&event).split_once('|')
+                                                        && let Some(provider) = provider_id(provider)
+                                                    {
+                                                        voice.update(|value| if let Some(value) = value {
+                                                            value.agent_provider = provider;
+                                                            value.agent_model = model.to_owned();
+                                                        });
+                                                    }
+                                                }
+                                            >
+                                                <For
+                                                    each=move || agent_models.get()
+                                                    key=|choice| choice.value.clone()
+                                                    children=|choice| view! {
+                                                        <option value=choice.value disabled=choice.disabled>
+                                                            {choice.label}
+                                                        </option>
+                                                    }
+                                                />
+                                            </select>
+                                            <Icon icon=LuChevronDown width="13px" height="13px" />
+                                        </label>
                                     </div>
                                     <div class="zai-setting-row">
                                         <div><strong>"Speech model"</strong><span>"Voice used to read agent answers"</span></div>
-                                        <input
-                                            class="zai-settings-inline-input"
-                                            prop:value=move || voice.get().map(|value| value.voice_model).unwrap_or_default()
-                                            on:input=move |event| voice.update(|value| if let Some(value) = value { value.voice_model = event_target_value(&event) })
-                                        />
+                                        <label class="zai-setting-select">
+                                            <select
+                                                aria-label="Speech model"
+                                                prop:value=move || voice.get().map(|value| encoded_choice(&value.voice_provider, &value.voice_model)).unwrap_or_default()
+                                                on:change=move |event| {
+                                                    if let Some((provider, model)) = event_target_value(&event).split_once('|') {
+                                                        voice.update(|value| if let Some(value) = value {
+                                                            value.voice_provider = provider.to_owned();
+                                                            value.voice_model = model.to_owned();
+                                                        });
+                                                    }
+                                                }
+                                            >
+                                                <For
+                                                    each=move || speech_models.get()
+                                                    key=|choice| choice.value.clone()
+                                                    children=|choice| view! {
+                                                        <option value=choice.value disabled=choice.disabled>
+                                                            {choice.label}
+                                                        </option>
+                                                    }
+                                                />
+                                            </select>
+                                            <Icon icon=LuChevronDown width="13px" height="13px" />
+                                        </label>
                                     </div>
                                     <div class="zai-setting-row">
                                         <div><strong>"Voice"</strong><span>"Voice identifier supported by the selected speech model"</span></div>
-                                        <input
-                                            class="zai-settings-inline-input"
-                                            prop:value=move || voice.get().map(|value| value.voice_id).unwrap_or_else(|| "alloy".to_owned())
-                                            on:input=move |event| voice.update(|value| if let Some(value) = value { value.voice_id = event_target_value(&event) })
-                                        />
+                                        <label class="zai-setting-select">
+                                            <select
+                                                aria-label="Speech voice"
+                                                prop:value=move || voice.get().map(|value| value.voice_id).unwrap_or_else(|| "alloy".to_owned())
+                                                on:change=move |event| voice.update(|value| if let Some(value) = value { value.voice_id = event_target_value(&event) })
+                                            >
+                                                <For
+                                                    each=move || speech_voices.get()
+                                                    key=|choice| choice.value.clone()
+                                                    children=|choice| view! {
+                                                        <option value=choice.value>{choice.label}</option>
+                                                    }
+                                                />
+                                            </select>
+                                            <Icon icon=LuChevronDown width="13px" height="13px" />
+                                        </label>
                                     </div>
                                     <div class="zai-setting-row">
                                         <div><strong>"Speech rate"</strong><span>"0.5× to 2×"</span></div>
@@ -814,5 +1175,165 @@ pub fn SettingsDialog(
                 </section>
             </div>
         </Show>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::fallback_catalogs;
+
+    fn provider_status(id: ProviderId, available: bool) -> ProviderStatus {
+        ProviderStatus {
+            id,
+            name: id.display_name().to_owned(),
+            available,
+            executable_path: None,
+            version: None,
+            install_url: String::new(),
+            transport: String::new(),
+        }
+    }
+
+    fn voice_model(id: &str, voices: &[&str]) -> OpenRouterVoiceModel {
+        OpenRouterVoiceModel {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            supported_voices: voices.iter().map(|voice| (*voice).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn unavailable_agent_provider_only_keeps_disabled_saved_choice() {
+        let providers = vec![
+            provider_status(ProviderId::Claude, false),
+            provider_status(ProviderId::Codex, true),
+            provider_status(ProviderId::Gemini, false),
+            provider_status(ProviderId::Kimi, false),
+            provider_status(ProviderId::Openrouter, false),
+        ];
+
+        let choices = agent_choices(
+            &fallback_catalogs(),
+            &[],
+            &providers,
+            ProviderId::Claude,
+            "opus",
+        );
+        let claude_choices = choices
+            .iter()
+            .filter(|choice| choice.value.starts_with("claude|"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(claude_choices.len(), 1);
+        assert_eq!(claude_choices[0].value, "claude|opus");
+        assert!(claude_choices[0].disabled);
+        assert!(claude_choices[0].label.contains("(unavailable)"));
+        assert!(
+            choices
+                .iter()
+                .any(|choice| choice.value == "codex|default" && !choice.disabled)
+        );
+    }
+
+    #[test]
+    fn available_saved_agent_model_is_not_duplicated_or_disabled() {
+        let providers = vec![provider_status(ProviderId::Claude, true)];
+        let choices = agent_choices(
+            &fallback_catalogs(),
+            &[],
+            &providers,
+            ProviderId::Claude,
+            "opus",
+        );
+        let saved = choices
+            .iter()
+            .filter(|choice| choice.value == "claude|opus")
+            .collect::<Vec<_>>();
+
+        assert_eq!(saved.len(), 1);
+        assert!(!saved[0].disabled);
+        assert!(!saved[0].label.contains("unavailable"));
+    }
+
+    #[test]
+    fn saved_custom_speech_voice_remains_selectable() {
+        let choices = speech_voice_choices(
+            &OpenRouterVoiceCatalog::default(),
+            "openrouter",
+            "provider/custom-tts",
+            "provider-specific-voice",
+        );
+        let saved = choices
+            .iter()
+            .find(|choice| choice.value == "provider-specific-voice")
+            .expect("saved voice");
+
+        assert_eq!(saved.label, "Saved · provider-specific-voice");
+        assert!(!saved.disabled);
+    }
+
+    #[test]
+    fn voice_choices_follow_the_selected_openrouter_model() {
+        let catalog = OpenRouterVoiceCatalog {
+            transcription: Vec::new(),
+            speech: vec![
+                voice_model("provider/first", &["voice-a", "voice-b"]),
+                voice_model("provider/second", &["voice-c"]),
+            ],
+        };
+
+        let choices = speech_voice_choices(&catalog, "openrouter", "provider/second", "voice-c");
+        assert_eq!(
+            choices
+                .iter()
+                .map(|choice| choice.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["voice-c"]
+        );
+        assert_eq!(
+            normalized_speech_voice(&catalog, "openrouter", "provider/second", "voice-a"),
+            Some("voice-c".to_owned())
+        );
+        assert_eq!(
+            normalized_speech_voice(&catalog, "openrouter", "provider/second", "voice-c"),
+            None
+        );
+    }
+
+    #[test]
+    fn dedicated_voice_catalogs_populate_the_correct_dropdowns() {
+        let transcription = vec![voice_model("provider/stt", &[])];
+        let speech = vec![
+            voice_model("provider/tts", &["voice-a"]),
+            voice_model("provider/unknown-voices", &[]),
+        ];
+
+        let dictation = dictation_choices(&transcription, "openrouter", "provider/stt");
+        assert!(
+            dictation
+                .iter()
+                .any(|choice| { choice.value == "openrouter|provider/stt" && !choice.disabled })
+        );
+        assert!(
+            !dictation
+                .iter()
+                .any(|choice| choice.value == "openrouter|provider/tts")
+        );
+
+        let speech = speech_choices(&speech, "openrouter", "provider/tts");
+        assert!(
+            speech
+                .iter()
+                .any(|choice| { choice.value == "openrouter|provider/tts" && !choice.disabled })
+        );
+        assert!(speech.iter().any(|choice| {
+            choice.value == "openrouter|provider/unknown-voices" && choice.disabled
+        }));
+        assert!(
+            !speech
+                .iter()
+                .any(|choice| choice.value == "openrouter|provider/stt")
+        );
     }
 }

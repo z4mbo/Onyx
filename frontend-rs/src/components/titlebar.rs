@@ -1,9 +1,11 @@
-use icondata::{LuLogOut, LuPanelBottom, LuPanelRight, LuPlus, LuSettings, LuUserRound, LuX};
+use icondata::{
+    LuDownload, LuLogOut, LuPanelBottom, LuPanelRight, LuPlus, LuSettings, LuUserRound, LuX,
+};
 use leptos::ev::MouseEvent;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
-use crate::model::AccountProfile;
+use crate::model::{AccountProfile, UpdateInfo};
 
 use super::OnyxOrb;
 
@@ -34,6 +36,8 @@ pub fn Titlebar(
     on_home: Callback<()>,
     on_settings: Callback<()>,
     on_sign_out: Callback<()>,
+    update: Signal<Option<UpdateInfo>>,
+    on_update: Callback<()>,
     profile: Signal<Option<AccountProfile>>,
     show_layout_controls: Signal<bool>,
     bottom_panel_open: Signal<bool>,
@@ -274,6 +278,25 @@ pub fn Titlebar(
                             <Icon icon=LuPanelRight width="16px" height="16px" />
                         </button>
                     </div>
+                </Show>
+
+                <Show when=move || update.get().is_some()>
+                    <button
+                        type="button"
+                        class="zai-titlebar__update"
+                        on:click=move |_| on_update.run(())
+                        aria-label=move || update
+                            .get()
+                            .map(|update| format!("Update Onyx to {}", update.version))
+                            .unwrap_or_else(|| "Open update".to_owned())
+                        title=move || update
+                            .get()
+                            .map(|update| format!("Onyx {} is ready", update.version))
+                            .unwrap_or_else(|| "Open update".to_owned())
+                    >
+                        <Icon icon=LuDownload width="13px" height="13px" />
+                        <span>"Update"</span>
+                    </button>
                 </Show>
 
                 <div class="zai-titlebar__profile-wrap">

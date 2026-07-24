@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { delimiter, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
+import { configureBundleUpdaterSigningKey } from "./tauri-signing-env.mjs";
 
 const cargoExecutable = process.platform === "win32" ? "cargo.exe" : "cargo";
 const pathEntries = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
@@ -67,6 +68,17 @@ const environment = {
   PATH: [cargoDirectory, ...pathEntries].join(delimiter),
 };
 const tauriArguments = process.argv.slice(2);
+const buildsBundles =
+  tauriArguments.includes("build") || tauriArguments.includes("bundle");
+
+if (buildsBundles) {
+  try {
+    configureBundleUpdaterSigningKey(environment);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
 
 if (
   process.platform === "darwin"
@@ -92,8 +104,9 @@ if (
 }
 
 if (
-  tauriArguments.includes("build")
+  buildsBundles
   && !environment.TAURI_SIGNING_PRIVATE_KEY
+  && !environment.TAURI_SIGNING_PRIVATE_KEY_PATH
 ) {
   tauriArguments.push(
     "--config",
