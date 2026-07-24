@@ -25,7 +25,9 @@ use crate::{
     storage::SessionStore,
 };
 use chrono::Utc;
-use enigo::{Direction, Enigo, Key, Keyboard, Settings as EnigoSettings};
+#[cfg(target_os = "macos")]
+use enigo::{Direction, Key};
+use enigo::{Enigo, Keyboard, Settings as EnigoSettings};
 use parking_lot::{Mutex, RwLock};
 use std::{
     collections::HashMap,
@@ -982,6 +984,7 @@ pub fn run() {
             });
             modifier_hold::start(app.handle().clone());
             let _ = windowing::position_saved_windows(app.handle());
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             let _ = windowing::show_agent(app.handle());
             #[cfg(target_os = "macos")]
             {
