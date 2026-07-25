@@ -497,6 +497,21 @@ pub struct VoiceSettings {
     pub voice_rate: f32,
 }
 
+pub const DEFAULT_OPENROUTER_SPEECH_MODEL: &str = "deepgram/aura-2";
+pub const DEFAULT_OPENROUTER_SPEECH_VOICE: &str = "aura-2-livia-it";
+const RETIRED_OPENROUTER_SPEECH_MODEL: &str = "openai/gpt-4o-mini-tts-2025-12-15";
+
+impl VoiceSettings {
+    pub fn migrate_retired_speech_model(&mut self) {
+        if self.voice_provider.eq_ignore_ascii_case("openrouter")
+            && self.voice_model == RETIRED_OPENROUTER_SPEECH_MODEL
+        {
+            self.voice_model = DEFAULT_OPENROUTER_SPEECH_MODEL.to_owned();
+            self.voice_id = DEFAULT_OPENROUTER_SPEECH_VOICE.to_owned();
+        }
+    }
+}
+
 impl Default for VoiceSettings {
     fn default() -> Self {
         Self {
@@ -518,8 +533,8 @@ impl Default for VoiceSettings {
             language: None,
             speak_responses: true,
             voice_provider: "openrouter".into(),
-            voice_id: "alloy".into(),
-            voice_model: "openai/gpt-4o-mini-tts-2025-12-15".into(),
+            voice_id: DEFAULT_OPENROUTER_SPEECH_VOICE.into(),
+            voice_model: DEFAULT_OPENROUTER_SPEECH_MODEL.into(),
             voice_rate: 1.0,
         }
     }
@@ -634,7 +649,7 @@ pub struct UpdateProgress {
 mod tests {
     use super::{
         ProviderUserInputAnswers, ProviderUserInputOption, ProviderUserInputQuestion,
-        ProviderUserInputRequest,
+        ProviderUserInputRequest, VoiceSettings,
     };
     use chrono::{TimeZone, Utc};
     use serde_json::json;
@@ -687,5 +702,19 @@ mod tests {
         let answers: ProviderUserInputAnswers =
             serde_json::from_value(json!({"scope": ["Focused"]})).unwrap();
         assert_eq!(answers["scope"], ["Focused"]);
+    }
+
+    #[test]
+    fn retired_openrouter_speech_default_is_migrated() {
+        let mut settings = VoiceSettings {
+            voice_model: "openai/gpt-4o-mini-tts-2025-12-15".to_owned(),
+            voice_id: "alloy".to_owned(),
+            ..VoiceSettings::default()
+        };
+
+        settings.migrate_retired_speech_model();
+
+        assert_eq!(settings.voice_model, "deepgram/aura-2");
+        assert_eq!(settings.voice_id, "aura-2-livia-it");
     }
 }

@@ -99,7 +99,14 @@ pub fn Titlebar(
                     >
                         <For
                             each=move || tabs.get()
-                            key=|tab| tab.id.clone()
+                            key=|tab| {
+                                (
+                                    tab.id.clone(),
+                                    tab.label.clone(),
+                                    tab.active,
+                                    tab.running,
+                                )
+                            }
                             children=move |tab| {
                                 let select_id = tab.id.clone();
                                 let close_id = tab.id.clone();
@@ -217,7 +224,13 @@ pub fn Titlebar(
                                 <p>"Open session"</p>
                                 <For
                                     each=move || sessions.get()
-                                    key=|session| session.id.clone()
+                                    key=|session| {
+                                        (
+                                            session.id.clone(),
+                                            session.label.clone(),
+                                            session.project.clone(),
+                                        )
+                                    }
                                     children=move |session| {
                                         let id = session.id.clone();
                                         let initial = session

@@ -10,7 +10,8 @@ use wasm_bindgen::{JsCast, closure::Closure};
 
 use crate::{
     markdown,
-    model::{AgentSession, Message, MessageKind, MessageRole},
+    model::{AccountProfile, AgentSession, Message, MessageKind, MessageRole},
+    storage,
 };
 
 #[derive(Clone)]
@@ -141,9 +142,62 @@ fn ToolGroup(messages: Vec<Message>) -> impl IntoView {
 }
 
 #[component]
-pub fn Transcript(session: Signal<Option<AgentSession>>) -> impl IntoView {
+fn UserMessage(message: Message, profile: Signal<Option<AccountProfile>>) -> impl IntoView {
+    let prompt_dom_id = format!("onyx-prompt-{}", message.id);
+    let created_at = message.created_at;
+    let timestamp = storage::display_time(&created_at);
+    let rendered = markdown::render(&message.content);
+
+    view! {
+        <article
+            id=prompt_dom_id
+            class="zai-message zai-message--user zai-message--text"
+            data-component="user-message"
+        >
+            <div class="zai-message__user-meta">
+                {move || profile.get().and_then(|profile| profile.image_url).map(|url| view! {
+                    <img
+                        class="zai-message__user-avatar"
+                        src=url
+                        alt=""
+                        referrerpolicy="no-referrer"
+                    />
+                }.into_any()).unwrap_or_else(|| {
+                    let initial = profile
+                        .get()
+                        .map(|profile| profile.name)
+                        .unwrap_or_else(|| "You".to_owned())
+                        .chars()
+                        .next()
+                        .unwrap_or('Y')
+                        .to_uppercase()
+                        .to_string();
+                    view! {
+                        <span class="zai-message__user-avatar zai-message__user-avatar--fallback">
+                            {initial}
+                        </span>
+                    }.into_any()
+                })}
+                <strong>
+                    {move || profile.get().map(|profile| profile.name).unwrap_or_else(|| "You".to_owned())}
+                </strong>
+                <time datetime=created_at>{timestamp}</time>
+            </div>
+            <div class="zai-message__content" data-slot="user-message-text">
+                <div class="zai-message-markdown" inner_html=rendered />
+            </div>
+        </article>
+    }
+}
+
+#[component]
+pub fn Transcript(
+    session: Signal<Option<AgentSession>>,
+    profile: Signal<Option<AccountProfile>>,
+) -> impl IntoView {
     let scroller = NodeRef::<leptos::html::Div>::new();
     let pinned = RwSignal::new(true);
+    let last_user_message = Rc::new(RefCell::new(None::<String>));
     let active_prompt = RwSignal::new(None::<String>);
     let hovered_prompt = RwSignal::new(None::<PromptJump>);
     let prompt_elements = Rc::new(RefCell::new(Vec::<(String, web_sys::Element)>::new()));
@@ -220,7 +274,16 @@ pub fn Transcript(session: Signal<Option<AgentSession>>) -> impl IntoView {
     });
 
     Effect::new(move |_| {
-        let content_version = session.get().and_then(|session| {
+        let snapshot = session.get();
+        let latest_user_message = snapshot.as_ref().and_then(|session| {
+            session
+                .messages
+                .iter()
+                .rev()
+                .find(|message| message.role == MessageRole::User)
+                .map(|message| message.id.clone())
+        });
+        let content_version = snapshot.and_then(|session| {
             session.messages.last().map(|message| {
                 (
                     session.messages.len(),
@@ -231,6 +294,15 @@ pub fn Transcript(session: Signal<Option<AgentSession>>) -> impl IntoView {
             })
         });
         let _ = content_version;
+        let force_to_latest_prompt = {
+            let mut previous = last_user_message.borrow_mut();
+            let changed = latest_user_message.is_some() && *previous != latest_user_message;
+            *previous = latest_user_message;
+            changed
+        };
+        if force_to_latest_prompt {
+            pinned.set(true);
+        }
         if !pinned.get_untracked() {
             return;
         }
@@ -397,31 +469,25 @@ pub fn Transcript(session: Signal<Option<AgentSession>>) -> impl IntoView {
                             TranscriptItem::Tools { messages, .. } => {
                                 view! { <ToolGroup messages=messages /> }.into_any()
                             }
+                            TranscriptItem::Single(message) if message.role == MessageRole::User => {
+                                view! { <UserMessage message=message profile=profile /> }.into_any()
+                            }
                             TranscriptItem::Single(message) => {
-                                let prompt_dom_id = (message.role == MessageRole::User)
-                                    .then(|| format!("onyx-prompt-{}", message.id));
                                 let class = format!(
                                     "zai-message zai-message--{} zai-message--{}",
                                     message.role.as_str(),
                                     message.kind.as_str(),
                                 );
-                                let component = if message.role == MessageRole::User {
-                                    "user-message"
-                                } else {
-                                    "assistant-message"
-                                };
                                 let is_error = message.kind == MessageKind::Error;
-                                let slot = (message.role == MessageRole::User)
-                                    .then_some("user-message-text");
                                 let rendered = markdown::render(&message.content);
                                 view! {
-                                    <article id=prompt_dom_id class=class data-component=component>
+                                    <article class=class data-component="assistant-message">
                                         <Show when=move || is_error>
                                             <span class="zai-message__alert">
                                                 <Icon icon=LuCircleAlert width="15px" height="15px" />
                                             </span>
                                         </Show>
-                                        <div class="zai-message__content" data-slot=slot>
+                                        <div class="zai-message__content">
                                             <div class="zai-message-markdown" inner_html=rendered />
                                         </div>
                                     </article>

@@ -14,7 +14,7 @@ use crate::{
         AccountProfile, AgentSession, ConnectionStatus, NativeVoicePermissions, OpenRouterModel,
         OpenRouterVoiceCatalog, OpenRouterVoiceModel, OverlayPosition, ProviderBrand, ProviderId,
         ProviderStatus, UpdateProgress, VoiceSettings, normalized_speech_voice,
-        supported_speech_voices,
+        resolved_openrouter_speech_selection, supported_speech_voices,
     },
     storage, theme,
 };
@@ -130,11 +130,15 @@ fn dictation_choices(
             format!("OpenRouter · {}", model.name),
         );
     }
-    if !current_model.trim().is_empty() {
-        add_choice(
+    let current_value = encoded_choice(current_provider, current_model);
+    if !current_model.trim().is_empty()
+        && !choices.iter().any(|choice| choice.value == current_value)
+    {
+        add_choice_with_state(
             &mut choices,
-            encoded_choice(current_provider, current_model),
-            format!("Saved · {current_model}"),
+            current_value,
+            format!("Saved · {current_model} · unavailable"),
+            true,
         );
     }
     choices
@@ -409,6 +413,27 @@ pub fn SettingsDialog(
             return;
         };
         let catalog = openrouter_voice_catalog.get();
+        if current.voice_provider.eq_ignore_ascii_case("openrouter") {
+            if !voice_catalog_loaded.get() {
+                return;
+            }
+            let Some((model, selected_voice)) = resolved_openrouter_speech_selection(
+                &catalog,
+                &current.voice_model,
+                &current.voice_id,
+            ) else {
+                return;
+            };
+            if model != current.voice_model || selected_voice != current.voice_id {
+                voice.update(|settings| {
+                    if let Some(settings) = settings {
+                        settings.voice_model = model;
+                        settings.voice_id = selected_voice;
+                    }
+                });
+            }
+            return;
+        }
         let Some(next) = normalized_speech_voice(
             &catalog,
             &current.voice_provider,
@@ -1271,6 +1296,22 @@ mod tests {
 
         assert_eq!(saved.label, "Saved · provider-specific-voice");
         assert!(!saved.disabled);
+    }
+
+    #[test]
+    fn missing_saved_speech_model_is_not_left_enabled() {
+        let choices = speech_choices(
+            &[voice_model("deepgram/aura-2", &["aura-2-livia-it"])],
+            "openrouter",
+            "openai/gpt-4o-mini-tts-2025-12-15",
+        );
+        let saved = choices
+            .iter()
+            .find(|choice| choice.value == "openrouter|openai/gpt-4o-mini-tts-2025-12-15")
+            .expect("missing saved model");
+
+        assert!(saved.disabled);
+        assert!(saved.label.contains("unavailable"));
     }
 
     #[test]

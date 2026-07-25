@@ -112,6 +112,7 @@ fn load_voice_settings(path: &Path) -> VoiceSettings {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
     settings.language = None;
+    settings.migrate_retired_speech_model();
     settings
 }
 
@@ -514,6 +515,7 @@ fn apply_voice_settings(
     mut settings: VoiceSettings,
     state: State<'_, AppState>,
 ) -> Result<VoiceSettings, String> {
+    settings.migrate_retired_speech_model();
     if settings.overlay_margin > 160 || !(0.5..=2.0).contains(&settings.voice_rate) {
         return Err("Voice overlay margin or speech rate is outside the supported range".into());
     }

@@ -6,6 +6,7 @@ use icondata::{
 use leptos::ev::{KeyboardEvent, SubmitEvent};
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::spawn_local;
 
 use crate::{
@@ -193,6 +194,7 @@ pub fn ChatView(
     let web_search = RwSignal::new(false);
     let web_app = RwSignal::new(None::<SubscriptionApp>);
     let error = RwSignal::new(None::<String>);
+    let chat_scroller = NodeRef::<leptos::html::Div>::new();
 
     let active = Signal::derive(move || {
         let id = active_id.get();
@@ -201,6 +203,30 @@ pub fn ChatView(
             .iter()
             .find(|thread| Some(thread.id.as_str()) == id.as_deref())
             .cloned()
+    });
+    Effect::new(move |_| {
+        let content_version = active.get().and_then(|thread| {
+            thread
+                .messages
+                .last()
+                .map(|message| (thread.id, thread.messages.len(), message.id.clone()))
+        });
+        let _ = content_version;
+        let Some(element) = chat_scroller.get_untracked() else {
+            return;
+        };
+        let callback = Closure::once(move || {
+            if element.is_connected() {
+                element.set_scroll_top(element.scroll_height());
+            }
+        });
+        if let Some(window) = web_sys::window()
+            && window
+                .request_animation_frame(callback.as_ref().unchecked_ref())
+                .is_ok()
+        {
+            callback.forget();
+        }
     });
     let model_options = Signal::derive(move || {
         available_models(
@@ -602,7 +628,7 @@ pub fn ChatView(
                     </Show>
                 </header>
 
-                <div class="onyx-chat__scroll">
+                <div class="onyx-chat__scroll" node_ref=chat_scroller>
                     <Show
                         when=move || active.get().is_some_and(|thread| !thread.messages.is_empty())
                         fallback=move || view! {
@@ -631,19 +657,48 @@ pub fn ChatView(
                             <For
                                 each=move || active.get().map(|thread| thread.messages).unwrap_or_default()
                                 key=|message| message.id.clone()
-                                children=move |message| view! {
-                                    <article class="onyx-chat__message" class:user=message.role == "user">
-                                        <div class="onyx-chat__message-copy">{message.content}</div>
-                                        <For
-                                            each=move || message.media.clone()
-                                            key=|media| media.url.clone()
-                                            children=move |media| if media.kind == "image" {
-                                                view! { <img src=media.url alt="Generated media" /> }.into_any()
-                                            } else {
-                                                view! { <video src=media.url controls=true /> }.into_any()
-                                            }
-                                        />
-                                    </article>
+                                children=move |message| {
+                                    let is_user = message.role == "user";
+                                    let created_at = message.created_at.clone();
+                                    let timestamp = storage::display_time(&created_at);
+                                    view! {
+                                        <article class="onyx-chat__message" class:user=is_user>
+                                            <Show when=move || is_user>
+                                                <div class="onyx-chat__message-meta">
+                                                    {move || profile.get().and_then(|profile| profile.image_url).map(|url| view! {
+                                                        <img src=url alt="" referrerpolicy="no-referrer" />
+                                                    }.into_any()).unwrap_or_else(|| {
+                                                        let initial = profile
+                                                            .get()
+                                                            .map(|profile| profile.name)
+                                                            .unwrap_or_else(|| "You".to_owned())
+                                                            .chars()
+                                                            .next()
+                                                            .unwrap_or('Y')
+                                                            .to_uppercase()
+                                                            .to_string();
+                                                        view! {
+                                                            <span class="onyx-chat__message-avatar">{initial}</span>
+                                                        }.into_any()
+                                                    })}
+                                                    <strong>
+                                                        {move || profile.get().map(|profile| profile.name).unwrap_or_else(|| "You".to_owned())}
+                                                    </strong>
+                                                    <time datetime=created_at.clone()>{timestamp.clone()}</time>
+                                                </div>
+                                            </Show>
+                                            <div class="onyx-chat__message-copy">{message.content}</div>
+                                            <For
+                                                each=move || message.media.clone()
+                                                key=|media| media.url.clone()
+                                                children=move |media| if media.kind == "image" {
+                                                    view! { <img src=media.url alt="Generated media" /> }.into_any()
+                                                } else {
+                                                    view! { <video src=media.url controls=true /> }.into_any()
+                                                }
+                                            />
+                                        </article>
+                                    }
                                 }
                             />
                             <Show when=move || busy.get()>

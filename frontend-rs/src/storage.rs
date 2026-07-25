@@ -10,7 +10,6 @@ pub const CHAT_THREADS_KEY: &str = "onyx.chat.threads.v1";
 pub const CHAT_FAVORITES_KEY: &str = "onyx.chat.favorite-models.v1";
 pub const VOICE_HISTORY_KEY: &str = "onyx.voice-history.v1";
 pub const RELEASE_NOTES_SEEN_KEY: &str = "onyx.release-notes.seen";
-pub const ENVIRONMENT_PANEL_KEY: &str = "onyx.environment-panel.open";
 
 fn local_storage() -> Option<web_sys::Storage> {
     web_sys::window()
@@ -57,6 +56,15 @@ pub fn timestamp() -> String {
         .to_iso_string()
         .as_string()
         .unwrap_or_default()
+}
+
+pub fn display_time(timestamp: &str) -> String {
+    let milliseconds = js_sys::Date::parse(timestamp);
+    if !milliseconds.is_finite() {
+        return String::new();
+    }
+    let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(milliseconds));
+    format!("{:02}:{:02}", date.get_hours(), date.get_minutes())
 }
 
 pub fn unique_id(prefix: &str) -> String {

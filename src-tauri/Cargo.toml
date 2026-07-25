@@ -1,6 +1,6 @@
 [package]
 name = "onyx-desktop"
-version = "0.3.0"
+version = "0.3.1"
 description = "Coding agents, multimodal chat, and voice in one Rust-native desktop app"
 authors = ["z4mbo and contributors"]
 edition = "2024"
