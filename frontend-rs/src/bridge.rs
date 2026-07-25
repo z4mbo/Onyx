@@ -325,22 +325,6 @@ pub async fn repo_summary(workspace: &str) -> Result<RepoSummary, String> {
     .await
 }
 
-pub async fn local_git_branches(workspace: &str) -> Result<Vec<String>, String> {
-    invoke(
-        "workspace_git_branches",
-        &serde_json::json!({ "workspace": workspace }),
-    )
-    .await
-}
-
-pub async fn switch_git_branch(workspace: &str, branch: &str) -> Result<RepoSummary, String> {
-    invoke(
-        "workspace_git_switch_branch",
-        &serde_json::json!({ "workspace": workspace, "branch": branch }),
-    )
-    .await
-}
-
 pub async fn init_git(workspace: &str) -> Result<GitActionResult, String> {
     invoke(
         "workspace_git_init",

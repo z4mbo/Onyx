@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use gloo_timers::future::TimeoutFuture;
-use icondata::{LuCheck, LuGauge, LuGitBranch, LuPanelRight, LuPencil, LuTimerReset, LuX};
+use icondata::{LuCheck, LuGauge, LuGitBranch, LuPencil, LuTimerReset, LuX};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use wasm_bindgen::{JsCast, closure::Closure};
@@ -10,10 +10,6 @@ use wasm_bindgen_futures::spawn_local;
 use crate::{
     bridge,
     catalog::{fallback_catalogs, models_for_brand, runtime_for_brand, selected_or_default},
-    components::environment::{
-        EnvironmentAgent, EnvironmentCompare, EnvironmentPanel, EnvironmentSource,
-        EnvironmentSourceKind, LocalWorkspace,
-    },
     components::{
         AccountGate, AgentOverlay, BottomTerminalPanel, ChatView, ColorScheme, Composer,
         GitCommitDialog, HomeView, Hud, RightWorkspacePanel, SessionWorkspaceUi, SettingsDialog,
@@ -23,131 +19,16 @@ use crate::{
     },
     model::{
         AccessMode, AccountEvent, AccountProfile, AgentSession, ApprovalRequest, ConnectionStatus,
-        CreateSessionInput, EditorTarget, InteractionMode, MessageKind, MessageRole,
-        NativeVoicePermissions, OpenRouterModel, ProviderBrand, ProviderId, ProviderUsage,
-        ProviderUserInputRequest, ReasoningEffort, RepoSummary, SessionEvent, SessionStatus,
-        SpeedMode, TerminalEvent, UpdateInfo, UpdateProgress, UpdateSessionOptionsInput,
-        apply_session_event, demo_providers, replace_session, workspace_name,
+        CreateSessionInput, EditorTarget, InteractionMode, NativeVoicePermissions, OpenRouterModel,
+        ProviderBrand, ProviderId, ProviderUsage, ProviderUserInputRequest, ReasoningEffort,
+        RepoSummary, SessionEvent, SpeedMode, TerminalEvent, UpdateInfo, UpdateProgress,
+        UpdateSessionOptionsInput, apply_session_event, demo_providers, replace_session,
+        workspace_name,
     },
     storage, theme,
 };
 
 const DRAFT_TAB_ID: &str = "onyx:draft";
-
-fn referenced_paths(content: &str) -> Vec<String> {
-    let bytes = content.as_bytes();
-    let mut paths = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] != b'@' {
-            index += 1;
-            continue;
-        }
-        index += 1;
-        if index >= bytes.len() {
-            break;
-        }
-        let quoted = bytes[index] == b'"';
-        if quoted {
-            index += 1;
-        }
-        let start = index;
-        while index < bytes.len()
-            && if quoted {
-                bytes[index] != b'"'
-            } else {
-                !bytes[index].is_ascii_whitespace()
-            }
-        {
-            index += 1;
-        }
-        let value = content[start..index]
-            .trim_matches(|character: char| ",.;:!?)]}".contains(character))
-            .trim();
-        if !value.is_empty() && !value.contains("://") {
-            paths.push(value.to_owned());
-        }
-        if quoted && index < bytes.len() {
-            index += 1;
-        }
-    }
-    paths
-}
-
-fn environment_sources(session: &AgentSession) -> Vec<EnvironmentSource> {
-    let mut seen = HashSet::new();
-    let mut sources = Vec::new();
-    for message in session.messages.iter().rev() {
-        if message.role == MessageRole::User {
-            for path in referenced_paths(&message.content) {
-                let is_directory = path.ends_with('/');
-                let id = format!("{}:{path}", if is_directory { "directory" } else { "file" });
-                if seen.insert(id.clone()) {
-                    let label = std::path::Path::new(&path)
-                        .file_name()
-                        .and_then(|value| value.to_str())
-                        .unwrap_or(&path)
-                        .to_owned();
-                    sources.push(EnvironmentSource {
-                        id,
-                        label,
-                        detail: Some(path.clone()),
-                        kind: if is_directory {
-                            EnvironmentSourceKind::Directory
-                        } else {
-                            EnvironmentSourceKind::File
-                        },
-                    });
-                }
-            }
-        }
-        for word in message.content.split_whitespace() {
-            let url = word.trim_matches(|character: char| {
-                matches!(character, '"' | '\'' | '(' | ')' | '[' | ']' | ',' | '.')
-            });
-            if (url.starts_with("https://") || url.starts_with("http://")) && url.len() <= 8 * 1024
-            {
-                let id = format!("url:{url}");
-                if seen.insert(id.clone()) {
-                    sources.push(EnvironmentSource {
-                        id,
-                        label: url
-                            .split("//")
-                            .nth(1)
-                            .and_then(|value| value.split('/').next())
-                            .unwrap_or(url)
-                            .to_owned(),
-                        detail: Some(url.to_owned()),
-                        kind: EnvironmentSourceKind::Url,
-                    });
-                }
-            }
-        }
-        if message.kind == MessageKind::Tool {
-            let title = message
-                .content
-                .lines()
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("Tool activity");
-            let id = format!("tool:{}", message.id);
-            if seen.insert(id.clone()) {
-                sources.push(EnvironmentSource {
-                    id,
-                    label: title.to_owned(),
-                    detail: Some("Recorded in this conversation".to_owned()),
-                    kind: EnvironmentSourceKind::Tool,
-                });
-            }
-        }
-        if sources.len() >= 24 {
-            break;
-        }
-    }
-    sources.reverse();
-    sources
-}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Page {
@@ -481,15 +362,11 @@ pub fn App() -> impl IntoView {
     let tombstones = RwSignal::new(HashSet::<String>::new());
     let events_ready = RwSignal::new(false);
     let repo = RwSignal::new(None::<RepoSummary>);
-    let local_branches = RwSignal::new(Vec::<String>::new());
     let editors = RwSignal::new(Vec::<EditorTarget>::new());
     let preferred_editor =
         RwSignal::new(storage::get(storage::PREFERRED_EDITOR_KEY).unwrap_or_default());
     let git_busy = RwSignal::new(None::<String>);
     let commit_open = RwSignal::new(false);
-    let environment_open =
-        RwSignal::new(storage::get(storage::ENVIRONMENT_PANEL_KEY).as_deref() != Some("false"));
-
     let account_profile = RwSignal::new(None::<AccountProfile>);
     let account_loading = RwSignal::new(true);
     let account_error = RwSignal::new(None::<String>);
@@ -597,37 +474,18 @@ pub fn App() -> impl IntoView {
     Effect::new(move |_| {
         let Some(session) = current.get() else {
             repo.set(None);
-            local_branches.set(Vec::new());
             return;
         };
-        let status = session.status;
-        local_branches.set(Vec::new());
-        if status.is_running() {
+        if session.status.is_running() {
             return;
         }
         spawn_local(async move {
             let result = bridge::repo_summary(&session.workspace).await;
-            let branches = match result.as_ref() {
-                Ok(summary) if summary.is_repo => {
-                    bridge::local_git_branches(&session.workspace).await
-                }
-                _ => Ok(Vec::new()),
-            };
             if current_id.read().as_deref() == Some(session.id.as_str()) {
                 match result {
-                    Ok(summary) => {
-                        repo.set(Some(summary));
-                        match branches {
-                            Ok(branches) => local_branches.set(branches),
-                            Err(cause) => {
-                                local_branches.set(Vec::new());
-                                show_error.run(cause);
-                            }
-                        }
-                    }
+                    Ok(summary) => repo.set(Some(summary)),
                     Err(cause) => {
                         repo.set(None);
-                        local_branches.set(Vec::new());
                         show_error.run(cause);
                     }
                 }
@@ -990,16 +848,7 @@ pub fn App() -> impl IntoView {
                 Ok(result) => {
                     show_notice.run((result.message, "success"));
                     match bridge::repo_summary(&session.workspace).await {
-                        Ok(summary) => {
-                            repo.set(Some(summary));
-                            match bridge::local_git_branches(&session.workspace).await {
-                                Ok(branches) => local_branches.set(branches),
-                                Err(cause) => {
-                                    local_branches.set(Vec::new());
-                                    show_error.run(cause);
-                                }
-                            }
-                        }
+                        Ok(summary) => repo.set(Some(summary)),
                         Err(cause) => show_error.run(cause),
                     }
                 }
@@ -1036,42 +885,6 @@ pub fn App() -> impl IntoView {
         spawn_local(async move {
             if let Err(cause) = bridge::open_workspace(&session.workspace, &target).await {
                 show_error.run(cause);
-            }
-        });
-    });
-
-    let switch_workspace_branch = Callback::new(move |branch: String| {
-        let Some(session) = current.get() else {
-            return;
-        };
-        if session.status.is_running() {
-            show_error.run("Wait for the active agent turn before switching branches.".to_owned());
-            return;
-        }
-        if git_busy.get_untracked().is_some()
-            || repo
-                .read()
-                .as_ref()
-                .and_then(|summary| summary.branch.as_deref())
-                == Some(branch.as_str())
-        {
-            return;
-        }
-
-        let session_id = session.id.clone();
-        git_busy.set(Some("branch".to_owned()));
-        spawn_local(async move {
-            match bridge::switch_git_branch(&session.workspace, &branch).await {
-                Ok(summary) => {
-                    if current_id.read().as_deref() == Some(session_id.as_str()) {
-                        repo.set(Some(summary));
-                    }
-                    show_notice.run((format!("Switched to branch {branch}"), "success"));
-                }
-                Err(cause) => show_error.run(cause),
-            }
-            if git_busy.read().as_deref() == Some("branch") {
-                git_busy.set(None);
             }
         });
     });
@@ -1204,26 +1017,6 @@ pub fn App() -> impl IntoView {
             });
         });
     });
-    let add_resource_surface = Callback::new(
-        move |(kind, title, resource_id): (WorkspaceSurfaceKind, String, Option<String>)| {
-            let Some(session) = current.get() else {
-                return;
-            };
-            let surface = WorkspaceSurface {
-                id: storage::unique_id("surface"),
-                kind,
-                title,
-                resource_id,
-                pending: false,
-            };
-            let active = surface.id.clone();
-            update_workspace_ui(workspace_states, &session.id, |ui| {
-                ui.right_panel_open = true;
-                ui.surfaces.push(surface);
-                ui.active_surface_id = Some(active);
-            });
-        },
-    );
     let close_surface = Callback::new(move |surface_id: String| {
         let Some(session) = current.get() else {
             return;
@@ -1869,108 +1662,6 @@ pub fn App() -> impl IntoView {
                     .map(|session| session.workspace)
                     .unwrap_or_default()
             });
-            let environment_workspace = Signal::derive(move || {
-                current.get().map(|session| LocalWorkspace {
-                    label: workspace_name(&session.workspace),
-                    path: session.workspace,
-                })
-            });
-            let environment_agent = Signal::derive(move || {
-                current.get().map(|session| {
-                    let waiting = approvals
-                        .read()
-                        .iter()
-                        .any(|request| request.session_id == session.id)
-                        || user_inputs
-                            .read()
-                            .iter()
-                            .any(|request| request.session_id == session.id);
-                    EnvironmentAgent {
-                        id: session.id,
-                        label: session.provider.display_name().to_owned(),
-                        detail: session
-                            .model
-                            .or_else(|| Some("Official CLI runtime".to_owned())),
-                        brand: session.provider_brand,
-                        status: if waiting {
-                            SessionStatus::WaitingApproval
-                        } else {
-                            session.status
-                        },
-                    }
-                })
-            });
-            let environment_subagents = Signal::derive(move || {
-                let Some(active) = current.get() else {
-                    return Vec::new();
-                };
-                sessions
-                    .read()
-                    .iter()
-                    .filter(|session| {
-                        session.id != active.id
-                            && session.workspace == active.workspace
-                            && session.status.is_running()
-                    })
-                    .take(8)
-                    .map(|session| {
-                        let waiting = approvals
-                            .read()
-                            .iter()
-                            .any(|request| request.session_id == session.id)
-                            || user_inputs
-                                .read()
-                                .iter()
-                                .any(|request| request.session_id == session.id);
-                        EnvironmentAgent {
-                            id: session.id.clone(),
-                            label: session.title.clone(),
-                            detail: Some(format!(
-                                "{} · {}",
-                                session.provider.display_name(),
-                                session
-                                    .model
-                                    .clone()
-                                    .unwrap_or_else(|| "default model".to_owned())
-                            )),
-                            brand: session.provider_brand,
-                            status: if waiting {
-                                SessionStatus::WaitingApproval
-                            } else {
-                                session.status
-                            },
-                        }
-                    })
-                    .collect()
-            });
-            let environment_compare = Signal::derive(move || {
-                let repo = repo.get()?;
-                if let Some(url) = repo.pr_url {
-                    Some(EnvironmentCompare {
-                        id: url,
-                        label: "Compare branch".to_owned(),
-                        detail: repo
-                            .pr_commit_count
-                            .map(|count| format!("{count} branch commits")),
-                    })
-                } else if repo.has_remote && repo.pr_commit_count.unwrap_or_default() > 0 {
-                    Some(EnvironmentCompare {
-                        id: "create-pr".to_owned(),
-                        label: "Compare branch".to_owned(),
-                        detail: repo
-                            .pr_commit_count
-                            .map(|count| format!("{count} branch commits")),
-                    })
-                } else {
-                    None
-                }
-            });
-            let environment_source_list = Signal::derive(move || {
-                current
-                    .get()
-                    .map(|session| environment_sources(&session))
-                    .unwrap_or_default()
-            });
             let context_label = Signal::derive(move || {
                 let Some(session) = current.get() else {
                     return "Context not reported".to_owned();
@@ -2066,23 +1757,6 @@ pub fn App() -> impl IntoView {
                                                 </span>
                                             </Show>
                                         </div>
-                                        <button
-                                            type="button"
-                                            class="onyx-environment-toggle"
-                                            data-active=move || if environment_open.get() { "true" } else { "false" }
-                                            aria-label="Toggle environment panel"
-                                            aria-pressed=move || environment_open.get()
-                                            title="Environment"
-                                            on:click=move |_| {
-                                                environment_open.update(|open| *open = !*open);
-                                                storage::set(
-                                                    storage::ENVIRONMENT_PANEL_KEY,
-                                                    if environment_open.get_untracked() { "true" } else { "false" },
-                                                );
-                                            }
-                                        >
-                                            <Icon icon=LuPanelRight width="15px" height="15px" />
-                                        </button>
                                         <WorkspaceTopbarActions
                                             repo=Signal::derive(move || repo.get())
                                             editors=Signal::derive(move || editors.get())
@@ -2100,7 +1774,10 @@ pub fn App() -> impl IntoView {
                                         />
                                     </header>
 
-                                    <Transcript session=Signal::derive(move || current.get()) />
+                                    <Transcript
+                                        session=Signal::derive(move || current.get())
+                                        profile=Signal::derive(move || account_profile.get())
+                                    />
                                     <For
                                         each=move || active_user_input.get().into_iter()
                                         key=|request| request.id.clone()
@@ -2168,87 +1845,6 @@ pub fn App() -> impl IntoView {
                                             <span><Icon icon=LuTimerReset width="14px" height="14px" />{move || current_usage.get().filter(|usage| !usage.windows.is_empty()).map(|usage| usage.windows.into_iter().map(|window| format!("{} {:.0}%", window.label, window.used_percent)).collect::<Vec<_>>().join(" · ")).unwrap_or_else(|| "Usage not reported".to_owned())}</span>
                                         </div>
                                     </div>
-                                    <Show when=move || environment_open.get()>
-                                        <div class="onyx-environment-popover">
-                                            <EnvironmentPanel
-                                                workspace=environment_workspace
-                                                repo=Signal::derive(move || repo.get())
-                                                branches=Signal::derive(move || local_branches.get())
-                                                compare=environment_compare
-                                                agent=environment_agent
-                                                subagents=environment_subagents
-                                                sources=environment_source_list
-                                                git_busy=Signal::derive(move || {
-                                                    if current
-                                                        .get()
-                                                        .is_some_and(|session| session.status.is_running())
-                                                    {
-                                                        Some("agent".to_owned())
-                                                    } else {
-                                                        git_busy.get()
-                                                    }
-                                                })
-                                                on_change=Callback::new(move |path: String| {
-                                                    let title = std::path::Path::new(&path)
-                                                        .file_name()
-                                                        .and_then(|value| value.to_str())
-                                                        .unwrap_or("Changes")
-                                                        .to_owned();
-                                                    add_resource_surface.run((
-                                                        WorkspaceSurfaceKind::Diff,
-                                                        title,
-                                                        Some(path),
-                                                    ));
-                                                })
-                                                on_open_workspace=Callback::new(move |_| open_workspace.run(()))
-                                                on_branch=switch_workspace_branch
-                                                on_commit=Callback::new(move |_| commit_open.set(true))
-                                                on_push=push_workspace
-                                                on_compare=Callback::new(move |target| {
-                                                    if target == "create-pr" {
-                                                        create_pr.run(());
-                                                    } else {
-                                                        add_resource_surface.run((
-                                                            WorkspaceSurfaceKind::Browser,
-                                                            "Compare".to_owned(),
-                                                            Some(target),
-                                                        ));
-                                                    }
-                                                })
-                                                on_agent=Callback::new(move |id| current_id.set(Some(id)))
-                                                on_source=Callback::new(move |source: String| {
-                                                    if let Some(path) = source.strip_prefix("file:") {
-                                                        add_resource_surface.run((
-                                                            WorkspaceSurfaceKind::Files,
-                                                            std::path::Path::new(path)
-                                                                .file_name()
-                                                                .and_then(|value| value.to_str())
-                                                                .unwrap_or("File")
-                                                                .to_owned(),
-                                                            Some(path.to_owned()),
-                                                        ));
-                                                    } else if source.starts_with("directory:") {
-                                                        add_resource_surface.run((
-                                                            WorkspaceSurfaceKind::Files,
-                                                            "Files".to_owned(),
-                                                            None,
-                                                        ));
-                                                    } else if let Some(url) = source.strip_prefix("url:") {
-                                                        add_resource_surface.run((
-                                                            WorkspaceSurfaceKind::Browser,
-                                                            "Source".to_owned(),
-                                                            Some(url.to_owned()),
-                                                        ));
-                                                    } else {
-                                                        show_notice.run((
-                                                            "This tool activity is recorded in the conversation.".to_owned(),
-                                                            "success",
-                                                        ));
-                                                    }
-                                                })
-                                            />
-                                        </div>
-                                    </Show>
                                 </section>
 
                                 <RightWorkspacePanel

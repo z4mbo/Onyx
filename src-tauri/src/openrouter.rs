@@ -745,9 +745,7 @@ pub async fn speak(model: &str, voice: &str, rate: f32, text: &str) -> Result<St
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .filter(|value| value.starts_with("audio/"))
-        .unwrap_or("audio/mpeg")
-        .to_string();
+        .map(str::to_owned);
     let bytes = read_http_body_limited(
         response,
         if status.is_success() {
@@ -757,16 +755,29 @@ pub async fn speak(model: &str, voice: &str, rate: f32, text: &str) -> Result<St
         },
     )
     .await?;
-    if !status.is_success() {
-        return Err(openrouter_error(status, String::from_utf8_lossy(&bytes)));
-    }
-    if bytes.is_empty() {
-        return Err("OpenRouter returned empty speech audio".into());
-    }
+    let content_type = validate_speech_response(status, content_type.as_deref(), &bytes)?;
     Ok(format!(
         "data:{content_type};base64,{}",
         BASE64.encode(bytes)
     ))
+}
+
+fn validate_speech_response(
+    status: StatusCode,
+    content_type: Option<&str>,
+    bytes: &[u8],
+) -> Result<String, String> {
+    if !status.is_success() {
+        return Err(openrouter_error(status, String::from_utf8_lossy(bytes)));
+    }
+    if bytes.is_empty() {
+        return Err("OpenRouter returned empty speech audio".into());
+    }
+    let content_type = content_type
+        .and_then(|value| value.split(';').next())
+        .filter(|value| value.starts_with("audio/"))
+        .ok_or_else(|| "OpenRouter returned a non-audio speech response".to_owned())?;
+    Ok(content_type.to_owned())
 }
 
 pub async fn chat_completion(
@@ -2049,8 +2060,10 @@ mod tests {
         extract_content_limited, model_catalog_url, parse_tool_calls, parse_voice_models,
         push_turn_context_message, read_workspace_text, run_shell_command, safe_path, secure_write,
         transcription_endpoint_payload, transcription_request, truncate_utf8_with_marker,
+        validate_speech_response,
     };
     use crate::model::{Message, MessageKind, MessageRole, TranscriptionRequest};
+    use reqwest::StatusCode;
     use serde_json::json;
     use std::fs;
 
@@ -2113,6 +2126,36 @@ mod tests {
         assert_eq!(speech.len(), 1);
         assert_eq!(speech[0].id, "provider/voice");
         assert_eq!(speech[0].supported_voices, ["voice-a", "voice-b"]);
+    }
+
+    #[test]
+    fn speech_response_requires_non_empty_audio_content() {
+        assert_eq!(
+            validate_speech_response(StatusCode::OK, Some("audio/mpeg"), b"mp3").unwrap(),
+            "audio/mpeg"
+        );
+        assert!(
+            validate_speech_response(StatusCode::OK, Some("application/json"), b"{}")
+                .unwrap_err()
+                .contains("non-audio")
+        );
+        assert!(
+            validate_speech_response(StatusCode::OK, Some("audio/mpeg"), b"")
+                .unwrap_err()
+                .contains("empty")
+        );
+    }
+
+    #[test]
+    fn speech_response_preserves_bounded_openrouter_errors() {
+        let error = validate_speech_response(
+            StatusCode::NOT_FOUND,
+            Some("application/json"),
+            br#"{"error":{"message":"Model not found"}}"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "Model not found (404 Not Found)");
     }
 
     #[test]

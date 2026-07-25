@@ -84,6 +84,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
     background: none;
     -webkit-text-fill-color: currentColor;
   }
+
+  .zai-prompt-rail__mark {
+    transition: none;
+  }
+
+  .zai-prompt-rail__preview {
+    animation: none;
+  }
 }
 
 .zai-main { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; }
@@ -460,22 +468,29 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .zai-transcript-shell { position: relative; display: flex; min-height: 0; flex: 1; }
 .zai-transcript { flex: 1; min-width: 0; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
 .zai-transcript__inner { width: min(800px, calc(100% - 48px)); min-height: 100%; margin: 0 auto; padding: 72px 0 210px; }
-.zai-prompt-rail { position: absolute; top: 50%; left: 18px; z-index: 8; display: flex; width: 52px; max-height: min(360px, calc(100% - 100px)); flex-direction: column; align-items: flex-start; transform: translateY(-50%); }
+.zai-prompt-rail { position: absolute; top: 50%; left: 16px; z-index: 8; display: flex; width: 52px; max-height: min(360px, calc(100% - 100px)); flex-direction: column; align-items: flex-start; transform: translateY(-50%); }
 .zai-prompt-rail__track { display: flex; width: 52px; max-height: inherit; flex-direction: column; align-items: flex-start; gap: var(--prompt-rail-gap, 8px); overflow-y: auto; scrollbar-width: none; }
 .zai-prompt-rail__track::-webkit-scrollbar { display: none; }
 .zai-prompt-rail button { position: relative; display: flex; width: 52px; min-height: 1px; height: 12px; max-height: 12px; flex: 1 1 12px; align-items: center; border: 0; padding: 0; background: transparent; cursor: pointer; }
-.zai-prompt-rail__mark { display: block; width: 28px; height: min(2px, 100%); min-height: 1px; border-radius: 999px; background: var(--v2-text-text-faint); opacity: .42; transition: width 120ms ease,background 120ms ease,opacity 120ms ease; }
-.zai-prompt-rail button:hover .zai-prompt-rail__mark,.zai-prompt-rail button:focus-visible .zai-prompt-rail__mark { width: 40px; opacity: .72; }
-.zai-prompt-rail button.active .zai-prompt-rail__mark { width: 52px; height: min(3px, 100%); background: var(--v2-text-text-base); opacity: 1; }
-.zai-prompt-rail__preview { position: absolute; top: 50%; left: 68px; display: block; width: min(520px, calc(100vw - 132px)); max-height: 210px; overflow: hidden; transform: translateY(-50%); border: .5px solid var(--v2-border-border-base); border-radius: 14px; padding: 14px 16px; background: color-mix(in srgb, var(--v2-background-bg-base) 96%, transparent); box-shadow: var(--v2-elevation-overlay); color: var(--v2-text-text-muted); text-align: left; pointer-events: none; backdrop-filter: blur(18px); }
+.zai-prompt-rail__mark { display: block; width: 12px; height: min(3px, 100%); min-height: 2px; border-radius: 999px; background: var(--v2-text-text-faint); opacity: .44; transition: width 180ms cubic-bezier(.2,.75,.2,1),background 140ms ease,opacity 140ms ease; }
+.zai-prompt-rail button:hover .zai-prompt-rail__mark,.zai-prompt-rail button:focus-visible .zai-prompt-rail__mark { width: 52px; opacity: .72; }
+.zai-prompt-rail button.active .zai-prompt-rail__mark { width: 12px; background: var(--v2-text-text-base); opacity: 1; }
+.zai-prompt-rail button.active:hover .zai-prompt-rail__mark,.zai-prompt-rail button.active:focus-visible .zai-prompt-rail__mark { width: 52px; }
+.zai-prompt-rail__preview { position: absolute; top: 50%; left: 78px; display: block; width: min(640px, calc(100vw - 148px)); max-height: 230px; overflow: hidden; transform: translateY(-50%); border: .5px solid var(--v2-border-border-base); border-radius: 18px; padding: 17px 18px; background: color-mix(in srgb, var(--v2-background-bg-base) 96%, transparent); box-shadow: var(--v2-elevation-overlay); color: var(--v2-text-text-muted); text-align: left; pointer-events: none; backdrop-filter: blur(18px); animation: zai-prompt-preview-in 140ms cubic-bezier(.2,.75,.2,1) both; }
 .zai-prompt-rail__preview strong,.zai-prompt-rail__preview span { display: block; overflow: hidden; text-overflow: ellipsis; }
-.zai-prompt-rail__preview strong { color: var(--v2-text-text-base); font-size: 13px; line-height: 18px; white-space: nowrap; }
-.zai-prompt-rail__preview span { margin-top: 8px; font-size: 12px; line-height: 19px; }
+.zai-prompt-rail__preview strong { color: var(--v2-text-text-base); font-size: 16px; font-weight: 620; line-height: 22px; white-space: nowrap; }
+.zai-prompt-rail__preview span { margin-top: 8px; font-size: 14px; line-height: 23px; }
+@keyframes zai-prompt-preview-in { from { opacity: 0; transform: translate(-8px,-50%) scale(.985); } to { opacity: 1; transform: translate(0,-50%) scale(1); } }
 .zai-message--user { scroll-margin-top: 72px; }
 .zai-transcript__empty { display: flex; min-height: 280px; align-items: center; justify-content: center; color: var(--v2-text-text-faint); font-size: 12px; }
 .zai-message { position: relative; margin: 0 0 24px; color: var(--v2-text-text-base); font-size: 13px; font-weight: 440; line-height: 20px; }
-.zai-message--user { display: flex; justify-content: flex-end; }
-.zai-message--user .zai-message__content { width: fit-content; max-width: min(82%, 64ch); border-radius: 10px; padding: 8px 12px; background: var(--v2-background-bg-layer-02); }
+.zai-message--user { display: flex; flex-direction: column; align-items: flex-end; }
+.zai-message__user-meta { display: flex; min-height: 24px; align-items: center; gap: 7px; margin: 0 2px 7px; color: var(--v2-text-text-faint); font-size: 11px; line-height: 16px; }
+.zai-message__user-meta strong { max-width: 240px; overflow: hidden; color: var(--v2-text-text-muted); font-size: 11px; font-weight: 610; text-overflow: ellipsis; white-space: nowrap; }
+.zai-message__user-meta time { font-variant-numeric: tabular-nums; }
+.zai-message__user-avatar { display: grid; width: 22px; height: 22px; flex: 0 0 22px; place-items: center; overflow: hidden; border-radius: 50%; object-fit: cover; }
+.zai-message__user-avatar--fallback { background: var(--v2-background-bg-layer-02); color: var(--v2-text-text-muted); font-size: 10px; font-weight: 700; }
+.zai-message--user .zai-message__content { width: fit-content; max-width: min(82%, 64ch); border: .5px solid color-mix(in srgb, var(--v2-border-border-base) 72%, transparent); border-radius: 14px 14px 4px 14px; padding: 9px 13px; background: var(--v2-background-bg-layer-02); box-shadow: 0 1px 1px color-mix(in srgb, #000 5%, transparent); }
 [data-color-scheme="dark"] .zai-message--user .zai-message__content { background: var(--v2-background-bg-layer-01); }
 .zai-message--assistant { padding-right: 28px; }
 .zai-message--reasoning { color: var(--v2-text-text-faint); font-style: italic; }

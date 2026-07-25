@@ -575,6 +575,8 @@ pub struct OpenRouterVoiceCatalog {
 pub const OPENAI_SPEECH_VOICES: [&str; 11] = [
     "alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse",
 ];
+pub const DEFAULT_OPENROUTER_SPEECH_MODEL: &str = "deepgram/aura-2";
+pub const DEFAULT_OPENROUTER_SPEECH_VOICE: &str = "aura-2-livia-it";
 
 pub fn supported_speech_voices(
     catalog: &OpenRouterVoiceCatalog,
@@ -592,15 +594,13 @@ pub fn supported_speech_voices(
     if !provider.eq_ignore_ascii_case("openrouter") {
         return None;
     }
-    if let Some(model) = catalog.speech.iter().find(|entry| entry.id == model) {
-        return (!model.supported_voices.is_empty()).then(|| model.supported_voices.clone());
-    }
-    model.starts_with("openai/").then(|| {
-        OPENAI_SPEECH_VOICES
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
-    })
+    catalog
+        .speech
+        .iter()
+        .find(|entry| entry.id == model)
+        .and_then(|model| {
+            (!model.supported_voices.is_empty()).then(|| model.supported_voices.clone())
+        })
 }
 
 pub fn normalized_speech_voice(
@@ -612,6 +612,35 @@ pub fn normalized_speech_voice(
     let voices = supported_speech_voices(catalog, provider, model)?;
     (!voices.is_empty() && !voices.iter().any(|entry| entry == current_voice))
         .then(|| voices[0].clone())
+}
+
+pub fn resolved_openrouter_speech_selection(
+    catalog: &OpenRouterVoiceCatalog,
+    current_model: &str,
+    current_voice: &str,
+) -> Option<(String, String)> {
+    let selected = catalog
+        .speech
+        .iter()
+        .find(|model| model.id == current_model && !model.supported_voices.is_empty())
+        .or_else(|| {
+            catalog.speech.iter().find(|model| {
+                model.id == DEFAULT_OPENROUTER_SPEECH_MODEL && !model.supported_voices.is_empty()
+            })
+        })
+        .or_else(|| {
+            catalog
+                .speech
+                .iter()
+                .find(|model| !model.supported_voices.is_empty())
+        })?;
+    let voice = selected
+        .supported_voices
+        .iter()
+        .find(|voice| selected.id == current_model && voice.as_str() == current_voice)
+        .cloned()
+        .unwrap_or_else(|| selected.supported_voices[0].clone());
+    Some((selected.id.clone(), voice))
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -710,8 +739,8 @@ impl Default for VoiceSettings {
             language: None,
             speak_responses: true,
             voice_provider: "openrouter".to_owned(),
-            voice_id: "alloy".to_owned(),
-            voice_model: "openai/gpt-4o-mini-tts-2025-12-15".to_owned(),
+            voice_id: DEFAULT_OPENROUTER_SPEECH_VOICE.to_owned(),
+            voice_model: DEFAULT_OPENROUTER_SPEECH_MODEL.to_owned(),
             voice_rate: 1.0,
         }
     }
@@ -1094,6 +1123,27 @@ mod tests {
         assert_eq!(
             normalized_speech_voice(&catalog, "openrouter", "provider/tts", "voice-b"),
             None
+        );
+    }
+
+    #[test]
+    fn retired_openrouter_speech_selection_resolves_from_live_catalog() {
+        let catalog = OpenRouterVoiceCatalog {
+            transcription: Vec::new(),
+            speech: vec![OpenRouterVoiceModel {
+                id: "deepgram/aura-2".to_owned(),
+                name: "Deepgram Aura 2".to_owned(),
+                supported_voices: vec!["aura-2-livia-it".to_owned(), "aura-2-thalia-en".to_owned()],
+            }],
+        };
+
+        assert_eq!(
+            resolved_openrouter_speech_selection(
+                &catalog,
+                "openai/gpt-4o-mini-tts-2025-12-15",
+                "alloy",
+            ),
+            Some(("deepgram/aura-2".to_owned(), "aura-2-livia-it".to_owned(),))
         );
     }
 

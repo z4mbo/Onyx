@@ -199,8 +199,24 @@ pub async fn speak(model: &str, voice: &str, speed: f32, text: &str) -> Result<S
         .send()
         .await
         .map_err(|error| format!("OpenAI speech request failed: {error}"))?;
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let bytes = success_body(response, MAX_SPEECH_BYTES).await?;
+    validate_speech_body(content_type.as_deref(), &bytes)?;
     Ok(format!("data:audio/mpeg;base64,{}", BASE64.encode(bytes)))
+}
+
+fn validate_speech_body(content_type: Option<&str>, bytes: &[u8]) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Err("OpenAI returned empty speech audio".to_owned());
+    }
+    if !content_type.is_some_and(|value| value.starts_with("audio/")) {
+        return Err("OpenAI returned a non-audio speech response".to_owned());
+    }
+    Ok(())
 }
 
 async fn validate_key(key: &str) -> Result<(), String> {
@@ -276,7 +292,7 @@ async fn api_error(response: Response) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::image_size;
+    use super::{image_size, validate_speech_body};
 
     #[test]
     fn image_ratios_map_to_supported_gpt_image_sizes() {
@@ -284,5 +300,12 @@ mod tests {
         assert_eq!(image_size(Some("16:9")), "1536x1024");
         assert_eq!(image_size(Some("9:16")), "1024x1536");
         assert_eq!(image_size(Some("unexpected")), "1024x1024");
+    }
+
+    #[test]
+    fn speech_body_requires_non_empty_audio_content() {
+        assert!(validate_speech_body(Some("audio/mpeg"), b"mp3").is_ok());
+        assert!(validate_speech_body(Some("application/json"), b"{}").is_err());
+        assert!(validate_speech_body(Some("audio/mpeg"), b"").is_err());
     }
 }

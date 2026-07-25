@@ -60,6 +60,20 @@ fn default_active_app() -> ActiveAppContext {
     }
 }
 
+fn speech_failure_notice(cause: &str) -> String {
+    let compact = cause.split_whitespace().collect::<Vec<_>>().join(" ");
+    let summary = if compact.is_empty() {
+        "No error details were returned.".to_owned()
+    } else {
+        let mut bounded = compact.chars().take(180).collect::<String>();
+        if compact.chars().count() > 180 {
+            bounded.push('…');
+        }
+        bounded
+    };
+    format!("The reply is ready, but speech synthesis failed: {summary}")
+}
+
 fn hide_hud_after(delay_ms: u32) {
     spawn_local(async move {
         TimeoutFuture::new(delay_ms).await;
@@ -408,12 +422,9 @@ async fn ask_agent(text: String, source: AgentSource, state: AgentState) {
                                 ));
                             }
                         }
-                        Err(_) => {
+                        Err(cause) => {
                             state.phase.set("Speech unavailable".to_owned());
-                            state.notice.set(Some(
-                                "The reply is ready, but speech synthesis failed. Check the Speech model and API connection in Settings."
-                                    .to_owned(),
-                            ));
+                            state.notice.set(Some(speech_failure_notice(&cause)));
                         }
                     }
                 });
@@ -424,6 +435,23 @@ async fn ask_agent(text: String, source: AgentSource, state: AgentState) {
             append_agent_error(state.messages, cause);
             state.busy.set(false);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::speech_failure_notice;
+
+    #[test]
+    fn speech_failure_notice_is_compact_and_bounded() {
+        let cause = format!("  upstream\nfailed   {}", "x".repeat(220));
+        let notice = speech_failure_notice(&cause);
+
+        assert!(
+            notice.starts_with("The reply is ready, but speech synthesis failed: upstream failed ")
+        );
+        assert!(notice.ends_with('…'));
+        assert!(notice.chars().count() < 250);
     }
 }
 

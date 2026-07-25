@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="Version 0.3.0" src="https://img.shields.io/badge/version-0.3.0-635bdb"></a>
+  <a href="CHANGELOG.md"><img alt="Version 0.3.1" src="https://img.shields.io/badge/version-0.3.1-635bdb"></a>
   <img alt="Rust and Leptos" src="https://img.shields.io/badge/UI-Rust%20%C2%B7%20Leptos-dea584">
   <img alt="Tauri 2" src="https://img.shields.io/badge/desktop-Tauri%202-24c8db">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2f855a"></a>
@@ -19,17 +19,18 @@ Onyx gives Claude Code, Codex, Gemini CLI, and Kimi Code a consistent graphical 
 
 > Onyx is independent and is not affiliated with or endorsed by OpenCode, T3 Tools, Anthropic, OpenAI, Google, Moonshot AI, xAI, OpenRouter, Clerk, or Convex.
 
-## Onyx 0.3.0
+## Onyx 0.3.1
 
 | Area | What changed |
 | --- | --- |
 | Sessions | Choose a name before creation, rename it later, and delete it immediately—even when a CLI runtime is active. |
 | CLI fidelity | Persistent provider sessions, native Build/Plan controls, cancellation, approvals, and interactive questions are passed through the official CLI path. |
-| Navigation | Every user prompt has a compact rail marker; hover for a prompt/answer preview and click to jump back to it. |
-| Workspace | Terminal, Files, Diff, Browser, Git actions, branch switching, sources, and the active agent are available without leaving the session. |
+| Conversation | Sent prompts remain visible with the signed-in profile and timestamp, including while a CLI turn is running. |
+| Navigation | Every user prompt has a compact rail marker; hover to animate and preview it, then click to jump back to it. |
+| Workspace | Terminal, Files, Diff, Browser, Git actions, and the active agent are available without leaving the session. |
 | Provider chats | ChatGPT, Claude, Gemini, and Grok websites open in internal Onyx child webviews rather than an external browser. |
-| Voice | Dictation, agent, speech, and voice choices are dropdowns; transcription, reasoning, and TTS use separate models, with an explicit **Speak responses** toggle. |
-| Updates | A title-bar update action, signed download progress, release notes, and an in-app **What’s new** dialog share the 0.3.0 changelog. |
+| Voice | Dictation, agent, speech, and voice choices are dropdowns; retired TTS defaults migrate to a current model and errors retain their actionable cause. |
+| Updates | A title-bar update action, signed download progress, release notes, and an in-app **What’s new** dialog share the 0.3.1 changelog. |
 | Performance | The Leptos UI and native backend stay Rust; xterm/FitAddon and optional Convex code are loaded only when needed. |
 
 ## How it is built
@@ -62,7 +63,6 @@ Onyx does not install CLIs or take ownership of their logins. Official provider 
 - Project-grouped sessions with provider, model, reasoning, access, and Build/Plan controls.
 - Streaming output, steering where supported, stop/interrupt, approvals, and structured provider questions.
 - A prompt rail for long conversations with hover previews and click-to-jump navigation.
-- A live Environment panel for working-tree changes, local workspace, branches, commit/push, compare, the active agent, and referenced sources.
 - Bottom terminal tabs and right-panel Chat, Browser, Files, Terminal, and Diff surfaces.
 - Local multimodal chat with OpenRouter model discovery, favorites, web search, and optional image, video, transcription, and speech routes.
 - Local-first history for sessions, chat, voice, and preferences, with optional authenticated sync.
@@ -151,7 +151,7 @@ runs the Gatekeeper checks. Artifacts remain under
 `src-tauri/target/<target>/release/bundle/`. The command deliberately does not
 upload or publish anything.
 
-Pushing the matching `v0.3.0` tag builds the Windows updater in a draft
+Pushing the matching `v0.3.1` tag builds the Windows updater in a draft
 GitHub release. After that draft exists, publish the already-verified local
 macOS artifacts with:
 

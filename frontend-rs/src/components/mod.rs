@@ -1,7 +1,6 @@
 mod account;
 mod chat;
 mod composer;
-pub mod environment;
 mod home;
 mod internal_browser;
 mod orb;
