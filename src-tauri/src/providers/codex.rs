@@ -276,6 +276,21 @@ impl CodexSession {
                         send_event(events, ProviderEvent::TextDelta(delta.to_string())).await?;
                     }
                 }
+                Some("item/commandExecution/outputDelta") => {
+                    if let (Some(id), Some(delta)) = (
+                        value.pointer("/params/itemId").and_then(Value::as_str),
+                        value.pointer("/params/delta").and_then(Value::as_str),
+                    ) {
+                        send_event(
+                            events,
+                            ProviderEvent::ActivityDelta {
+                                id: id.to_string(),
+                                delta: delta.to_string(),
+                            },
+                        )
+                        .await?;
+                    }
+                }
                 Some("item/started") => {
                     if let Some(activity) = item_activity(&value, false) {
                         send_event(events, ProviderEvent::Activity(activity)).await?;
@@ -1045,13 +1060,14 @@ fn is_client_response(value: &Value, id: u64) -> bool {
 
 fn item_activity(value: &Value, completed: bool) -> Option<ProviderActivity> {
     let item = value.pointer("/params/item")?;
+    let id = item.get("id").and_then(Value::as_str).map(str::to_owned);
     match item.get("type")?.as_str()? {
         "commandExecution" => {
             let command = item
                 .get("command")
                 .and_then(Value::as_str)
                 .unwrap_or("command");
-            Some(ProviderActivity::tool(
+            let mut activity = ProviderActivity::tool(
                 if completed {
                     format!("Ran {command}")
                 } else {
@@ -1061,26 +1077,34 @@ fn item_activity(value: &Value, completed: bool) -> Option<ProviderActivity> {
                     .then(|| item.get("aggregatedOutput"))
                     .flatten()
                     .and_then(value_text),
-            ))
+            );
+            activity.id = id;
+            Some(activity)
         }
-        "fileChange" if completed => Some(ProviderActivity::tool(
-            "Applied file changes",
-            item.get("changes").and_then(value_text),
-        )),
+        "fileChange" if completed => {
+            let mut activity = ProviderActivity::tool(
+                "Applied file changes",
+                item.get("changes").and_then(value_text),
+            );
+            activity.id = id;
+            Some(activity)
+        }
         "mcpToolCall" => {
             let tool = item
                 .get("tool")
                 .or_else(|| item.get("name"))
                 .and_then(Value::as_str)
                 .unwrap_or("MCP tool");
-            Some(ProviderActivity::tool(
+            let mut activity = ProviderActivity::tool(
                 if completed {
                     format!("Completed {tool}")
                 } else {
                     format!("Running {tool}")
                 },
                 None,
-            ))
+            );
+            activity.id = id;
+            Some(activity)
         }
         _ => None,
     }
@@ -1377,6 +1401,7 @@ mod tests {
         let event = json!({
             "method": "item/completed",
             "params": {"item": {
+                "id": "command-1",
                 "type": "commandExecution",
                 "command": "cargo test",
                 "aggregatedOutput": "ok"
@@ -1384,6 +1409,7 @@ mod tests {
         });
         let activity = item_activity(&event, true).expect("activity");
         assert_eq!(activity.title, "Ran cargo test");
+        assert_eq!(activity.id.as_deref(), Some("command-1"));
         assert_eq!(activity.detail.as_deref(), Some("ok"));
     }
 

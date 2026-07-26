@@ -1,5 +1,4 @@
 mod account;
-mod chat;
 mod composer;
 mod home;
 mod internal_browser;
@@ -15,7 +14,6 @@ mod voice_history;
 mod workspace;
 
 pub use account::AccountGate;
-pub use chat::ChatView;
 pub use composer::Composer;
 pub use home::HomeView;
 pub use internal_browser::InternalBrowser;
@@ -30,5 +28,6 @@ pub use user_input::UserInputCard;
 pub use voice_history::VoiceHistoryView;
 pub use workspace::{
     BottomTerminalPanel, GitCommitDialog, RightWorkspacePanel, SessionWorkspaceUi,
-    WorkspaceSurface, WorkspaceSurfaceKind, WorkspaceTerminal, WorkspaceTopbarActions,
+    TerminalViewport, WorkspaceSurface, WorkspaceSurfaceKind, WorkspaceTerminal,
+    WorkspaceTopbarActions,
 };

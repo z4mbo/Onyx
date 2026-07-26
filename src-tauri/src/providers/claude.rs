@@ -197,6 +197,7 @@ impl ClaudeSession {
                         send_event(
                             events,
                             ProviderEvent::Activity(ProviderActivity {
+                                id: None,
                                 title: message.content,
                                 detail: None,
                                 kind: message.kind,
@@ -274,6 +275,7 @@ impl ClaudeSession {
             send_event(
                 events,
                 ProviderEvent::Activity(ProviderActivity {
+                    id: None,
                     title: "Plan ready for review".to_string(),
                     detail: Some("Switch the session to Build to run it".to_string()),
                     kind: MessageKind::Text,

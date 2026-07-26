@@ -215,6 +215,7 @@ fn bounded_optional(value: String, label: &str) -> Result<String, String> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderActivity {
+    pub id: Option<String>,
     pub title: String,
     pub detail: Option<String>,
     pub kind: MessageKind,
@@ -223,6 +224,7 @@ pub struct ProviderActivity {
 impl ProviderActivity {
     pub fn tool(title: impl Into<String>, detail: Option<String>) -> Self {
         Self {
+            id: None,
             title: title.into(),
             detail,
             kind: MessageKind::Tool,
@@ -231,6 +233,7 @@ impl ProviderActivity {
 
     pub fn error(title: impl Into<String>) -> Self {
         Self {
+            id: None,
             title: title.into(),
             detail: None,
             kind: MessageKind::Error,
@@ -243,6 +246,7 @@ pub enum ProviderEvent {
     TextDelta(String),
     Text(String),
     Activity(ProviderActivity),
+    ActivityDelta { id: String, delta: String },
     Continuation(String),
     Approval(ProviderApproval),
     UserInput(ProviderUserInput),

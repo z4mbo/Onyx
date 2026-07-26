@@ -343,6 +343,11 @@ pub enum SessionEvent {
         session_id: String,
         message: Message,
     },
+    ActivityDelta {
+        session_id: String,
+        message_id: String,
+        delta: String,
+    },
     ContextUsage {
         session_id: String,
         usage: ContextUsage,
@@ -590,42 +595,9 @@ pub struct ChatRequest {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatMedia {
-    pub kind: String,
-    pub url: String,
-    pub mime_type: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ChatReply {
     pub content: String,
     pub model: String,
-    pub media: Vec<ChatMedia>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MediaGenerationRequest {
-    pub model: String,
-    pub prompt: String,
-    pub aspect_ratio: Option<String>,
-    #[serde(default = "default_media_source")]
-    pub source: String,
-}
-
-fn default_media_source() -> String {
-    "openrouter".to_string()
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VideoJob {
-    pub id: String,
-    pub status: String,
-    pub polling_url: String,
-    pub content_url: Option<String>,
-    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

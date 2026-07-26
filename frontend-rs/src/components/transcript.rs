@@ -1,5 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
     rc::Rc,
 };
 
@@ -90,8 +92,19 @@ fn tool_title(message: &Message) -> String {
         .to_owned()
 }
 
+fn message_revision(message: &Message) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    message.id.hash(&mut hasher);
+    message.content.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn tool_is_running(message: &Message) -> bool {
+    tool_title(message).starts_with("Running ")
+}
+
 #[component]
-fn ToolMessage(message: Message) -> impl IntoView {
+fn ToolMessage(message: Message, current: bool) -> impl IntoView {
     let title = tool_title(&message);
     let detail = message
         .content
@@ -101,11 +114,24 @@ fn ToolMessage(message: Message) -> impl IntoView {
         .join("\n");
     let has_detail = detail.clone();
     view! {
-        <details class="zai-tool-event">
+        <details
+            class="zai-tool-event"
+            data-current=if current { "true" } else { "false" }
+            aria-busy=if current { "true" } else { "false" }
+            open=current
+        >
             <summary>
                 <Icon icon=LuSquareTerminal width="14px" height="14px" />
                 <span>{title}</span>
-                <Icon icon=LuChevronRight width="13px" height="13px" />
+                <Show when=move || current>
+                    <span class="zai-tool-event__running">"Running"</span>
+                </Show>
+                <Icon
+                    icon=LuChevronRight
+                    width="13px"
+                    height="13px"
+                    attr:class="zai-tool-chevron"
+                />
             </summary>
             <Show when=move || !has_detail.is_empty()>
                 <pre>{detail.clone()}</pre>
@@ -115,25 +141,46 @@ fn ToolMessage(message: Message) -> impl IntoView {
 }
 
 #[component]
-fn ToolGroup(messages: Vec<Message>) -> impl IntoView {
+fn ToolGroup(messages: Vec<Message>, running: bool) -> impl IntoView {
+    let current_id = running
+        .then(|| messages.last())
+        .flatten()
+        .filter(|message| tool_is_running(message))
+        .map(|message| message.id.clone());
     if messages.len() == 1 {
-        return view! { <ToolMessage message=messages[0].clone() /> }.into_any();
+        let message = messages[0].clone();
+        let current = current_id.as_deref() == Some(message.id.as_str());
+        return view! { <ToolMessage message=message current=current /> }.into_any();
     }
     let count = messages.len();
     let latest = messages.last().map(tool_title).unwrap_or_default();
+    let group_current = current_id.is_some();
     view! {
-        <details class="zai-tool-group">
+        <details
+            class="zai-tool-group"
+            data-current=if group_current { "true" } else { "false" }
+            aria-busy=if group_current { "true" } else { "false" }
+            open=group_current
+        >
             <summary>
                 <Icon icon=LuSquareTerminal width="14px" height="14px" />
                 <span class="zai-tool-group__count">{format!("{count} steps")}</span>
                 <span class="zai-tool-group__latest">{latest}</span>
-                <Icon icon=LuChevronRight width="13px" height="13px" />
+                <Icon
+                    icon=LuChevronRight
+                    width="13px"
+                    height="13px"
+                    attr:class="zai-tool-chevron"
+                />
             </summary>
             <div class="zai-tool-group__list">
                 <For
                     each=move || messages.clone()
-                    key=|message| message.id.clone()
-                    children=|message| view! { <ToolMessage message=message /> }
+                    key=message_revision
+                    children=move |message| {
+                        let current = current_id.as_deref() == Some(message.id.as_str());
+                        view! { <ToolMessage message=message current=current /> }
+                    }
                 />
             </div>
         </details>
@@ -462,12 +509,18 @@ pub fn Transcript(
                     <For
                         each=move || items.get()
                         key=|item| match item {
-                            TranscriptItem::Single(message) => message.id.clone(),
-                            TranscriptItem::Tools { id, .. } => id.clone(),
+                            TranscriptItem::Single(message) => {
+                                format!("single:{}:{}", message.id, message_revision(message))
+                            }
+                            TranscriptItem::Tools { id, messages } => format!(
+                                "tools:{id}:{}:{}",
+                                messages.len(),
+                                messages.last().map(message_revision).unwrap_or_default(),
+                            ),
                         }
                         children=move |item| match item {
                             TranscriptItem::Tools { messages, .. } => {
-                                view! { <ToolGroup messages=messages /> }.into_any()
+                                view! { <ToolGroup messages=messages running=running.get() /> }.into_any()
                             }
                             TranscriptItem::Single(message) if message.role == MessageRole::User => {
                                 view! { <UserMessage message=message profile=profile /> }.into_any()

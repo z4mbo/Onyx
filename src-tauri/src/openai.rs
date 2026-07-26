@@ -1,6 +1,6 @@
 use crate::{
     credentials,
-    model::{ChatMedia, ChatReply, OpenAiStatus, TranscriptionReply, TranscriptionRequest},
+    model::{OpenAiStatus, TranscriptionReply, TranscriptionRequest},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use reqwest::{
@@ -15,7 +15,6 @@ const ACCOUNT: &str = "openai-api";
 const API_BASE: &str = "https://api.openai.com/v1";
 const MAX_KEY_BYTES: usize = 8192;
 const MAX_AUDIO_BYTES: usize = 24 * 1024 * 1024;
-const MAX_IMAGE_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SPEECH_BYTES: usize = 24 * 1024 * 1024;
 const MAX_ERROR_BYTES: usize = 16 * 1024;
 static TRANSCRIPTION_CLIENT: LazyLock<Result<Client, reqwest::Error>> =
@@ -62,66 +61,6 @@ pub async fn clear_key() -> Result<OpenAiStatus, String> {
     .await
     .map_err(|error| error.to_string())??;
     Ok(OpenAiStatus { connected: false })
-}
-
-pub async fn generate_image(
-    model: &str,
-    prompt: &str,
-    aspect_ratio: Option<&str>,
-) -> Result<ChatReply, String> {
-    if prompt.trim().is_empty() || prompt.len() > 256 * 1024 {
-        return Err("The image prompt is empty or too long".to_string());
-    }
-    if model.is_empty() || model.len() > 256 {
-        return Err("The OpenAI image model is invalid".to_string());
-    }
-    let size = image_size(aspect_ratio);
-    let key = read_key().await?;
-    let response = client(Duration::from_secs(300))?
-        .post(format!("{API_BASE}/images/generations"))
-        .bearer_auth(key)
-        .json(&json!({
-            "model": model,
-            "prompt": prompt,
-            "size": size,
-            "quality": "auto",
-            "output_format": "png",
-            "n": 1
-        }))
-        .send()
-        .await
-        .map_err(|error| format!("OpenAI image request failed: {error}"))?;
-    let body = success_body(response, MAX_IMAGE_RESPONSE_BYTES).await?;
-    let value: Value = serde_json::from_slice(&body)
-        .map_err(|_| "OpenAI returned invalid image JSON".to_string())?;
-    let data = value
-        .pointer("/data/0")
-        .ok_or_else(|| "OpenAI returned no generated image".to_string())?;
-    let url = if let Some(encoded) = data.get("b64_json").and_then(Value::as_str) {
-        format!("data:image/png;base64,{encoded}")
-    } else {
-        data.get("url")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| "OpenAI returned an unsupported image payload".to_string())?
-    };
-    Ok(ChatReply {
-        content: "Image generated with OpenAI".to_string(),
-        model: model.to_string(),
-        media: vec![ChatMedia {
-            kind: "image".to_string(),
-            url,
-            mime_type: Some("image/png".to_string()),
-        }],
-    })
-}
-
-fn image_size(aspect_ratio: Option<&str>) -> &'static str {
-    match aspect_ratio.unwrap_or("1:1") {
-        "16:9" | "4:3" | "3:2" => "1536x1024",
-        "9:16" | "3:4" | "2:3" => "1024x1536",
-        _ => "1024x1024",
-    }
 }
 
 pub async fn transcribe(
@@ -292,15 +231,7 @@ async fn api_error(response: Response) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{image_size, validate_speech_body};
-
-    #[test]
-    fn image_ratios_map_to_supported_gpt_image_sizes() {
-        assert_eq!(image_size(Some("1:1")), "1024x1024");
-        assert_eq!(image_size(Some("16:9")), "1536x1024");
-        assert_eq!(image_size(Some("9:16")), "1024x1536");
-        assert_eq!(image_size(Some("unexpected")), "1024x1024");
-    }
+    use super::validate_speech_body;
 
     #[test]
     fn speech_body_requires_non_empty_audio_content() {

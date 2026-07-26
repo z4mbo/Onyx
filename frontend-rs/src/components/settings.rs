@@ -13,13 +13,13 @@ use crate::{
     model::{
         AccountProfile, AgentSession, ConnectionStatus, NativeVoicePermissions, OpenRouterModel,
         OpenRouterVoiceCatalog, OpenRouterVoiceModel, OverlayPosition, ProviderBrand, ProviderId,
-        ProviderStatus, UpdateProgress, VoiceSettings, normalized_speech_voice,
+        ProviderStatus, TerminalSession, UpdateProgress, VoiceSettings, normalized_speech_voice,
         resolved_openrouter_speech_selection, supported_speech_voices,
     },
     storage, theme,
 };
 
-use super::ProviderBadge;
+use super::{ProviderBadge, TerminalViewport};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ColorScheme {
@@ -323,6 +323,8 @@ pub fn SettingsDialog(
     let microphone_message = RwSignal::new(String::new());
     let native_permissions = RwSignal::new(None::<NativeVoicePermissions>);
     let native_message = RwSignal::new(String::new());
+    let provider_terminal = RwSignal::new(None::<TerminalSession>);
+    let provider_terminal_title = RwSignal::new(String::new());
     let platform = RwSignal::new("unknown".to_owned());
     let wsl_distributions = RwSignal::new(Vec::<String>::new());
     let desktop_preferences = RwSignal::new(storage::read_json(
@@ -585,10 +587,6 @@ pub fn SettingsDialog(
                 "version": 1,
                 "exportedAt": storage::timestamp(),
                 "sessions": sessions.get(),
-                "chats": storage::read_json::<serde_json::Value>(
-                    storage::CHAT_THREADS_KEY,
-                    serde_json::json!([]),
-                ),
                 "voiceHistory": storage::read_json::<serde_json::Value>(
                     storage::VOICE_HISTORY_KEY,
                     serde_json::json!([]),
@@ -603,15 +601,42 @@ pub fn SettingsDialog(
             });
             let result = bridge::push_cloud(&snapshot.to_string()).await;
             message.set(Some(match result {
-                Ok(()) => "Sessions, chats, voice history, and preferences synced.".to_owned(),
+                Ok(()) => "Sessions, voice history, and preferences synced.".to_owned(),
                 Err(cause) => cause,
             }));
             saving.set(false);
         });
     });
+    let open_provider_terminal = Callback::new(move |(provider, action): (ProviderId, String)| {
+        saving.set(true);
+        message.set(None);
+        spawn_local(async move {
+            match bridge::provider_terminal_open(provider, &action, None, None).await {
+                Ok(terminal) => {
+                    provider_terminal_title.set(if action == "update" {
+                        format!("Update {}", provider.display_name())
+                    } else {
+                        format!("{} CLI", provider.display_name())
+                    });
+                    provider_terminal.set(Some(terminal));
+                }
+                Err(cause) => message.set(Some(cause)),
+            }
+            saving.set(false);
+        });
+    });
+    let close_provider_terminal = Callback::new(move |_: ()| {
+        if let Some(terminal) = provider_terminal.get_untracked() {
+            spawn_local(async move {
+                let _ = bridge::terminal_close(&terminal.id).await;
+            });
+        }
+        provider_terminal.set(None);
+    });
 
     let provider_row = move |provider: ProviderStatus| {
         let brand = ProviderBrand::for_provider(provider.id);
+        let provider_id = provider.id;
         view! {
             <div class="zai-settings-provider-row">
                 <ProviderBadge brand=Signal::derive(move || brand) />
@@ -622,10 +647,30 @@ pub fn SettingsDialog(
                 </div>
                 {if provider.available {
                     view! {
-                        <span class="zai-settings-ready">
-                            <Icon icon=LuCheck width="13px" height="13px" />
-                            "Ready"
-                        </span>
+                        <div class="zai-settings-status-actions">
+                            <span class="zai-settings-ready">
+                                <Icon icon=LuCheck width="13px" height="13px" />
+                                "Ready"
+                            </span>
+                            <button
+                                class="zai-neutral-button"
+                                disabled=move || saving.get()
+                                on:click=move |_| {
+                                    open_provider_terminal.run((provider_id, "interactive".to_owned()));
+                                }
+                            >
+                                "Open CLI"
+                            </button>
+                            <button
+                                class="zai-neutral-button"
+                                disabled=move || saving.get()
+                                on:click=move |_| {
+                                    open_provider_terminal.run((provider_id, "update".to_owned()));
+                                }
+                            >
+                                "Update"
+                            </button>
+                        </div>
                     }
                     .into_any()
                 } else {
@@ -686,7 +731,10 @@ pub fn SettingsDialog(
                     <div class="zai-settings-content">
                         <button
                             class="zai-settings-close"
-                            on:click=move |_| on_close.run(())
+                            on:click=move |_| {
+                                close_provider_terminal.run(());
+                                on_close.run(());
+                            }
                             aria-label="Close settings"
                         >
                             <Icon icon=LuX width="16px" height="16px" />
@@ -1198,6 +1246,28 @@ pub fn SettingsDialog(
                         </Show>
                     </div>
                 </section>
+                <Show when=move || provider_terminal.get().is_some()>
+                    <div class="zai-provider-terminal-scrim">
+                        <section class="zai-provider-terminal" role="dialog" aria-modal="true">
+                            <header>
+                                <div>
+                                    <strong>{move || provider_terminal_title.get()}</strong>
+                                    <span>"Official CLI running inside Onyx"</span>
+                                </div>
+                                <button
+                                    type="button"
+                                    aria-label="Close CLI terminal"
+                                    on:click=move |_| close_provider_terminal.run(())
+                                >
+                                    <Icon icon=LuX width="15px" height="15px" />
+                                </button>
+                            </header>
+                            {move || provider_terminal.get().map(|terminal| view! {
+                                <TerminalViewport session_id=terminal.id autofocus=true />
+                            })}
+                        </section>
+                    </div>
+                </Show>
             </div>
         </Show>
     }

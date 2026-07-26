@@ -98,46 +98,16 @@ pub fn fallback_catalogs() -> ProviderCatalogs {
     HashMap::from([
         (
             ProviderId::Codex,
-            vec![named_model(
-                "default",
-                "Codex default",
-                true,
-                vec![
-                    ReasoningEffort::Low,
-                    ReasoningEffort::Medium,
-                    ReasoningEffort::High,
-                ],
-            )],
+            vec![named_model("default", "Codex CLI default", true, vec![])],
         ),
         (
             ProviderId::Claude,
-            ["fable", "opus", "sonnet", "haiku"]
-                .into_iter()
-                .enumerate()
-                .map(|(index, id)| {
-                    named_model(
-                        id,
-                        &format!("Claude {}", title_case(id)),
-                        index == 0,
-                        if id == "haiku" {
-                            vec![
-                                ReasoningEffort::Low,
-                                ReasoningEffort::Medium,
-                                ReasoningEffort::High,
-                            ]
-                        } else {
-                            vec![
-                                ReasoningEffort::Low,
-                                ReasoningEffort::Medium,
-                                ReasoningEffort::High,
-                                ReasoningEffort::Xhigh,
-                                ReasoningEffort::Max,
-                                ReasoningEffort::Ultracode,
-                            ]
-                        },
-                    )
-                })
-                .collect(),
+            vec![named_model(
+                "default",
+                "Claude Code configured default",
+                true,
+                vec![],
+            )],
         ),
         (
             ProviderId::Gemini,
@@ -195,14 +165,6 @@ pub fn selected_or_default(models: &[ProviderModelOption]) -> Option<ProviderMod
         .find(|model| model.is_default)
         .or_else(|| models.first())
         .cloned()
-}
-
-fn title_case(value: &str) -> String {
-    let mut chars = value.chars();
-    chars
-        .next()
-        .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

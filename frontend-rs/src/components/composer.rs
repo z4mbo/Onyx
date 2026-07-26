@@ -49,6 +49,7 @@ pub fn Composer(
     running: Signal<bool>,
     approval: Signal<Option<ApprovalRequest>>,
     approval_busy: Signal<bool>,
+    queued_messages: Signal<Vec<String>>,
     #[prop(default = false)] steerable: bool,
     #[prop(default = false)] hero: bool,
     #[prop(default = false)] autofocus: bool,
@@ -59,7 +60,8 @@ pub fn Composer(
     on_interaction_mode: Callback<InteractionMode>,
     on_access_mode: Callback<AccessMode>,
     on_submit: Callback<String>,
-    on_steer: Callback<String>,
+    on_queue: Callback<String>,
+    on_steer_queued: Callback<()>,
     on_cancel: Callback<()>,
     on_approval: Callback<(bool, bool)>,
     on_error: Callback<String>,
@@ -88,14 +90,13 @@ pub fn Composer(
     let send_disabled = Signal::derive(move || {
         content.get().trim().is_empty()
             || submitting.get()
-            || (running.get() && !can_steer.get())
             || approval.get().is_some()
             || !provider_available.get()
             || model.get().as_deref().is_none_or(str::is_empty)
     });
     let placeholder = Signal::derive(move || {
-        if can_steer.get() {
-            "Steer the agent — your message lands mid-run…".to_owned()
+        if running.get() {
+            "Queue a follow-up for this agent…".to_owned()
         } else if workspace.get().trim().is_empty() {
             "Choose a project, then tell Onyx what to build…".to_owned()
         } else {
@@ -109,8 +110,8 @@ pub fn Composer(
         }
         let value = content.get().trim().to_owned();
         submitting.set(true);
-        if can_steer.get() {
-            on_steer.run(value);
+        if running.get() {
+            on_queue.run(value);
         } else {
             on_submit.run(value);
         }
@@ -160,6 +161,41 @@ pub fn Composer(
             data-layout=if hero { "hero" } else { "docked" }
             data-provider=move || provider.get().as_str()
         >
+            <Show when=move || !hero && !queued_messages.read().is_empty()>
+                <div class="zai-composer__queued" data-slot="queued-follow-up">
+                    <div class="zai-composer__queued-copy">
+                        <span>
+                            {move || {
+                                let messages = queued_messages.get();
+                                if messages.len() > 1 {
+                                    format!("Next message · {} queued", messages.len())
+                                } else {
+                                    "Next message".to_owned()
+                                }
+                            }}
+                        </span>
+                        <p>
+                            {move || {
+                                queued_messages
+                                    .read()
+                                    .first()
+                                    .cloned()
+                                    .unwrap_or_default()
+                            }}
+                        </p>
+                    </div>
+                    <Show when=move || can_steer.get()>
+                        <button
+                            type="button"
+                            class="zai-composer__queued-steer"
+                            on:click=move |_| on_steer_queued.run(())
+                            title="Send this message to the active turn now"
+                        >
+                            "Steer"
+                        </button>
+                    </Show>
+                </div>
+            </Show>
             <Show
                 when=move || approval.get().is_some()
                 fallback=move || view! {
@@ -180,7 +216,7 @@ pub fn Composer(
                                     aria-label="Prompt"
                                     autocomplete="off"
                                     spellcheck="true"
-                                    autofocus=autofocus || hero
+                                    autofocus=autofocus
                                     placeholder=move || placeholder.get()
                                     on:input=move |event| content.set(event_target_value(&event))
                                     on:keydown=move |event: KeyboardEvent| {
@@ -429,19 +465,17 @@ pub fn Composer(
                                             </button>
                                         }
                                     >
-                                        <Show when=move || can_steer.get()>
-                                            <button
-                                                type="submit"
-                                                class="zai-composer__submit zai-composer__steer"
-                                                disabled=move || send_disabled.get()
-                                                aria-label="Steer the running turn"
-                                                title="Steer (Enter)"
-                                            >
-                                                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                                                    <path d="M2.5 7H11M11 7L7.5 3.5M11 7L7.5 10.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-                                                </svg>
-                                            </button>
-                                        </Show>
+                                        <button
+                                            type="submit"
+                                            class="zai-composer__submit zai-composer__queue"
+                                            disabled=move || send_disabled.get()
+                                            aria-label="Queue message for the next turn"
+                                            title="Queue next (Enter)"
+                                        >
+                                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                                                <path d="M3 4.5H11M3 7H9M3 9.5H7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                                            </svg>
+                                        </button>
                                         <button
                                             type="button"
                                             class="zai-composer__submit zai-composer__stop"

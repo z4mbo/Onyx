@@ -142,6 +142,7 @@ impl ProviderSession for CliSession {
                 send_event(
                     &events,
                     ProviderEvent::Activity(ProviderActivity {
+                        id: None,
                         title: "Using compatibility transport".to_string(),
                         detail: Some(detail),
                         kind: MessageKind::Text,
@@ -219,6 +220,7 @@ async fn run_one_shot(
                                 }
                                 NormalizedEvent::Activity(message) => {
                                     send_event(events, ProviderEvent::Activity(ProviderActivity {
+                                        id: None,
                                         title: message.content,
                                         detail: None,
                                         kind: message.kind,
@@ -392,6 +394,8 @@ fn build_args(
             let mut args = vec!["exec".to_string()];
             if let Some(id) = provider_session_id {
                 args.extend([
+                    "--sandbox".to_string(),
+                    config.sandbox_name().to_string(),
                     "resume".to_string(),
                     "--json".to_string(),
                     "--skip-git-repo-check".to_string(),
@@ -400,8 +404,6 @@ fn build_args(
                     args.extend(["--model".to_string(), model.to_string()]);
                 }
                 args.extend([
-                    "--sandbox".to_string(),
-                    config.sandbox_name().to_string(),
                     "-c".to_string(),
                     format!("approval_policy=\"{}\"", config.approval_policy()),
                 ]);
@@ -520,11 +522,11 @@ mod tests {
             build_args(&config(ProviderId::Codex), Some("thread"), "continue"),
             [
                 "exec",
+                "--sandbox",
+                "workspace-write",
                 "resume",
                 "--json",
                 "--skip-git-repo-check",
-                "--sandbox",
-                "workspace-write",
                 "-c",
                 "approval_policy=\"on-request\"",
                 "thread",

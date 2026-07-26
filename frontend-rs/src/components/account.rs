@@ -62,7 +62,7 @@ pub fn AccountGate(
                         <header class="onyx-account-gate__intro">
                             <OnyxOrb label="Onyx" />
                             <h1>"Welcome to Onyx"</h1>
-                            <p>"Sign in securely in your browser to sync coding sessions, chats, voice history, and preferences."</p>
+                            <p>"Sign in securely in your browser to sync coding sessions, voice history, and preferences."</p>
                         </header>
 
                         <Show

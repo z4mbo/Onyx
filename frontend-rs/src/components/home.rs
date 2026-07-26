@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
 use icondata::{
-    LuCircleHelp, LuFolderPlus, LuGitBranch, LuMessageSquare, LuMic, LuSearch, LuSettings,
-    LuSquarePen, LuTrash2,
+    LuCircleHelp, LuFolderPlus, LuGitBranch, LuMic, LuSearch, LuSettings, LuSquarePen, LuTrash2,
 };
 use leptos::ev::MouseEvent;
 use leptos::prelude::*;
@@ -69,7 +68,6 @@ pub fn HomeView(
     on_delete: Callback<String>,
     on_choose_workspace: Callback<()>,
     on_settings: Callback<()>,
-    on_chat: Callback<()>,
     on_voice: Callback<()>,
 ) -> impl IntoView {
     let (query, set_query) = signal(String::new());
@@ -144,10 +142,6 @@ pub fn HomeView(
                     </div>
 
                     <nav class="zai-home-nav" aria-label="Application">
-                        <button on:click=move |_| on_chat.run(())>
-                            <Icon icon=LuMessageSquare width="15px" height="15px" />
-                            <span>"Chat"</span>
-                        </button>
                         <button on:click=move |_| on_voice.run(())>
                             <Icon icon=LuMic width="15px" height="15px" />
                             <span>"Voice history"</span>

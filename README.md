@@ -5,11 +5,11 @@
 <h1 align="center">Onyx</h1>
 
 <p align="center">
-  A Rust-first desktop workspace for coding agents, provider chats, voice, Git, and local tools.
+  A Rust-first desktop workspace for coding agents, voice, Git, and local tools.
 </p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="Version 0.3.1" src="https://img.shields.io/badge/version-0.3.1-635bdb"></a>
+  <a href="CHANGELOG.md"><img alt="Version 0.3.3" src="https://img.shields.io/badge/version-0.3.3-635bdb"></a>
   <img alt="Rust and Leptos" src="https://img.shields.io/badge/UI-Rust%20%C2%B7%20Leptos-dea584">
   <img alt="Tauri 2" src="https://img.shields.io/badge/desktop-Tauri%202-24c8db">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2f855a"></a>
@@ -19,19 +19,20 @@ Onyx gives Claude Code, Codex, Gemini CLI, and Kimi Code a consistent graphical 
 
 > Onyx is independent and is not affiliated with or endorsed by OpenCode, T3 Tools, Anthropic, OpenAI, Google, Moonshot AI, xAI, OpenRouter, Clerk, or Convex.
 
-## Onyx 0.3.1
+## Onyx 0.3.3
 
 | Area | What changed |
 | --- | --- |
-| Sessions | Choose a name before creation, rename it later, and delete it immediately—even when a CLI runtime is active. |
-| CLI fidelity | Persistent provider sessions, native Build/Plan controls, cancellation, approvals, and interactive questions are passed through the official CLI path. |
-| Conversation | Sent prompts remain visible with the signed-in profile and timestamp, including while a CLI turn is running. |
+| Home | Onyx opens on the real Home screen without creating a draft tab. |
+| Sessions | Name the draft directly in its tab; right-click any session tab to rename or permanently delete it. Closing a tab never deletes history. |
+| CLI fidelity | Persistent provider sessions use official transports. **CLI** opens/resumes the real provider TUI inside Onyx for native slash commands and interactive controls. |
+| Conversation | Sent prompts remain visible with profile and timestamp. Follow-ups queue above the composer and can steer Codex/Claude through their native live-input protocols. |
 | Navigation | Every user prompt has a compact rail marker; hover to animate and preview it, then click to jump back to it. |
 | Workspace | Terminal, Files, Diff, Browser, Git actions, and the active agent are available without leaving the session. |
-| Provider chats | ChatGPT, Claude, Gemini, and Grok websites open in internal Onyx child webviews rather than an external browser. |
+| Provider chats | The standalone Chat page is gone; ChatGPT, Claude, Gemini, and Grok remain inside each session workspace as internal Onyx child webviews. |
 | Voice | Dictation, agent, speech, and voice choices are dropdowns; retired TTS defaults migrate to a current model and errors retain their actionable cause. |
-| Updates | A title-bar update action, signed download progress, release notes, and an in-app **What’s new** dialog share the 0.3.1 changelog. |
-| Performance | The Leptos UI and native backend stay Rust; xterm/FitAddon and optional Convex code are loaded only when needed. |
+| Updates | Onyx updates retain signed progress and release notes; installed coding agents also expose their official **Update** command in an internal terminal. |
+| Performance | The unused standalone chat/image/video stack was removed; xterm/FitAddon and optional Convex code remain lazy-loaded. |
 
 ## How it is built
 
@@ -54,18 +55,19 @@ There are **zero tracked TypeScript files**. Onyx is not literally JavaScript-fr
 | Gemini | Installed `gemini` CLI | Existing Gemini login |
 | Kimi Code | Installed `kimi` CLI | Existing Kimi login |
 | OpenRouter | Native Rust HTTP client and approved tool loop | API key stored in the OS credential manager |
-| OpenAI media and audio | Native image, transcription, and speech routes | API key stored in the OS credential manager |
+| OpenAI audio | Native transcription and speech routes | API key stored in the OS credential manager |
 
 Onyx does not install CLIs or take ownership of their logins. Official provider websites keep their own signed-in WebView sessions and are not merged into the native API chat.
 
 ## Core experience
 
 - Project-grouped sessions with provider, model, reasoning, access, and Build/Plan controls.
-- Streaming output, steering where supported, stop/interrupt, approvals, and structured provider questions.
+- Streaming command output, FIFO follow-up queue, native steering where supported, stop/interrupt, approvals, and structured provider questions.
+- Embedded official CLI sessions for native commands plus per-provider update actions.
 - A prompt rail for long conversations with hover previews and click-to-jump navigation.
 - Bottom terminal tabs and right-panel Chat, Browser, Files, Terminal, and Diff surfaces.
-- Local multimodal chat with OpenRouter model discovery, favorites, web search, and optional image, video, transcription, and speech routes.
-- Local-first history for sessions, chat, voice, and preferences, with optional authenticated sync.
+- Official provider chats in internal session webviews, plus native transcription and speech routes for Voice.
+- Local-first history for sessions, voice, and preferences, with optional authenticated sync.
 - A tray launcher that keeps global voice shortcuts available when the main window is hidden.
 
 ### Voice
@@ -114,7 +116,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 ## Accounts and optional Convex sync
 
-Packaged releases currently use Clerk for Onyx account sign-in. Session, chat, voice, and preference data is stored locally by default; Convex sync activates only when `VITE_CONVEX_URL` and the matching deployment authentication are configured.
+Packaged releases currently use Clerk for Onyx account sign-in. Session, voice, and preference data is stored locally by default; Convex sync activates only when `VITE_CONVEX_URL` and the matching deployment authentication are configured.
 
 ```sh
 cp .env.example .env.local
@@ -151,7 +153,7 @@ runs the Gatekeeper checks. Artifacts remain under
 `src-tauri/target/<target>/release/bundle/`. The command deliberately does not
 upload or publish anything.
 
-Pushing the matching `v0.3.1` tag builds the Windows updater in a draft
+Pushing the matching `v0.3.3` tag builds the Windows updater in a draft
 GitHub release. After that draft exists, publish the already-verified local
 macOS artifacts with:
 
@@ -201,10 +203,10 @@ before publishing a Gatekeeper-trusted macOS update.
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshots/onyx-workspace.jpg" width="820" alt="Onyx session workspace with the Environment panel">
+  <img src="docs/screenshots/onyx-home.png" width="820" alt="Onyx Home with project-grouped coding sessions">
 </p>
 
-<p align="center"><em>Agent workspace with provider controls and the live Environment panel.</em></p>
+<p align="center"><em>Home stays focused on projects, searchable sessions, and one-click creation.</em></p>
 
 <p align="center">
   <img src="docs/screenshots/onyx-voice-settings.jpg" width="820" alt="Onyx Voice settings">

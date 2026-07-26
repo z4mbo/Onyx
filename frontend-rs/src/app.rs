@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use gloo_timers::future::TimeoutFuture;
-use icondata::{LuCheck, LuGauge, LuGitBranch, LuPencil, LuTimerReset, LuX};
+use icondata::{LuGauge, LuGitBranch, LuTimerReset};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use wasm_bindgen::{JsCast, closure::Closure};
@@ -11,11 +11,10 @@ use crate::{
     bridge,
     catalog::{fallback_catalogs, models_for_brand, runtime_for_brand, selected_or_default},
     components::{
-        AccountGate, AgentOverlay, BottomTerminalPanel, ChatView, ColorScheme, Composer,
-        GitCommitDialog, HomeView, Hud, RightWorkspacePanel, SessionWorkspaceUi, SettingsDialog,
-        Titlebar, TitlebarSession, TitlebarTab, Transcript, UpdateDialog, UserInputCard,
-        VoiceHistoryView, WorkspaceSurface, WorkspaceSurfaceKind, WorkspaceTerminal,
-        WorkspaceTopbarActions,
+        AccountGate, AgentOverlay, BottomTerminalPanel, ColorScheme, Composer, GitCommitDialog,
+        HomeView, Hud, RightWorkspacePanel, SessionWorkspaceUi, SettingsDialog, Titlebar,
+        TitlebarSession, TitlebarTab, Transcript, UpdateDialog, UserInputCard, VoiceHistoryView,
+        WorkspaceSurface, WorkspaceSurfaceKind, WorkspaceTerminal, WorkspaceTopbarActions,
     },
     model::{
         AccessMode, AccountEvent, AccountProfile, AgentSession, ApprovalRequest, ConnectionStatus,
@@ -32,9 +31,8 @@ const DRAFT_TAB_ID: &str = "onyx:draft";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Page {
-    Home,
-    Chat,
     #[default]
+    Home,
     Draft,
     Session,
     Voice,
@@ -44,7 +42,6 @@ impl Page {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Home => "home",
-            Self::Chat => "chat",
             Self::Draft => "draft",
             Self::Session => "session",
             Self::Voice => "voice",
@@ -125,6 +122,7 @@ fn session_event_id(event: &SessionEvent) -> &str {
         SessionEvent::Snapshot { session } => &session.id,
         SessionEvent::Delta { session_id, .. }
         | SessionEvent::Activity { session_id, .. }
+        | SessionEvent::ActivityDelta { session_id, .. }
         | SessionEvent::ContextUsage { session_id, .. }
         | SessionEvent::Removed { session_id } => session_id,
     }
@@ -244,9 +242,6 @@ fn apply_cloud_snapshot(raw: &str) {
     let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(raw) else {
         return;
     };
-    if let Some(chats) = snapshot.get("chats").filter(|value| value.is_array()) {
-        storage::write_json(storage::CHAT_THREADS_KEY, chats);
-    }
     if let Some(history) = snapshot
         .get("voiceHistory")
         .filter(|value| value.is_array())
@@ -263,12 +258,6 @@ fn apply_cloud_snapshot(raw: &str) {
         if let Some(desktop) = preferences.get("desktop").filter(|value| !value.is_null()) {
             storage::write_json(storage::DESKTOP_PREFERENCES_KEY, desktop);
         }
-        if let Some(favorites) = preferences
-            .get("favoriteModels")
-            .filter(|value| value.is_array())
-        {
-            storage::write_json(storage::CHAT_FAVORITES_KEY, favorites);
-        }
     }
     storage::dispatch("onyx:cloud-hydrated");
     storage::dispatch("onyx:voice-history");
@@ -280,10 +269,6 @@ fn cloud_snapshot(sessions: &[AgentSession]) -> String {
         "version": 1,
         "exportedAt": storage::timestamp(),
         "sessions": sessions,
-        "chats": storage::read_json::<serde_json::Value>(
-            storage::CHAT_THREADS_KEY,
-            serde_json::json!([]),
-        ),
         "voiceHistory": storage::read_json::<serde_json::Value>(
             storage::VOICE_HISTORY_KEY,
             serde_json::json!([]),
@@ -293,10 +278,6 @@ fn cloud_snapshot(sessions: &[AgentSession]) -> String {
             "desktop": storage::read_json::<serde_json::Value>(
                 storage::DESKTOP_PREFERENCES_KEY,
                 serde_json::Value::Null,
-            ),
-            "favoriteModels": storage::read_json::<serde_json::Value>(
-                storage::CHAT_FAVORITES_KEY,
-                serde_json::json!([]),
             ),
         },
     })
@@ -316,16 +297,16 @@ pub fn App() -> impl IntoView {
 
     let providers = RwSignal::new(demo_providers());
     let sessions = RwSignal::new(Vec::<AgentSession>::new());
-    let page = RwSignal::new(Page::Draft);
+    let page = RwSignal::new(Page::default());
     let current_id = RwSignal::new(None::<String>);
-    let draft_open = RwSignal::new(true);
+    let draft_open = RwSignal::new(false);
     let open_session_ids = RwSignal::new(Vec::<String>::new());
 
     let draft_provider = RwSignal::new(ProviderId::Claude);
     let draft_title = RwSignal::new(String::new());
     let draft_brand = RwSignal::new(ProviderBrand::Anthropic);
     let draft_model = RwSignal::new(Some("fable".to_owned()));
-    let draft_reasoning = RwSignal::new(Some(ReasoningEffort::Medium));
+    let draft_reasoning = RwSignal::new(None::<ReasoningEffort>);
     let draft_speed = RwSignal::new(SpeedMode::Standard);
     let draft_interaction = RwSignal::new(InteractionMode::Build);
     let draft_access = RwSignal::new(AccessMode::AutoAcceptEdits);
@@ -355,6 +336,9 @@ pub fn App() -> impl IntoView {
     );
     let renaming_session = RwSignal::new(None::<String>);
     let rename_value = RwSignal::new(String::new());
+    let queued_messages = RwSignal::new(HashMap::<String, Vec<String>>::new());
+    let queue_dispatching = RwSignal::new(HashSet::<String>::new());
+    let queue_paused = RwSignal::new(HashSet::<String>::new());
 
     let workspace_states = RwSignal::new(HashMap::<String, SessionWorkspaceUi>::new());
     let pending_events = RwSignal::new(HashMap::<String, Vec<SessionEvent>>::new());
@@ -511,8 +495,11 @@ pub fn App() -> impl IntoView {
     });
 
     let open_draft = Callback::new(move |workspace: Option<String>| {
-        if !draft_open.get_untracked() {
+        let is_new = !draft_open.get_untracked();
+        if is_new {
             draft_title.set(String::new());
+            rename_value.set(String::new());
+            renaming_session.set(Some(DRAFT_TAB_ID.to_owned()));
         }
         if let Some(workspace) = workspace {
             draft_workspace.set(workspace);
@@ -580,6 +567,15 @@ pub fn App() -> impl IntoView {
         }
     });
     let delete_session = Callback::new(move |id: String| {
+        queued_messages.update(|queues| {
+            queues.remove(&id);
+        });
+        queue_dispatching.update(|ids| {
+            ids.remove(&id);
+        });
+        queue_paused.update(|ids| {
+            ids.remove(&id);
+        });
         spawn_local(async move {
             match bridge::delete_session(&id).await {
                 Ok(()) => {
@@ -601,7 +597,21 @@ pub fn App() -> impl IntoView {
             }
         });
     });
-    let begin_rename = Callback::new(move |session: AgentSession| {
+    let begin_rename = Callback::new(move |id: String| {
+        if id == DRAFT_TAB_ID {
+            rename_value.set(draft_title.get_untracked());
+            renaming_session.set(Some(id));
+            return;
+        }
+        let Some(session) = sessions
+            .read_untracked()
+            .iter()
+            .find(|session| session.id == id)
+            .cloned()
+        else {
+            show_error.run("Session not found".to_owned());
+            return;
+        };
         rename_value.set(session.title);
         renaming_session.set(Some(session.id));
     });
@@ -610,6 +620,21 @@ pub fn App() -> impl IntoView {
             return;
         };
         let title = rename_value.get_untracked();
+        if id == DRAFT_TAB_ID {
+            let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+            if title.is_empty() {
+                show_error.run("Choose a name for this session.".to_owned());
+                return;
+            }
+            if title.chars().count() > 80 || title.chars().any(char::is_control) {
+                show_error
+                    .run("Session names must contain at most 80 supported characters.".to_owned());
+                return;
+            }
+            draft_title.set(title);
+            renaming_session.set(None);
+            return;
+        }
         spawn_local(async move {
             match bridge::rename_session(&id, &title).await {
                 Ok(session) => {
@@ -726,16 +751,119 @@ pub fn App() -> impl IntoView {
             }
         });
     });
-    let steer_session = Callback::new(move |content: String| {
-        let Some(session) = current.get() else {
+    let queue_session = Callback::new(move |content: String| {
+        let Some(session) = current.get_untracked() else {
+            return;
+        };
+        let content = content.trim().to_owned();
+        if content.is_empty() {
+            return;
+        }
+        if content.len() > 24 * 1024 {
+            show_error.run("Queued CLI messages are limited to 24 KiB.".to_owned());
+            return;
+        }
+        let accepted = queued_messages.try_update(|queues| {
+            let queue = queues.entry(session.id.clone()).or_default();
+            let total_bytes = queue.iter().map(String::len).sum::<usize>() + content.len();
+            if queue.len() >= 8 || total_bytes > 96 * 1024 {
+                return false;
+            }
+            queue.push(content);
+            true
+        });
+        queue_paused.update(|ids| {
+            ids.remove(&session.id);
+        });
+        if accepted != Some(true) {
+            show_error.run("The queue is full (8 messages or 96 KiB maximum).".to_owned());
+        }
+    });
+    let steer_queued_session = Callback::new(move |_: ()| {
+        let Some(session) = current.get_untracked() else {
+            return;
+        };
+        let session_id = session.id;
+        let content = queued_messages
+            .try_update(|queues| {
+                let queue = queues.get_mut(&session_id)?;
+                let content = (!queue.is_empty()).then(|| queue.remove(0))?;
+                if queue.is_empty() {
+                    queues.remove(&session_id);
+                }
+                Some(content)
+            })
+            .flatten();
+        let Some(content) = content else {
             return;
         };
         spawn_local(async move {
-            match bridge::steer_turn(&session.id, &content).await {
+            match bridge::steer_turn(&session_id, &content).await {
                 Ok(session) => merge_live_command_session(sessions, tombstones, session),
-                Err(cause) => show_error.run(cause),
+                Err(cause) => {
+                    queued_messages.update(|queues| {
+                        queues.entry(session_id).or_default().insert(0, content);
+                    });
+                    show_error.run(cause);
+                }
             }
         });
+    });
+    Effect::new(move |_| {
+        let queued = queued_messages.get();
+        let dispatching = queue_dispatching.get();
+        let paused = queue_paused.get();
+        let ready = sessions
+            .get()
+            .into_iter()
+            .filter(|session| {
+                !session.status.is_running()
+                    && queued
+                        .get(&session.id)
+                        .is_some_and(|messages| !messages.is_empty())
+                    && !dispatching.contains(&session.id)
+                    && !paused.contains(&session.id)
+            })
+            .map(|session| session.id)
+            .collect::<Vec<_>>();
+        for session_id in ready {
+            let content = queued_messages
+                .try_update(|queues| {
+                    let queue = queues.get_mut(&session_id)?;
+                    let content = (!queue.is_empty()).then(|| queue.remove(0))?;
+                    if queue.is_empty() {
+                        queues.remove(&session_id);
+                    }
+                    Some(content)
+                })
+                .flatten();
+            let Some(content) = content else {
+                continue;
+            };
+            queue_dispatching.update(|ids| {
+                ids.insert(session_id.clone());
+            });
+            spawn_local(async move {
+                match bridge::send_message_id(&session_id, &content).await {
+                    Ok(session) => merge_live_command_session(sessions, tombstones, session),
+                    Err(cause) => {
+                        queued_messages.update(|queues| {
+                            queues
+                                .entry(session_id.clone())
+                                .or_default()
+                                .insert(0, content);
+                        });
+                        queue_paused.update(|ids| {
+                            ids.insert(session_id.clone());
+                        });
+                        show_error.run(format!("Queued message was preserved: {cause}"));
+                    }
+                }
+                queue_dispatching.update(|ids| {
+                    ids.remove(&session_id);
+                });
+            });
+        }
     });
     let cancel_session = Callback::new(move |_: ()| {
         let Some(session) = current.get() else {
@@ -1080,6 +1208,40 @@ pub fn App() -> impl IntoView {
             }
         });
     });
+    let open_provider_cli = Callback::new(move |_: ()| {
+        let Some(session) = current.get_untracked() else {
+            return;
+        };
+        if session.status.is_running() {
+            show_error.run("Wait for the active turn before opening the official CLI.".to_owned());
+            return;
+        }
+        spawn_local(async move {
+            match bridge::provider_terminal_open(
+                session.provider,
+                "interactive",
+                Some(&session.workspace),
+                session.provider_session_id.as_deref(),
+            )
+            .await
+            {
+                Ok(opened) => {
+                    update_workspace_ui(workspace_states, &session.id, |ui| {
+                        let terminal = WorkspaceTerminal {
+                            id: opened.id,
+                            title: format!("{} CLI", session.provider.display_name()),
+                            cwd: opened.cwd,
+                            status: "running".to_owned(),
+                        };
+                        ui.active_terminal_id = Some(terminal.id.clone());
+                        ui.terminals.push(terminal);
+                        ui.bottom_panel_open = true;
+                    });
+                }
+                Err(cause) => show_error.run(cause),
+            }
+        });
+    });
     let toggle_bottom = Callback::new(move |_: ()| {
         let Some(session) = current.get() else {
             return;
@@ -1147,7 +1309,14 @@ pub fn App() -> impl IntoView {
         if draft_open.get() {
             result.push(TitlebarTab {
                 id: DRAFT_TAB_ID.to_owned(),
-                label: "New session".to_owned(),
+                label: {
+                    let title = draft_title.get();
+                    if title.is_empty() {
+                        "New session".to_owned()
+                    } else {
+                        title
+                    }
+                },
                 active: page.get() == Page::Draft,
                 running: false,
                 project_initial: workspace_name(&draft_workspace.get())
@@ -1533,19 +1702,7 @@ pub fn App() -> impl IntoView {
                 on_delete=delete_session
                 on_choose_workspace=choose_workspace
                 on_settings=Callback::new(move |_| settings_open.set(true))
-                on_chat=Callback::new(move |_| page.set(Page::Chat))
                 on_voice=Callback::new(move |_| page.set(Page::Voice))
-            />
-        }
-        .into_any(),
-        Page::Chat => view! {
-            <ChatView
-                providers=Signal::derive(move || providers.get())
-                catalogs=Signal::derive(move || catalogs.get())
-                openrouter_models=Signal::derive(move || openrouter_models.get())
-                openai=Signal::derive(move || openai.get())
-                profile=Signal::derive(move || account_profile.get())
-                on_settings=Callback::new(move |_| settings_open.set(true))
             />
         }
         .into_any(),
@@ -1565,17 +1722,6 @@ pub fn App() -> impl IntoView {
                 <section class="zai-new-session">
                     <div class="zai-new-session__stage">
                         <div class="zai-new-session__content">
-                            <label class="zai-new-session__name">
-                                <span>"Session name"</span>
-                                <input
-                                    maxlength="80"
-                                    autofocus=true
-                                    autocomplete="off"
-                                    placeholder="What are you working on?"
-                                    prop:value=move || draft_title.get()
-                                    on:input=move |event| draft_title.set(event_target_value(&event))
-                                />
-                            </label>
                             <div class="zai-new-session__composer">
                                 <Composer
                                     provider=Signal::derive(move || draft_provider.get())
@@ -1592,6 +1738,7 @@ pub fn App() -> impl IntoView {
                                     running=Signal::derive(move || false)
                                     approval=Signal::derive(move || None)
                                     approval_busy=Signal::derive(move || false)
+                                    queued_messages=Signal::derive(Vec::new)
                                     hero=true
                                     autofocus=false
                                     on_brand=select_draft_brand
@@ -1601,7 +1748,8 @@ pub fn App() -> impl IntoView {
                                     on_interaction_mode=Callback::new(move |value| draft_interaction.set(value))
                                     on_access_mode=Callback::new(move |value| draft_access.set(value))
                                     on_submit=start_session
-                                    on_steer=Callback::new(move |_| {})
+                                    on_queue=Callback::new(move |_| {})
+                                    on_steer_queued=Callback::new(move |_| {})
                                     on_cancel=Callback::new(move |_| {})
                                     on_approval=Callback::new(move |_| {})
                                     on_error=show_error
@@ -1703,53 +1851,9 @@ pub fn App() -> impl IntoView {
                                             <span class="zai-project-avatar">{project.chars().next().unwrap_or('P').to_ascii_uppercase()}</span>
                                             <span class="zai-workspace-header__project">{project}</span>
                                             <span class="zai-workspace-header__slash">"/"</span>
-                                            <Show
-                                                when=move || renaming_session.read().as_deref() == Some(session_id.as_str())
-                                                fallback={
-                                                    let rename_session = session.clone();
-                                                    move || view! {
-                                                        <div class="zai-session-title">
-                                                            <h2 title=rename_session.title.clone()>{rename_session.title.clone()}</h2>
-                                                            <button
-                                                                type="button"
-                                                                aria-label="Rename session"
-                                                                title="Rename session"
-                                                                on:click={
-                                                                    let rename_session = rename_session.clone();
-                                                                    move |_| begin_rename.run(rename_session.clone())
-                                                                }
-                                                            >
-                                                                <Icon icon=LuPencil width="12px" height="12px" />
-                                                            </button>
-                                                        </div>
-                                                    }
-                                                }
-                                            >
-                                                <form
-                                                    class="zai-session-title-editor"
-                                                    on:submit=move |event: web_sys::SubmitEvent| {
-                                                        event.prevent_default();
-                                                        save_rename.run(());
-                                                    }
-                                                >
-                                                    <input
-                                                        maxlength="80"
-                                                        aria-label="Session name"
-                                                        prop:value=move || rename_value.get()
-                                                        on:input=move |event| rename_value.set(event_target_value(&event))
-                                                    />
-                                                    <button type="submit" aria-label="Save session name">
-                                                        <Icon icon=LuCheck width="13px" height="13px" />
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        aria-label="Cancel rename"
-                                                        on:click=move |_| renaming_session.set(None)
-                                                    >
-                                                        <Icon icon=LuX width="13px" height="13px" />
-                                                    </button>
-                                                </form>
-                                            </Show>
+                                            <div class="zai-session-title">
+                                                <h2 title=session.title.clone()>{session.title.clone()}</h2>
+                                            </div>
                                             <Show when=move || repo.get().and_then(|repo| repo.branch).is_some()>
                                                 <span class="zai-workspace-header__branch">
                                                     <Icon icon=LuGitBranch width="13px" height="13px" />
@@ -1769,6 +1873,7 @@ pub fn App() -> impl IntoView {
                                             on_commit=Callback::new(move |_| commit_open.set(true))
                                             on_push=push_workspace
                                             on_create_pr=create_pr
+                                            on_open_cli=open_provider_cli
                                             on_toggle_bottom=toggle_bottom
                                             on_toggle_right=toggle_right
                                         />
@@ -1814,6 +1919,13 @@ pub fn App() -> impl IntoView {
                                             steerable=session.provider == ProviderId::Claude || session.provider == ProviderId::Codex
                                             approval=active_approval
                                             approval_busy=Signal::derive(move || approval_busy.get())
+                                            queued_messages=Signal::derive(move || {
+                                                current_id
+                                                    .read()
+                                                    .as_ref()
+                                                    .and_then(|id| queued_messages.read().get(id).cloned())
+                                                    .unwrap_or_default()
+                                            })
                                             hero=false
                                             autofocus=false
                                             on_brand=Callback::new(move |value| update_options.run(SessionOptionPatch::Brand(value)))
@@ -1823,7 +1935,8 @@ pub fn App() -> impl IntoView {
                                             on_interaction_mode=Callback::new(move |value| update_options.run(SessionOptionPatch::Interaction(value)))
                                             on_access_mode=Callback::new(move |value| update_options.run(SessionOptionPatch::Access(value)))
                                             on_submit=continue_session
-                                            on_steer=steer_session
+                                            on_queue=queue_session
+                                            on_steer_queued=steer_queued_session
                                             on_cancel=cancel_session
                                             on_approval=respond_approval
                                             on_error=show_error
@@ -1883,8 +1996,15 @@ pub fn App() -> impl IntoView {
                 sessions=closed_sessions
                 on_select=Callback::new(move |id| if id == DRAFT_TAB_ID { open_draft.run(None) } else { open_session.run(id) })
                 on_close=close_tab
+                on_delete=delete_session
                 on_new=Callback::new(move |_| open_draft.run(None))
                 on_open_session=open_session
+                editing_tab=Signal::derive(move || renaming_session.get())
+                rename_value=Signal::derive(move || rename_value.get())
+                on_begin_rename=begin_rename
+                on_rename_input=Callback::new(move |value| rename_value.set(value))
+                on_commit_rename=save_rename
+                on_cancel_rename=Callback::new(move |_| renaming_session.set(None))
                 on_home=Callback::new(move |_| page.set(Page::Home))
                 on_settings=Callback::new(move |_| settings_open.set(true))
                 on_sign_out=sign_out

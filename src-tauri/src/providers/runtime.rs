@@ -414,9 +414,7 @@ impl TurnAccumulator {
     }
 
     fn push_activity(&mut self, activity: ProviderActivity) -> Result<Message, String> {
-        if self.activities.len() >= MAX_ACTIVITIES {
-            return Err("Provider emitted too many activities in one turn".to_string());
-        }
+        let activity_id = activity.id;
         let detail = activity
             .detail
             .as_deref()
@@ -425,7 +423,7 @@ impl TurnAccumulator {
             Some(detail) if !detail.trim().is_empty() => format!("{}\n{detail}", activity.title),
             _ => activity.title,
         };
-        let message = Message::new(
+        let mut message = Message::new(
             if activity.kind == MessageKind::Tool {
                 MessageRole::Tool
             } else {
@@ -434,8 +432,47 @@ impl TurnAccumulator {
             activity.kind,
             content,
         );
+        if let Some(id) = activity_id {
+            message.id = id;
+        }
+        if let Some(existing) = self
+            .activities
+            .iter_mut()
+            .find(|existing| existing.id == message.id)
+        {
+            message.created_at = existing.created_at;
+            *existing = message.clone();
+            return Ok(message);
+        }
+        if self.activities.len() >= MAX_ACTIVITIES {
+            return Err("Provider emitted too many activities in one turn".to_string());
+        }
         self.activities.push(message.clone());
         Ok(message)
+    }
+
+    fn append_activity_delta(&mut self, id: &str, delta: &str) -> Option<String> {
+        let message = self
+            .activities
+            .iter_mut()
+            .find(|message| message.id == id)?;
+        let prefix = if message.content.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        let remaining = MAX_ACTIVITY_DETAIL.saturating_sub(message.content.len());
+        if remaining == 0 {
+            return Some(String::new());
+        }
+        let addition = format!("{prefix}{delta}");
+        let mut end = addition.len().min(remaining);
+        while end > 0 && !addition.is_char_boundary(end) {
+            end -= 1;
+        }
+        let applied = addition[..end].to_owned();
+        message.content.push_str(&applied);
+        Some(applied)
     }
 }
 
@@ -482,6 +519,20 @@ async fn handle_event(
                     message,
                 },
             );
+        }
+        ProviderEvent::ActivityDelta { id, delta } => {
+            if let Some(delta) = accumulator.append_activity_delta(&id, &delta)
+                && !delta.is_empty()
+            {
+                let _ = app.emit(
+                    "onyx://session",
+                    SessionEvent::ActivityDelta {
+                        session_id: session_id.to_string(),
+                        message_id: id,
+                        delta,
+                    },
+                );
+            }
         }
         ProviderEvent::Continuation(id) => accumulator.continuation = Some(id),
         ProviderEvent::Approval(approval) => {
@@ -830,6 +881,7 @@ mod tests {
         let mut turn = TurnAccumulator::new(None);
         let message = turn
             .push_activity(ProviderActivity {
+                id: None,
                 title: "Tool".to_string(),
                 detail: Some("é".repeat(MAX_ACTIVITY_DETAIL)),
                 kind: MessageKind::Tool,
@@ -838,6 +890,32 @@ mod tests {
         assert!(message.content.is_char_boundary(message.content.len()));
         assert!(message.content.contains("output truncated"));
         assert!(truncate("small", 10) == "small");
+    }
+
+    #[test]
+    fn stable_activity_is_updated_and_stream_output_is_bounded() {
+        let mut turn = TurnAccumulator::new(None);
+        turn.push_activity(ProviderActivity {
+            id: Some("command-1".to_owned()),
+            title: "Running cargo test".to_owned(),
+            detail: None,
+            kind: MessageKind::Tool,
+        })
+        .unwrap();
+        assert_eq!(
+            turn.append_activity_delta("command-1", "first line")
+                .as_deref(),
+            Some("\nfirst line")
+        );
+        turn.push_activity(ProviderActivity {
+            id: Some("command-1".to_owned()),
+            title: "Ran cargo test".to_owned(),
+            detail: Some("ok".to_owned()),
+            kind: MessageKind::Tool,
+        })
+        .unwrap();
+        assert_eq!(turn.activities.len(), 1);
+        assert_eq!(turn.activities[0].content, "Ran cargo test\nok");
     }
 
     #[test]

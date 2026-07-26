@@ -1,9 +1,9 @@
 {
   "name": "onyx-desktop",
-  "version": "0.3.1",
+  "version": "0.3.3",
   "private": true,
   "type": "module",
-  "description": "Coding agents, multimodal chat, and voice in one Rust-native desktop app",
+  "description": "Coding agents, official provider webviews, and voice in one Rust-native desktop app",
   "license": "MIT",
   "repository": {
     "type": "git",

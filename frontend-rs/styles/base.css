@@ -56,8 +56,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 /* t3code-style glow on the activity that is currently running. */
 .zai-agent-working span,
-.zai-transcript--running .zai-tool-group:last-of-type > summary .zai-tool-group__latest,
-.zai-transcript--running .zai-tool-event:last-of-type summary > span {
+.zai-tool-group[data-current="true"] > summary .zai-tool-group__latest,
+.zai-tool-event[data-current="true"] summary > span:not(.zai-tool-event__running) {
   background: linear-gradient(
     90deg,
     var(--v2-text-text-muted) 32%,
@@ -116,6 +116,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .zai-titlebar__tab:hover .zai-titlebar__tab-close,
 .zai-titlebar__tab-close:focus-visible { opacity: 1; }
 .zai-titlebar__tab-close:hover { background: var(--v2-overlay-simple-overlay-pressed) !important; color: var(--v2-icon-icon-base); }
+.zai-titlebar__tab-editor { display: flex; flex: 1; min-width: 0; height: 22px; -webkit-app-region: no-drag; }
+.zai-titlebar__tab-editor input { width: 100%; min-width: 0; height: 22px; border: .5px solid var(--v2-border-border-focus); border-radius: 5px; padding: 0 6px; outline: 0; background: var(--v2-background-bg-base); color: var(--v2-text-text-base); font: 500 12px/1 inherit; }
+.zai-titlebar__context-backdrop { position: fixed; z-index: 108; inset: 0; border: 0; padding: 0; background: transparent; -webkit-app-region: no-drag; }
+.zai-titlebar__context-menu { position: fixed; z-index: 109; width: 178px; padding: 5px; border: .5px solid var(--v2-border-border-base); border-radius: 9px; background: var(--v2-background-bg-deep); box-shadow: var(--v2-elevation-overlay); -webkit-app-region: no-drag; }
+.zai-titlebar__context-menu > button { display: flex; width: 100%; height: 31px; align-items: center; gap: 8px; border: 0; border-radius: 6px; padding: 0 8px; background: transparent; color: var(--v2-text-text-muted); font: 500 12px/1 inherit; text-align: left; }
+.zai-titlebar__context-menu > button:hover { background: var(--v2-overlay-simple-overlay-hover); color: var(--v2-text-text-base); }
+.zai-titlebar__context-menu > .zai-titlebar__context-danger { color: var(--v2-text-text-danger, #d14343); }
 .zai-titlebar__tabs-scroll::-webkit-scrollbar { display: none; }
 .zai-titlebar__profile-wrap { position: relative; flex: 0 0 auto; -webkit-app-region: no-drag; }
 .zai-titlebar__profile {
@@ -175,9 +182,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   width: min(var(--zai-content-width), calc(100% - 48px));
   transform: translateX(-50%);
 }
-.zai-new-session__name { display: flex; width: min(920px, calc(100vw - 48px)); margin: 0 auto 12px; flex-direction: column; gap: 6px; color: var(--v2-text-text-faint); font-size: 11px; font-weight: 600; letter-spacing: .01em; }
-.zai-new-session__name input { width: 100%; height: 42px; border: .5px solid var(--v2-border-border-base); border-radius: 12px; padding: 0 14px; outline: none; background: var(--v2-background-bg-base); color: var(--v2-text-text-base); font: 500 14px/1.2 inherit; box-shadow: var(--v2-elevation-surface); }
-.zai-new-session__name input:focus { border-color: var(--v2-border-border-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--v2-text-text-accent) 14%, transparent); }
 .zai-new-session__composer { position: relative; z-index: 2; width: min(920px, calc(100vw - 48px)); margin-left: 50%; transform: translateX(-50%); }
 .zai-new-session__workspace-row {
   display: flex;
@@ -237,6 +241,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 /* Prompt input: mirrors OpenCode's 720×96 v2 surface. */
 .zai-composer { position: relative; width: 100%; min-width: 0; }
+.zai-composer__queued { display: flex; min-width: 0; min-height: 46px; align-items: center; gap: 10px; margin: 0 8px -1px; padding: 8px 10px 9px 12px; border: .5px solid var(--v2-border-border-base); border-bottom: 0; border-radius: 11px 11px 0 0; background: var(--v2-background-bg-layer-02); color: var(--v2-text-text-muted); }
+.zai-composer__queued-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.zai-composer__queued-copy > span { color: var(--v2-text-text-faint); font-size: 10px; font-weight: 650; letter-spacing: .02em; text-transform: uppercase; }
+.zai-composer__queued-copy > p { margin: 0; overflow: hidden; font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.zai-composer__queued-steer { flex: 0 0 auto; height: 27px; border: .5px solid var(--v2-border-border-base); border-radius: 7px; padding: 0 10px; background: var(--v2-background-bg-base); color: var(--v2-text-text-base); font: 600 11px/1 inherit; box-shadow: var(--v2-elevation-surface); }
+.zai-composer__queued-steer:hover { background: var(--v2-overlay-simple-overlay-hover); }
 .zai-composer__surface {
   position: relative;
   display: flex;
@@ -525,6 +535,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .zai-tool-event summary { display: flex; height: 28px; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
 .zai-tool-event summary::-webkit-details-marker { display: none; }
 .zai-tool-event summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zai-tool-event__running { flex: 0 0 auto; border-radius: 999px; padding: 2px 7px; background: var(--v2-background-bg-layer-02); color: var(--v2-text-text-accent); font-size: 9px; font-weight: 650; line-height: 14px; text-transform: uppercase; }
 .zai-tool-chevron { transition: transform 120ms ease; }
 .zai-tool-event[open] .zai-tool-chevron { transform: rotate(90deg); }
 .zai-tool-event pre { max-height: 260px; margin: 4px 0 12px 22px; overflow: auto; border-left: 1px solid var(--v2-border-border-base); padding: 6px 12px; color: var(--v2-text-text-muted); font: 11px/17px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
@@ -644,6 +655,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .zai-settings-provider-copy strong { font-weight: 530; }
 .zai-settings-provider-copy span { color: var(--v2-text-text-muted); }
 .zai-settings-provider-copy code { overflow: hidden; color: var(--v2-text-text-faint); font: 10px/14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.zai-settings-provider-row > .zai-settings-status-actions { flex-wrap: wrap; justify-content: flex-end; }
+.zai-settings-provider-row > .zai-settings-status-actions .zai-neutral-button { height: 28px; padding: 0 9px; font-size: 10px; }
+.zai-provider-terminal-scrim { position: fixed; z-index: 240; inset: 0; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, #09090d 46%, transparent); backdrop-filter: blur(8px); }
+.zai-provider-terminal { display: flex; width: min(900px, calc(100vw - 48px)); height: min(590px, calc(100vh - 48px)); min-height: 320px; flex-direction: column; overflow: hidden; border: .5px solid var(--v2-border-border-base); border-radius: 13px; background: #111116; box-shadow: var(--v2-elevation-overlay); }
+.zai-provider-terminal > header { display: flex; height: 48px; flex: 0 0 48px; align-items: center; justify-content: space-between; border-bottom: .5px solid rgb(255 255 255 / 9%); padding: 0 12px 0 16px; color: #f2f2f4; }
+.zai-provider-terminal > header > div { display: flex; flex-direction: column; gap: 2px; }
+.zai-provider-terminal > header strong { font-size: 12px; }
+.zai-provider-terminal > header span { color: #8b8b94; font-size: 10px; }
+.zai-provider-terminal > header button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #92929b; }
+.zai-provider-terminal > header button:hover { background: rgb(255 255 255 / 8%); color: #fff; }
+.zai-provider-terminal > .zai-xterm-viewport { flex: 1; min-height: 0; padding: 10px 12px; }
 .zai-settings-ready { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; color: var(--v2-state-fg-success); font-size: 12px; }
 .zai-settings-disconnected { flex: 0 0 auto; color: var(--v2-text-text-faint); font-size: 12px; }
 .zai-settings-status-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 12px; }

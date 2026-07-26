@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     path::{Path, PathBuf},
     process::{ExitStatus, Stdio},
     time::Duration,
@@ -271,13 +270,13 @@ pub fn find_executable(command: &str) -> Option<PathBuf> {
         #[cfg(windows)]
         directories.push(home.join("AppData/Roaming/npm"));
     }
-    let mut candidates = HashSet::new();
+    let mut candidates = Vec::new();
     for directory in directories {
-        candidates.insert(directory.join(command));
+        candidates.push(directory.join(command));
         #[cfg(windows)]
         {
-            candidates.insert(directory.join(format!("{command}.exe")));
-            candidates.insert(directory.join(format!("{command}.cmd")));
+            candidates.push(directory.join(format!("{command}.exe")));
+            candidates.push(directory.join(format!("{command}.cmd")));
         }
     }
     candidates.into_iter().find(|path| path.is_file())

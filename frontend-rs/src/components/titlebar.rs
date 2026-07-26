@@ -1,7 +1,8 @@
 use icondata::{
-    LuDownload, LuLogOut, LuPanelBottom, LuPanelRight, LuPlus, LuSettings, LuUserRound, LuX,
+    LuDownload, LuLogOut, LuPanelBottom, LuPanelRight, LuPencil, LuPlus, LuSettings, LuTrash2,
+    LuUserRound, LuX,
 };
-use leptos::ev::MouseEvent;
+use leptos::ev::{KeyboardEvent, MouseEvent, SubmitEvent};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -31,8 +32,15 @@ pub fn Titlebar(
     sessions: Signal<Vec<TitlebarSession>>,
     on_select: Callback<String>,
     on_close: Callback<String>,
+    on_delete: Callback<String>,
     on_new: Callback<()>,
     on_open_session: Callback<String>,
+    editing_tab: Signal<Option<String>>,
+    rename_value: Signal<String>,
+    on_begin_rename: Callback<String>,
+    on_rename_input: Callback<String>,
+    on_commit_rename: Callback<()>,
+    on_cancel_rename: Callback<()>,
     on_home: Callback<()>,
     on_settings: Callback<()>,
     on_sign_out: Callback<()>,
@@ -49,6 +57,7 @@ pub fn Titlebar(
 ) -> impl IntoView {
     let (new_menu_open, set_new_menu_open) = signal(false);
     let (profile_menu_open, set_profile_menu_open) = signal(false);
+    let (tab_menu, set_tab_menu) = signal(None::<(String, i32, i32, bool)>);
     let is_macos = web_sys::window()
         .map(|window| window.navigator().platform().unwrap_or_default())
         .is_some_and(|platform| platform.to_ascii_lowercase().contains("mac"));
@@ -111,6 +120,13 @@ pub fn Titlebar(
                                 let select_id = tab.id.clone();
                                 let close_id = tab.id.clone();
                                 let close_id_aux = tab.id.clone();
+                                let context_id = tab.id.clone();
+                                let editing_id = tab.id.clone();
+                                let tab_label = tab.label.clone();
+                                let tab_active = tab.active;
+                                let tab_running = tab.running;
+                                let project_initial = tab.project_initial;
+                                let is_draft = tab.id == "onyx:draft";
                                 view! {
                                     <div
                                         class="zai-titlebar__tab-slot"
@@ -125,6 +141,16 @@ pub fn Titlebar(
                                                 on_close.run(close_id_aux.clone());
                                             }
                                         }
+                                        on:contextmenu=move |event: MouseEvent| {
+                                            event.prevent_default();
+                                            event.stop_propagation();
+                                            set_tab_menu.set(Some((
+                                                context_id.clone(),
+                                                event.client_x(),
+                                                event.client_y(),
+                                                is_draft,
+                                            )));
+                                        }
                                     >
                                         <div
                                             class="zai-titlebar__tab"
@@ -135,42 +161,83 @@ pub fn Titlebar(
                                                    min-width:0;padding:0 6px;overflow:hidden;border-radius:6px;\
                                                    white-space:nowrap"
                                         >
-                                            <button
-                                                type="button"
-                                                class="zai-titlebar__tab-select"
-                                                role="tab"
-                                                aria-selected=tab.active
-                                                tabindex=if tab.active { 0 } else { -1 }
-                                                style="-webkit-app-region:no-drag;appearance:none;border:0;margin:0;\
-                                                       padding:0;display:flex;align-items:center;gap:6px;flex:1;\
-                                                       height:100%;min-width:0;background:transparent;text-align:left"
-                                                on:click=move |_| on_select.run(select_id.clone())
-                                            >
-                                                <span
-                                                    class="zai-titlebar__tab-icon"
-                                                    style="display:inline-flex;align-items:center;justify-content:center;\
-                                                           width:16px;height:16px;min-width:16px"
-                                                >
-                                                    <Show
-                                                        when=move || tab.running
-                                                        fallback=move || view! {
-                                                            <span class="zai-titlebar__project-icon">
-                                                                {tab.project_initial}
-                                                            </span>
+                                            <Show
+                                                when=move || {
+                                                    editing_tab.read().as_deref()
+                                                        == Some(editing_id.as_str())
+                                                }
+                                                fallback={
+                                                    let select_id = select_id.clone();
+                                                    let tab_label = tab_label.clone();
+                                                    move || {
+                                                        let select_id = select_id.clone();
+                                                        view! {
+                                                            <button
+                                                                type="button"
+                                                                class="zai-titlebar__tab-select"
+                                                                role="tab"
+                                                                aria-selected=tab_active
+                                                                tabindex=if tab_active { 0 } else { -1 }
+                                                                style="-webkit-app-region:no-drag;appearance:none;border:0;margin:0;\
+                                                                       padding:0;display:flex;align-items:center;gap:6px;flex:1;\
+                                                                       height:100%;min-width:0;background:transparent;text-align:left"
+                                                                on:click=move |_| on_select.run(select_id.clone())
+                                                            >
+                                                                <span
+                                                                    class="zai-titlebar__tab-icon"
+                                                                    style="display:inline-flex;align-items:center;justify-content:center;\
+                                                                           width:16px;height:16px;min-width:16px"
+                                                                >
+                                                                    <Show
+                                                                        when=move || tab_running
+                                                                        fallback=move || view! {
+                                                                            <span class="zai-titlebar__project-icon">
+                                                                                {project_initial}
+                                                                            </span>
+                                                                        }
+                                                                    >
+                                                                        <RunningIndicator />
+                                                                    </Show>
+                                                                </span>
+                                                                <span
+                                                                    class="zai-titlebar__tab-label"
+                                                                    style="flex:1;min-width:0;overflow:hidden;text-overflow:clip;\
+                                                                           white-space:nowrap;font-size:13px;font-weight:500;\
+                                                                           line-height:16px"
+                                                                >
+                                                                    {tab_label.clone()}
+                                                                </span>
+                                                            </button>
                                                         }
-                                                    >
-                                                        <RunningIndicator />
-                                                    </Show>
-                                                </span>
-                                                <span
-                                                    class="zai-titlebar__tab-label"
-                                                    style="flex:1;min-width:0;overflow:hidden;text-overflow:clip;\
-                                                           white-space:nowrap;font-size:13px;font-weight:500;\
-                                                           line-height:16px"
+                                                    }
+                                                }
+                                            >
+                                                <form
+                                                    class="zai-titlebar__tab-editor"
+                                                    data-slot="zai-titlebar-tab-editor"
+                                                    on:submit=move |event: SubmitEvent| {
+                                                        event.prevent_default();
+                                                        on_commit_rename.run(());
+                                                    }
                                                 >
-                                                    {tab.label}
-                                                </span>
-                                            </button>
+                                                    <input
+                                                        maxlength="80"
+                                                        autofocus=true
+                                                        autocomplete="off"
+                                                        aria-label="Session name"
+                                                        prop:value=move || rename_value.get()
+                                                        on:input=move |event| {
+                                                            on_rename_input.run(event_target_value(&event));
+                                                        }
+                                                        on:keydown=move |event: KeyboardEvent| {
+                                                            if event.key() == "Escape" {
+                                                                event.prevent_default();
+                                                                on_cancel_rename.run(());
+                                                            }
+                                                        }
+                                                    />
+                                                </form>
+                                            </Show>
                                             <button
                                                 type="button"
                                                 class="zai-titlebar__tab-close"
@@ -196,6 +263,55 @@ pub fn Titlebar(
                         />
                     </div>
                 </div>
+
+                <Show when=move || tab_menu.get().is_some()>
+                    <button
+                        type="button"
+                        class="zai-titlebar__context-backdrop"
+                        aria-label="Close tab menu"
+                        on:click=move |_| set_tab_menu.set(None)
+                    />
+                    <div
+                        class="zai-titlebar__context-menu"
+                        data-slot="zai-titlebar-tab-context-menu"
+                        role="menu"
+                        style=move || tab_menu.get().map(|(_, x, y, _)| {
+                            format!("left:{}px;top:{}px", x.max(8), y.max(8))
+                        }).unwrap_or_default()
+                    >
+                        <button
+                            type="button"
+                            role="menuitem"
+                            on:click=move |_| {
+                                if let Some((id, _, _, _)) = tab_menu.get_untracked() {
+                                    set_tab_menu.set(None);
+                                    on_begin_rename.run(id);
+                                }
+                            }
+                        >
+                            <Icon icon=LuPencil width="13px" height="13px" />
+                            <span>"Rename"</span>
+                        </button>
+                        <Show when=move || {
+                            tab_menu.get().is_some_and(|(_, _, _, draft)| !draft)
+                        }>
+                            <button
+                                type="button"
+                                class="zai-titlebar__context-danger"
+                                role="menuitem"
+                                on:click=move |_| {
+                                    if let Some((id, _, _, _)) = tab_menu.get_untracked() {
+                                        set_tab_menu.set(None);
+                                        on_delete.run(id);
+                                    }
+                                }
+                            >
+                                <Icon icon=LuTrash2 width="13px" height="13px" />
+                                <span>"Delete session"</span>
+                            </button>
+                        </Show>
+                    </div>
+                </Show>
 
                 <div class="zai-titlebar__new-wrap">
                     <button

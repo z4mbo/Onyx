@@ -6,8 +6,6 @@ pub const LAST_WORKSPACE_KEY: &str = "onyx.last-workspace";
 pub const PREFERRED_EDITOR_KEY: &str = "onyx.preferred-editor";
 pub const DESKTOP_PREFERENCES_KEY: &str = "onyx.desktop-preferences.v1";
 pub const COLOR_SCHEME_KEY: &str = "onyx.color-scheme";
-pub const CHAT_THREADS_KEY: &str = "onyx.chat.threads.v1";
-pub const CHAT_FAVORITES_KEY: &str = "onyx.chat.favorite-models.v1";
 pub const VOICE_HISTORY_KEY: &str = "onyx.voice-history.v1";
 pub const RELEASE_NOTES_SEEN_KEY: &str = "onyx.release-notes.seen";
 

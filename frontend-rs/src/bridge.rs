@@ -5,12 +5,11 @@ use wasm_bindgen_futures::JsFuture;
 
 use crate::model::{
     AccountProfile, ActiveAppContext, AgentSession, CapturedAudio, ChatReply, ChatRequest,
-    ConnectionStatus, CreateSessionInput, EditorTarget, GitActionResult, MediaGenerationRequest,
-    NativeVoicePermissions, OAuthStart, OpenRouterModel, OpenRouterVoiceCatalog, ProviderId,
-    ProviderModelOption, ProviderStatus, ProviderUsage, ProviderUserInputAnswers,
-    RenameSessionInput, RepoSummary, TerminalSession, TranscriptionReply, UpdateInfo,
-    UpdateProgress, UpdateSessionOptionsInput, VideoJob, VoiceSettings, WorkspaceEntry,
-    WorkspaceFile, demo_providers,
+    ConnectionStatus, CreateSessionInput, EditorTarget, GitActionResult, NativeVoicePermissions,
+    OAuthStart, OpenRouterModel, OpenRouterVoiceCatalog, ProviderId, ProviderModelOption,
+    ProviderStatus, ProviderUsage, ProviderUserInputAnswers, RenameSessionInput, RepoSummary,
+    TerminalSession, TranscriptionReply, UpdateInfo, UpdateProgress, UpdateSessionOptionsInput,
+    VoiceSettings, WorkspaceEntry, WorkspaceFile, demo_providers,
 };
 
 #[wasm_bindgen(inline_js = r#"
@@ -409,6 +408,24 @@ pub async fn terminal_open(
     .await
 }
 
+pub async fn provider_terminal_open(
+    provider: ProviderId,
+    action: &str,
+    workspace: Option<&str>,
+    provider_session_id: Option<&str>,
+) -> Result<TerminalSession, String> {
+    invoke(
+        "provider_terminal_open",
+        &serde_json::json!({
+            "provider": provider,
+            "action": action,
+            "workspace": workspace,
+            "providerSessionId": provider_session_id,
+        }),
+    )
+    .await
+}
+
 pub async fn list_wsl_distributions() -> Result<Vec<String>, String> {
     invoke("list_wsl_distributions", &serde_json::json!({})).await
 }
@@ -548,18 +565,6 @@ pub async fn platform() -> Result<String, String> {
 
 pub async fn chat_send(request: ChatRequest) -> Result<ChatReply, String> {
     invoke("chat_send", &serde_json::json!({ "request": request })).await
-}
-
-pub async fn generate_image(request: MediaGenerationRequest) -> Result<ChatReply, String> {
-    invoke("generate_image", &serde_json::json!({ "request": request })).await
-}
-
-pub async fn start_video(request: MediaGenerationRequest) -> Result<VideoJob, String> {
-    invoke("start_video", &serde_json::json!({ "request": request })).await
-}
-
-pub async fn poll_video(id: &str) -> Result<VideoJob, String> {
-    invoke("poll_video", &serde_json::json!({ "id": id })).await
 }
 
 pub async fn respond_approval(id: &str, allow: bool, for_session: bool) -> Result<(), String> {

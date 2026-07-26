@@ -16,12 +16,11 @@ mod workspace;
 use crate::{
     model::{
         ActiveAppContext, AgentSession, ApprovalDecision, ChatReply, ChatRequest,
-        CreateSessionInput, MediaGenerationRequest, Message, MessageKind, MessageRole,
-        OpenAiStatus, OpenRouterModel, OpenRouterStatus, OpenRouterVoiceCatalog, ProviderBrand,
-        ProviderId, ProviderModelOption, ProviderStatus, ProviderUsage, ProviderUserInputAnswers,
-        RenameSessionInput, SendMessageInput, SessionEvent, SessionStatus, TranscriptionReply,
-        TranscriptionRequest, UpdateInfo, UpdateProgress, UpdateSessionOptionsInput, VideoJob,
-        VoiceSettings, WorkspaceEntry,
+        CreateSessionInput, Message, MessageKind, MessageRole, OpenAiStatus, OpenRouterModel,
+        OpenRouterStatus, OpenRouterVoiceCatalog, ProviderBrand, ProviderId, ProviderModelOption,
+        ProviderStatus, ProviderUsage, ProviderUserInputAnswers, RenameSessionInput,
+        SendMessageInput, SessionEvent, SessionStatus, TranscriptionReply, TranscriptionRequest,
+        UpdateInfo, UpdateProgress, UpdateSessionOptionsInput, VoiceSettings, WorkspaceEntry,
     },
     openrouter::ApprovalRegistry,
     storage::SessionStore,
@@ -256,14 +255,15 @@ async fn delete_session(
         token.cancel();
     }
     let removed = state.store.remove(&session_id)?;
-    if removed {
-        let _ = app.emit(
-            "onyx://session",
-            SessionEvent::Removed {
-                session_id: session_id.clone(),
-            },
-        );
+    if !removed {
+        return Err("Session not found".to_string());
     }
+    let _ = app.emit(
+        "onyx://session",
+        SessionEvent::Removed {
+            session_id: session_id.clone(),
+        },
+    );
     let providers = state.providers.clone();
     tauri::async_runtime::spawn(async move {
         providers.remove_session(&session_id).await;
@@ -284,7 +284,7 @@ fn cancel_turn(session_id: String, state: State<'_, AppState>) -> Result<(), Str
 }
 
 #[tauri::command]
-fn steer_turn(
+async fn steer_turn(
     app: AppHandle,
     input: SendMessageInput,
     state: State<'_, AppState>,
@@ -299,9 +299,22 @@ fn steer_turn(
     if !state.running.lock().contains_key(&input.session_id) {
         return Err("No turn is running for this session".to_string());
     }
-    // Deliver to the live transport first: when that fails the transcript must
-    // not record a message the agent never saw.
-    state.providers.steer(&input.session_id, content.clone())?;
+    // The running snapshot can reach the webview a few milliseconds before the
+    // provider has registered its official steering channel. Wait briefly for
+    // that channel instead of dropping an immediate follow-up.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        match state.providers.steer(&input.session_id, content.clone()) {
+            Ok(()) => break,
+            Err(_)
+                if state.running.lock().contains_key(&input.session_id)
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
     let message = Message::new(MessageRole::User, MessageKind::Text, content);
     let session = state
         .store
@@ -721,46 +734,7 @@ async fn chat_send(request: ChatRequest) -> Result<ChatReply, String> {
     Ok(ChatReply {
         content,
         model: request.model,
-        media: Vec::new(),
     })
-}
-
-#[tauri::command]
-async fn generate_image(request: MediaGenerationRequest) -> Result<ChatReply, String> {
-    match request.source.as_str() {
-        "openai" => {
-            openai::generate_image(
-                &request.model,
-                &request.prompt,
-                request.aspect_ratio.as_deref(),
-            )
-            .await
-        }
-        "openrouter" => {
-            openrouter::generate_image(
-                &request.model,
-                &request.prompt,
-                request.aspect_ratio.as_deref(),
-            )
-            .await
-        }
-        _ => Err("Choose OpenAI or OpenRouter for image generation".to_string()),
-    }
-}
-
-#[tauri::command]
-async fn start_video(request: MediaGenerationRequest) -> Result<VideoJob, String> {
-    openrouter::start_video(
-        &request.model,
-        &request.prompt,
-        request.aspect_ratio.as_deref(),
-    )
-    .await
-}
-
-#[tauri::command]
-async fn poll_video(id: String) -> Result<VideoJob, String> {
-    openrouter::poll_video(&id).await
 }
 
 #[tauri::command]
@@ -907,6 +881,132 @@ async fn terminal_open(
         .terminals
         .open(app, workspace, cols, rows, wsl_distribution)
         .await
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProviderTerminalAction {
+    Interactive,
+    Update,
+}
+
+fn provider_terminal_command(
+    provider: ProviderId,
+    action: ProviderTerminalAction,
+    provider_session_id: Option<String>,
+) -> Result<String, String> {
+    let base_command = match (provider, action) {
+        (ProviderId::Claude, ProviderTerminalAction::Interactive) => "claude",
+        (ProviderId::Claude, ProviderTerminalAction::Update) => "claude update",
+        (ProviderId::Codex, ProviderTerminalAction::Interactive) => "codex",
+        (ProviderId::Codex, ProviderTerminalAction::Update) => "codex update",
+        (ProviderId::Gemini, ProviderTerminalAction::Interactive) => "gemini",
+        (ProviderId::Gemini, ProviderTerminalAction::Update) => "gemini update",
+        (ProviderId::Kimi, ProviderTerminalAction::Interactive) => "kimi",
+        (ProviderId::Kimi, ProviderTerminalAction::Update) => "kimi update",
+        (ProviderId::Openrouter, _) => {
+            return Err("OpenRouter does not provide a local CLI runtime".to_string());
+        }
+    };
+    let resume_id = provider_session_id.filter(|id| {
+        !id.is_empty()
+            && id.len() <= 512
+            && id
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "_-.".contains(character))
+    });
+    Ok(match (action, provider, resume_id) {
+        (ProviderTerminalAction::Interactive, ProviderId::Claude, Some(id)) => {
+            format!("{base_command} --resume {id}")
+        }
+        (ProviderTerminalAction::Interactive, ProviderId::Codex, Some(id)) => {
+            format!("{base_command} resume {id}")
+        }
+        (ProviderTerminalAction::Interactive, ProviderId::Gemini, Some(id)) => {
+            format!("{base_command} --resume {id}")
+        }
+        (ProviderTerminalAction::Interactive, ProviderId::Kimi, Some(id)) => {
+            format!("{base_command} --session {id}")
+        }
+        _ => base_command.to_string(),
+    })
+}
+
+#[cfg(test)]
+mod provider_terminal_command_tests {
+    use super::{ProviderTerminalAction, provider_terminal_command};
+    use crate::model::ProviderId;
+
+    #[test]
+    fn provider_terminal_commands_are_allowlisted_and_resume_native_sessions() {
+        assert_eq!(
+            provider_terminal_command(
+                ProviderId::Codex,
+                ProviderTerminalAction::Interactive,
+                Some("thread-1".to_owned()),
+            )
+            .unwrap(),
+            "codex resume thread-1"
+        );
+        assert_eq!(
+            provider_terminal_command(ProviderId::Claude, ProviderTerminalAction::Update, None,)
+                .unwrap(),
+            "claude update"
+        );
+        assert_eq!(
+            provider_terminal_command(
+                ProviderId::Kimi,
+                ProviderTerminalAction::Interactive,
+                Some("bad;command".to_owned()),
+            )
+            .unwrap(),
+            "kimi"
+        );
+        assert!(
+            provider_terminal_command(
+                ProviderId::Openrouter,
+                ProviderTerminalAction::Update,
+                None,
+            )
+            .is_err()
+        );
+    }
+}
+
+#[tauri::command]
+async fn provider_terminal_open(
+    app: AppHandle,
+    provider: ProviderId,
+    action: ProviderTerminalAction,
+    workspace: Option<String>,
+    provider_session_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<terminal::TerminalSession, String> {
+    let command = provider_terminal_command(provider, action, provider_session_id)?;
+    let executable = provider
+        .command()
+        .and_then(providers::process::find_executable)
+        .ok_or_else(|| format!("{} is not installed", provider.display_name()))?;
+    if executable.to_string_lossy().chars().any(char::is_control) {
+        return Err("The provider executable path is invalid".to_string());
+    }
+    let workspace = match workspace {
+        Some(workspace) => workspace,
+        None => dirs::home_dir()
+            .ok_or_else(|| "The user home directory is unavailable".to_string())?
+            .to_string_lossy()
+            .into_owned(),
+    };
+    let terminal = state.terminals.open(app, workspace, 112, 28, None).await?;
+    if let Err(error) = state
+        .terminals
+        .write(terminal.id.clone(), format!("{command}\r"))
+        .await
+    {
+        let _ = state.terminals.close(terminal.id.clone()).await;
+        return Err(error);
+    }
+    Ok(terminal)
 }
 
 #[tauri::command]
@@ -1131,9 +1231,6 @@ pub fn run() {
             show_main_window,
             platform,
             chat_send,
-            generate_image,
-            start_video,
-            poll_video,
             respond_approval,
             respond_user_input,
             cancel_user_input,
@@ -1150,6 +1247,7 @@ pub fn run() {
             workspace_push,
             workspace_create_pr,
             terminal_open,
+            provider_terminal_open,
             list_wsl_distributions,
             terminal_write,
             terminal_resize,
