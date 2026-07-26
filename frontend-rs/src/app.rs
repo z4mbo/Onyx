@@ -305,7 +305,7 @@ pub fn App() -> impl IntoView {
     let draft_provider = RwSignal::new(ProviderId::Claude);
     let draft_title = RwSignal::new(String::new());
     let draft_brand = RwSignal::new(ProviderBrand::Anthropic);
-    let draft_model = RwSignal::new(Some("fable".to_owned()));
+    let draft_model = RwSignal::new(Some("default".to_owned()));
     let draft_reasoning = RwSignal::new(None::<ReasoningEffort>);
     let draft_speed = RwSignal::new(SpeedMode::Standard);
     let draft_interaction = RwSignal::new(InteractionMode::Build);

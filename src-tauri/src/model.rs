@@ -40,6 +40,7 @@ impl ProviderBrand {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
+    Auto,
     None,
     Minimal,
     Low,
@@ -48,14 +49,14 @@ pub enum ReasoningEffort {
     High,
     Xhigh,
     Max,
-    /// t3code-style pseudo-level: engines receive xhigh plus an `ultracode`
-    /// settings flag (Claude Code only).
-    Ultracode,
+    /// Native Codex effort with automatic task delegation.
+    Ultra,
 }
 
 impl ReasoningEffort {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::None => "none",
             Self::Minimal => "minimal",
             Self::Low => "low",
@@ -63,16 +64,12 @@ impl ReasoningEffort {
             Self::High => "high",
             Self::Xhigh => "xhigh",
             Self::Max => "max",
-            Self::Ultracode => "ultracode",
+            Self::Ultra => "ultra",
         }
     }
 
-    /// The effort value engines that lack the ultracode pseudo-level accept.
     pub fn clamped_str(self) -> &'static str {
-        match self {
-            Self::Ultracode => "xhigh",
-            other => other.as_str(),
-        }
+        self.as_str()
     }
 }
 

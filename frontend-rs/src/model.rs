@@ -105,6 +105,7 @@ impl ProviderBrand {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
+    Auto,
     None,
     Minimal,
     Low,
@@ -113,11 +114,12 @@ pub enum ReasoningEffort {
     High,
     Xhigh,
     Max,
-    Ultracode,
+    Ultra,
 }
 
 impl ReasoningEffort {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
+        Self::Auto,
         Self::None,
         Self::Minimal,
         Self::Low,
@@ -125,11 +127,12 @@ impl ReasoningEffort {
         Self::High,
         Self::Xhigh,
         Self::Max,
-        Self::Ultracode,
+        Self::Ultra,
     ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::None => "none",
             Self::Minimal => "minimal",
             Self::Low => "low",
@@ -137,12 +140,13 @@ impl ReasoningEffort {
             Self::High => "high",
             Self::Xhigh => "xhigh",
             Self::Max => "max",
-            Self::Ultracode => "ultracode",
+            Self::Ultra => "ultra",
         }
     }
 
     pub const fn display_name(self) -> &'static str {
         match self {
+            Self::Auto => "Auto",
             Self::None => "None",
             Self::Minimal => "Minimal",
             Self::Low => "Low",
@@ -150,7 +154,7 @@ impl ReasoningEffort {
             Self::High => "High",
             Self::Xhigh => "Extra high",
             Self::Max => "Max",
-            Self::Ultracode => "Ultracode",
+            Self::Ultra => "Ultra",
         }
     }
 

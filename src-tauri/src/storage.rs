@@ -37,6 +37,21 @@ struct PersistedState {
     sessions: Vec<AgentSession>,
 }
 
+fn deserialize_state(value: &str) -> Result<PersistedState, serde_json::Error> {
+    let mut value = serde_json::from_str::<serde_json::Value>(value)?;
+    if let Some(sessions) = value
+        .get_mut("sessions")
+        .and_then(|value| value.as_array_mut())
+    {
+        for session in sessions {
+            if session.get("reasoning").and_then(|value| value.as_str()) == Some("ultracode") {
+                session["reasoning"] = serde_json::Value::String("xhigh".to_string());
+            }
+        }
+    }
+    serde_json::from_value(value)
+}
+
 pub struct SessionStore {
     path: PathBuf,
     state: RwLock<PersistedState>,
@@ -47,7 +62,7 @@ impl SessionStore {
         fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
         let path = data_dir.join("sessions.json");
         let mut state = match fs::read_to_string(&path) {
-            Ok(value) => match serde_json::from_str::<PersistedState>(&value) {
+            Ok(value) => match deserialize_state(&value) {
                 Ok(state) => state,
                 Err(error) => {
                     let backup =
@@ -64,7 +79,7 @@ impl SessionStore {
             Err(error) => return Err(error.to_string()),
         };
         let previous_version = state.version;
-        state.version = 2;
+        state.version = 3;
         for session in &mut state.sessions {
             if previous_version < 2 {
                 session.provider_brand = ProviderBrand::for_provider(session.provider);
@@ -284,10 +299,10 @@ impl SessionStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{PersistedState, SessionStore, normalized_session_title};
+    use super::{PersistedState, SessionStore, deserialize_state, normalized_session_title};
     use crate::model::{
         AccessMode, AgentSession, InteractionMode, Message, MessageKind, MessageRole,
-        ProviderBrand, ProviderId, RenameSessionInput, SessionStatus, SpeedMode,
+        ProviderBrand, ProviderId, ReasoningEffort, RenameSessionInput, SessionStatus, SpeedMode,
         UpdateSessionOptionsInput,
     };
     use chrono::Utc;
@@ -315,6 +330,19 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    #[test]
+    fn legacy_non_native_ultracode_value_migrates_to_xhigh() {
+        let mut value = serde_json::to_value(PersistedState {
+            version: 2,
+            sessions: vec![test_session("legacy".to_string())],
+        })
+        .expect("state should serialize");
+        value["sessions"][0]["reasoning"] = serde_json::Value::String("ultracode".to_string());
+
+        let state = deserialize_state(&value.to_string()).expect("legacy state should migrate");
+        assert_eq!(state.sessions[0].reasoning, Some(ReasoningEffort::Xhigh));
     }
 
     #[test]

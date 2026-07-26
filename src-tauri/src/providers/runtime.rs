@@ -7,6 +7,7 @@ use super::{
         ProviderSessionConfig, ProviderUserInput, ProviderUserInputAnswers,
         ProviderUserInputPrompt, ProviderUserInputResponse, TURN_CANCELLED_ERROR,
     },
+    kimi::KimiDriver,
 };
 use crate::{
     model::{
@@ -99,7 +100,7 @@ impl ProviderRuntime {
             ProviderId::Gemini,
             Arc::new(CliDriver::new(ProviderId::Gemini)),
         );
-        drivers.insert(ProviderId::Kimi, Arc::new(CliDriver::new(ProviderId::Kimi)));
+        drivers.insert(ProviderId::Kimi, Arc::new(KimiDriver));
         debug_assert!(
             drivers
                 .iter()

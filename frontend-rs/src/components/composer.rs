@@ -17,19 +17,33 @@ use crate::{
 
 use super::ProviderBadge;
 
-fn access_name(mode: AccessMode) -> &'static str {
-    match mode {
-        AccessMode::ApprovalRequired => "Ask",
-        AccessMode::AutoAcceptEdits => "Auto edits",
-        AccessMode::FullAccess => "Full access",
+fn access_name(provider: ProviderId, mode: AccessMode) -> &'static str {
+    match (provider, mode) {
+        (ProviderId::Kimi, AccessMode::ApprovalRequired) => "Default",
+        (ProviderId::Kimi, AccessMode::AutoAcceptEdits) => "YOLO",
+        (ProviderId::Kimi, AccessMode::FullAccess) => "Auto",
+        (_, AccessMode::ApprovalRequired) => "Ask",
+        (_, AccessMode::AutoAcceptEdits) => "Auto edits",
+        (_, AccessMode::FullAccess) => "Full access",
     }
 }
 
-fn access_description(mode: AccessMode) -> &'static str {
-    match mode {
-        AccessMode::ApprovalRequired => "Ask before edits, commands, and external actions",
-        AccessMode::AutoAcceptEdits => "Apply workspace edits automatically; ask for other actions",
-        AccessMode::FullAccess => "Allow provider actions without interactive approval",
+fn access_description(provider: ProviderId, mode: AccessMode) -> &'static str {
+    match (provider, mode) {
+        (ProviderId::Kimi, AccessMode::ApprovalRequired) => {
+            "Kimi Default: manual approvals; tools execute normally"
+        }
+        (ProviderId::Kimi, AccessMode::AutoAcceptEdits) => {
+            "Kimi YOLO: auto-approve tool actions; the agent may still ask questions"
+        }
+        (ProviderId::Kimi, AccessMode::FullAccess) => {
+            "Kimi Auto: fully autonomous; the agent decides without asking"
+        }
+        (_, AccessMode::ApprovalRequired) => "Ask before edits, commands, and external actions",
+        (_, AccessMode::AutoAcceptEdits) => {
+            "Apply workspace edits automatically; ask for other actions"
+        }
+        (_, AccessMode::FullAccess) => "Allow provider actions without interactive approval",
     }
 }
 
@@ -419,14 +433,14 @@ pub fn Composer(
 
                                     <label
                                         class="zai-composer__control zai-composer__select-control"
-                                        title=move || access_description(access_mode.get())
+                                        title=move || access_description(provider.get(), access_mode.get())
                                     >
                                         {move || match access_mode.get() {
                                             AccessMode::ApprovalRequired => view! { <Icon icon=LuLock width="15px" height="15px" /> }.into_any(),
                                             AccessMode::AutoAcceptEdits => view! { <Icon icon=LuPenLine width="15px" height="15px" /> }.into_any(),
                                             AccessMode::FullAccess => view! { <Icon icon=LuLockOpen width="15px" height="15px" /> }.into_any(),
                                         }}
-                                        <span>{move || access_name(access_mode.get())}</span>
+                                        <span>{move || access_name(provider.get(), access_mode.get())}</span>
                                         <Icon icon=LuChevronDown width="12px" height="12px" />
                                         <select
                                             class="zai-composer__native-select"
@@ -441,9 +455,15 @@ pub fn Composer(
                                                 });
                                             }
                                         >
-                                            <option value="approval_required">"Ask"</option>
-                                            <option value="auto_accept_edits">"Auto edits"</option>
-                                            <option value="full_access">"Full access"</option>
+                                            <option value="approval_required">
+                                                {move || if provider.get() == ProviderId::Kimi { "Default" } else { "Ask" }}
+                                            </option>
+                                            <option value="auto_accept_edits">
+                                                {move || if provider.get() == ProviderId::Kimi { "YOLO" } else { "Auto edits" }}
+                                            </option>
+                                            <option value="full_access">
+                                                {move || if provider.get() == ProviderId::Kimi { "Auto" } else { "Full access" }}
+                                            </option>
                                         </select>
                                     </label>
                                 </div>

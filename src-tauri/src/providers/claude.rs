@@ -10,7 +10,8 @@ use super::{
     process::{JsonProcess, ProcessOutput, find_executable, platform_command},
 };
 use crate::model::{
-    AccessMode, ApprovalDecision, ContextUsage, InteractionMode, MessageKind, ProviderId, SpeedMode,
+    AccessMode, ApprovalDecision, ContextUsage, InteractionMode, MessageKind, ProviderId,
+    ProviderModelOption, ReasoningEffort, SpeedMode,
 };
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -18,7 +19,9 @@ use tokio::{sync::mpsc, time::timeout};
 use tokio_util::sync::CancellationToken;
 
 const MAX_PERSISTENT_STREAM: usize = 256 * 1024 * 1024;
+const MAX_CATALOG_STREAM: usize = 16 * 1024 * 1024;
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
+const CATALOG_TIMEOUT: Duration = Duration::from_secs(15);
 const INITIALIZE_REQUEST_ID: &str = "onyx-initialize";
 
 pub struct ClaudeDriver;
@@ -63,7 +66,7 @@ fn persistent_args(config: &ProviderSessionConfig) -> Vec<String> {
         "--permission-mode".to_string(),
         match (config.interaction_mode, config.access_mode) {
             (InteractionMode::Plan, _) => "plan",
-            (_, AccessMode::ApprovalRequired) => "manual",
+            (_, AccessMode::ApprovalRequired) => "default",
             (_, AccessMode::AutoAcceptEdits) => "acceptEdits",
             (_, AccessMode::FullAccess) => "bypassPermissions",
         }
@@ -74,15 +77,12 @@ fn persistent_args(config: &ProviderSessionConfig) -> Vec<String> {
     {
         args.push("--dangerously-skip-permissions".to_string());
     }
-    if let Some(reasoning) = config.reasoning {
-        args.extend(["--effort".to_string(), reasoning.clamped_str().to_string()]);
+    if let Some(reasoning) = config.reasoning.and_then(claude_effort) {
+        args.extend(["--effort".to_string(), reasoning.to_string()]);
     }
     let mut settings = serde_json::Map::new();
     if config.speed_mode == SpeedMode::Fast {
         settings.insert("fastMode".into(), Value::Bool(true));
-    }
-    if config.reasoning == Some(crate::model::ReasoningEffort::Ultracode) {
-        settings.insert("ultracode".into(), Value::Bool(true));
     }
     if !settings.is_empty() {
         args.extend([
@@ -97,6 +97,21 @@ fn persistent_args(config: &ProviderSessionConfig) -> Vec<String> {
         args.extend(["--model".to_string(), model.to_string()]);
     }
     args
+}
+
+fn catalog_probe_args() -> Vec<String> {
+    vec![
+        "--print".to_string(),
+        "--verbose".to_string(),
+        "--input-format".to_string(),
+        "stream-json".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--permission-prompt-tool".to_string(),
+        "stdio".to_string(),
+        "--permission-mode".to_string(),
+        "default".to_string(),
+    ]
 }
 
 impl ClaudeSession {
@@ -121,7 +136,7 @@ impl ClaudeSession {
                 .map_err(|_| "Claude stream control initialization timed out".to_string())??;
         Ok(Self {
             process,
-            continuation: discovered_continuation.or(config.continuation),
+            continuation: discovered_continuation.continuation.or(config.continuation),
         })
     }
 
@@ -570,7 +585,125 @@ fn initialize_request() -> Value {
     })
 }
 
-async fn wait_for_initialize(process: &mut JsonProcess) -> Result<Option<String>, String> {
+#[derive(Debug)]
+struct ClaudeInitialize {
+    continuation: Option<String>,
+    models: Vec<ProviderModelOption>,
+}
+
+pub(super) fn claude_effort(effort: ReasoningEffort) -> Option<&'static str> {
+    match effort {
+        ReasoningEffort::Auto => Some("auto"),
+        ReasoningEffort::Low => Some("low"),
+        ReasoningEffort::Medium => Some("medium"),
+        ReasoningEffort::High => Some("high"),
+        ReasoningEffort::Xhigh => Some("xhigh"),
+        ReasoningEffort::Max => Some("max"),
+        ReasoningEffort::None | ReasoningEffort::Minimal | ReasoningEffort::Ultra => None,
+    }
+}
+
+fn parse_claude_effort(value: &str) -> Option<ReasoningEffort> {
+    match value {
+        "low" => Some(ReasoningEffort::Low),
+        "medium" => Some(ReasoningEffort::Medium),
+        "high" => Some(ReasoningEffort::High),
+        "xhigh" => Some(ReasoningEffort::Xhigh),
+        "max" => Some(ReasoningEffort::Max),
+        _ => None,
+    }
+}
+
+fn parse_initialize_models(value: &Value) -> Vec<ProviderModelOption> {
+    let Some(models) = value
+        .pointer("/response/response/models")
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+
+    models
+        .iter()
+        .filter_map(|model| {
+            let id = model
+                .get("value")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?;
+            let supports_effort = model
+                .get("supportsEffort")
+                .and_then(Value::as_bool)
+                .unwrap_or_else(|| model.get("supportedEffortLevels").is_some());
+            let mut reasoning = Vec::new();
+            if supports_effort {
+                // `None` means "let Claude Code choose" in Onyx. It is never
+                // emitted as an `--effort` value.
+                reasoning.push(ReasoningEffort::Auto);
+                for effort in model
+                    .get("supportedEffortLevels")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .filter_map(parse_claude_effort)
+                {
+                    if !reasoning.contains(&effort) {
+                        reasoning.push(effort);
+                    }
+                }
+            }
+            let supports_fast = model
+                .get("supportsFastMode")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            Some(ProviderModelOption {
+                id: id.to_string(),
+                name: model
+                    .get("displayName")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(id)
+                    .to_string(),
+                description: model
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                is_default: id == "default",
+                reasoning,
+                default_reasoning: supports_effort.then_some(ReasoningEffort::Auto),
+                speeds: if supports_fast {
+                    vec![SpeedMode::Standard, SpeedMode::Fast]
+                } else {
+                    vec![SpeedMode::Standard]
+                },
+                default_speed: SpeedMode::Standard,
+                context_length: None,
+            })
+        })
+        .collect()
+}
+
+fn configured_default_model_option() -> ProviderModelOption {
+    ProviderModelOption {
+        id: "default".to_string(),
+        name: "Use Claude Code setting".to_string(),
+        description: Some(
+            "Do not pass --model; use the model selected by Claude Code's account and configuration."
+                .to_string(),
+        ),
+        is_default: true,
+        reasoning: Vec::new(),
+        default_reasoning: None,
+        speeds: vec![SpeedMode::Standard],
+        default_speed: SpeedMode::Standard,
+        context_length: None,
+    }
+}
+
+async fn wait_for_initialize(process: &mut JsonProcess) -> Result<ClaudeInitialize, String> {
     let mut continuation = None;
     loop {
         match process.next_stdout().await? {
@@ -587,7 +720,10 @@ async fn wait_for_initialize(process: &mut JsonProcess) -> Result<Option<String>
                         == Some(INITIALIZE_REQUEST_ID)
                 {
                     return match response.get("subtype").and_then(Value::as_str) {
-                        Some("success") => Ok(continuation),
+                        Some("success") => Ok(ClaudeInitialize {
+                            continuation,
+                            models: parse_initialize_models(&value),
+                        }),
                         _ => Err(response
                             .get("error")
                             .and_then(Value::as_str)
@@ -606,6 +742,36 @@ async fn wait_for_initialize(process: &mut JsonProcess) -> Result<Option<String>
             }
         }
     }
+}
+
+pub async fn model_catalog() -> Result<Vec<ProviderModelOption>, String> {
+    let executable = find_executable("claude")
+        .ok_or_else(|| "Claude Code is not installed or was not found on PATH".to_string())?;
+    let args = catalog_probe_args();
+    let mut command = platform_command(&executable, &args);
+    command.env_remove("CLAUDECODE");
+    let mut process = JsonProcess::spawn(
+        command,
+        "Claude Code model catalog probe",
+        MAX_CATALOG_STREAM,
+    )
+    .await?;
+    let result = async {
+        process.send_json(&initialize_request()).await?;
+        timeout(CATALOG_TIMEOUT, wait_for_initialize(&mut process))
+            .await
+            .map_err(|_| "Claude Code model catalog probe timed out".to_string())?
+            .map(|initialize| {
+                let mut models = initialize.models;
+                if !models.iter().any(|model| model.is_default) {
+                    models.insert(0, configured_default_model_option());
+                }
+                models
+            })
+    }
+    .await;
+    process.shutdown().await;
+    result
 }
 
 fn permission_allow(input: Value, suggestions: Option<Value>) -> Value {
@@ -661,8 +827,9 @@ async fn send_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        claude_user_input_permission, claude_user_input_prompt, control_error, control_response,
-        initialize_request, permission_allow, permission_deny, persistent_args, user_message,
+        catalog_probe_args, claude_user_input_permission, claude_user_input_prompt,
+        configured_default_model_option, control_error, control_response, initialize_request,
+        parse_initialize_models, permission_allow, permission_deny, persistent_args, user_message,
     };
     use crate::{
         model::{AccessMode, InteractionMode, ProviderId, ReasoningEffort, SpeedMode},
@@ -696,26 +863,6 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["--settings", r#"{"fastMode":true}"#])
         );
-        let ultracode = persistent_args(&ProviderSessionConfig {
-            provider: ProviderId::Claude,
-            model: None,
-            workspace: PathBuf::from("/tmp/project"),
-            continuation: None,
-            reasoning: Some(ReasoningEffort::Ultracode),
-            speed_mode: SpeedMode::Standard,
-            interaction_mode: InteractionMode::Build,
-            access_mode: AccessMode::AutoAcceptEdits,
-        });
-        assert!(
-            ultracode
-                .windows(2)
-                .any(|pair| pair == ["--effort", "xhigh"])
-        );
-        assert!(
-            ultracode
-                .windows(2)
-                .any(|pair| pair == ["--settings", r#"{"ultracode":true}"#])
-        );
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--resume", "session-1"])
@@ -726,6 +873,124 @@ mod tests {
                 .iter()
                 .any(|arg| arg == "--dangerously-skip-permissions")
         );
+    }
+
+    #[test]
+    fn persistent_transport_omits_non_claude_effort_values() {
+        for reasoning in [
+            ReasoningEffort::None,
+            ReasoningEffort::Minimal,
+            ReasoningEffort::Ultra,
+        ] {
+            let args = persistent_args(&ProviderSessionConfig {
+                provider: ProviderId::Claude,
+                model: None,
+                workspace: PathBuf::from("/tmp/project"),
+                continuation: None,
+                reasoning: Some(reasoning),
+                speed_mode: SpeedMode::Standard,
+                interaction_mode: InteractionMode::Build,
+                access_mode: AccessMode::AutoAcceptEdits,
+            });
+            assert!(!args.iter().any(|arg| arg == "--effort"));
+            assert!(!args.iter().any(|arg| arg == "--settings"));
+            assert!(!args.iter().any(|arg| arg.contains("ultracode")));
+        }
+    }
+
+    #[test]
+    fn catalog_probe_uses_control_stream_without_a_prompt() {
+        let args = catalog_probe_args();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--input-format", "stream-json"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--output-format", "stream-json"])
+        );
+        assert!(!args.iter().any(|arg| arg == "--resume" || arg == "--model"));
+        assert_eq!(args.last().map(String::as_str), Some("default"));
+    }
+
+    #[test]
+    fn initialize_fixture_maps_per_model_capabilities() {
+        let response = json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": "onyx-initialize",
+                "response": {
+                    "models": [
+                        {
+                            "value": "claude-opus-example",
+                            "displayName": "Opus Example",
+                            "description": "Most capable",
+                            "supportsEffort": true,
+                            "supportedEffortLevels": [
+                                "low", "medium", "high", "xhigh", "max",
+                                "minimal", "ultracode", "high"
+                            ],
+                            "supportsFastMode": true
+                        },
+                        {
+                            "value": "claude-haiku-example",
+                            "displayName": "Haiku Example",
+                            "supportsEffort": false,
+                            "supportedEffortLevels": ["high"],
+                            "supportsFastMode": false
+                        }
+                    ]
+                }
+            }
+        });
+        let models = parse_initialize_models(&response);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "claude-opus-example");
+        assert_eq!(models[0].name, "Opus Example");
+        assert_eq!(models[0].description.as_deref(), Some("Most capable"));
+        assert_eq!(
+            models[0].reasoning,
+            vec![
+                ReasoningEffort::Auto,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::Xhigh,
+                ReasoningEffort::Max,
+            ]
+        );
+        assert_eq!(models[0].default_reasoning, Some(ReasoningEffort::Auto));
+        assert_eq!(models[0].speeds, vec![SpeedMode::Standard, SpeedMode::Fast]);
+        assert!(models[1].reasoning.is_empty());
+        assert_eq!(models[1].default_reasoning, None);
+        assert_eq!(models[1].speeds, vec![SpeedMode::Standard]);
+    }
+
+    #[test]
+    fn initialize_fixture_skips_invalid_models_without_inventing_fallbacks() {
+        let response = json!({
+            "response": {
+                "response": {
+                    "models": [
+                        {"value": ""},
+                        {"displayName": "Missing value"},
+                        {"value": "configured", "supportedEffortLevels": ["future-level"]}
+                    ]
+                }
+            }
+        });
+        let models = parse_initialize_models(&response);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "configured");
+        assert_eq!(models[0].name, "configured");
+        assert_eq!(models[0].reasoning, vec![ReasoningEffort::Auto]);
+        assert!(!models[0].is_default);
+
+        let configured = configured_default_model_option();
+        assert_eq!(configured.id, "default");
+        assert!(configured.is_default);
+        assert!(configured.reasoning.is_empty());
     }
 
     #[test]

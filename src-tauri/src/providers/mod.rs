@@ -1,7 +1,8 @@
-mod claude;
+pub(crate) mod claude;
 pub(crate) mod cli;
 pub(crate) mod codex;
 mod driver;
+pub(crate) mod kimi;
 mod normalize;
 pub(crate) mod process;
 mod runtime;

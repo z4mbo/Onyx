@@ -136,7 +136,10 @@ async fn list_providers() -> Vec<ProviderStatus> {
 #[tauri::command]
 async fn list_provider_models(provider: ProviderId) -> Result<Vec<ProviderModelOption>, String> {
     match provider {
+        ProviderId::Claude => providers::claude::model_catalog().await,
         ProviderId::Codex => providers::codex::model_catalog().await,
+        ProviderId::Gemini => Ok(providers::cli::gemini_model_catalog()),
+        ProviderId::Kimi => providers::kimi::model_catalog().await,
         _ => Ok(Vec::new()),
     }
 }

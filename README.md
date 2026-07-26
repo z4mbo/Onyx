@@ -25,7 +25,7 @@ Onyx gives Claude Code, Codex, Gemini CLI, and Kimi Code a consistent graphical 
 | --- | --- |
 | Home | Onyx opens on the real Home screen without creating a draft tab. |
 | Sessions | Name the draft directly in its tab; right-click any session tab to rename or permanently delete it. Closing a tab never deletes history. |
-| CLI fidelity | Persistent provider sessions use official transports. **CLI** opens/resumes the real provider TUI inside Onyx for native slash commands and interactive controls. |
+| CLI fidelity | Codex models come from `model/list`, Claude models/effort/Fast from `initialize`, and Kimi uses its official ACP IDE transport for model, thinking, mode, permissions, streaming, resume, and slash commands. **CLI** still opens the real provider TUI inside Onyx. |
 | Conversation | Sent prompts remain visible with profile and timestamp. Follow-ups queue above the composer and can steer Codex/Claude through their native live-input protocols. |
 | Navigation | Every user prompt has a compact rail marker; hover to animate and preview it, then click to jump back to it. |
 | Workspace | Terminal, Files, Diff, Browser, Git actions, and the active agent are available without leaving the session. |
@@ -53,7 +53,7 @@ There are **zero tracked TypeScript files**. Onyx is not literally JavaScript-fr
 | Codex | Official `codex app-server` session | Existing Codex login |
 | Claude Code | Installed `claude` CLI | Existing Claude login |
 | Gemini | Installed `gemini` CLI | Existing Gemini login |
-| Kimi Code | Installed `kimi` CLI | Existing Kimi login |
+| Kimi Code | Official `kimi acp` session, with bounded CLI fallback | Existing Kimi login |
 | OpenRouter | Native Rust HTTP client and approved tool loop | API key stored in the OS credential manager |
 | OpenAI audio | Native transcription and speech routes | API key stored in the OS credential manager |
 

@@ -59,7 +59,7 @@ struct CodexSession {
 }
 
 impl CodexSession {
-    async fn connect(config: ProviderSessionConfig) -> Result<Self, String> {
+    async fn connect(mut config: ProviderSessionConfig) -> Result<Self, String> {
         let executable = find_executable("codex")
             .ok_or_else(|| "Codex is not installed or was not found on PATH".to_string())?;
         let args = vec!["app-server".to_string(), "--stdio".to_string()];
@@ -77,9 +77,27 @@ impl CodexSession {
             .send_json(&json!({ "method": "initialized" }))
             .await?;
 
-        let thread_request = thread_request(2, &config);
+        let mut next_request_id = 2_u64;
+        if config.model().is_none() {
+            let request_id = next_request_id;
+            next_request_id = next_request_id.saturating_add(1);
+            process
+                .send_json(&config_read_request(
+                    request_id,
+                    config.workspace.to_string_lossy().as_ref(),
+                ))
+                .await?;
+            let response = timeout(STARTUP_TIMEOUT, wait_for_response(&mut process, request_id))
+                .await
+                .map_err(|_| "Codex configured model lookup timed out".to_string())??;
+            config.model = configured_model(&response)?;
+        }
+
+        let request_id = next_request_id;
+        next_request_id = next_request_id.saturating_add(1);
+        let thread_request = thread_request(request_id, &config);
         process.send_json(&thread_request).await?;
-        let thread_response = timeout(STARTUP_TIMEOUT, wait_for_response(&mut process, 2))
+        let thread_response = timeout(STARTUP_TIMEOUT, wait_for_response(&mut process, request_id))
             .await
             .map_err(|_| "Codex thread initialization timed out".to_string())??;
         let thread_id = response_result(&thread_response)?
@@ -91,7 +109,7 @@ impl CodexSession {
         Ok(Self {
             process,
             thread_id,
-            next_request_id: 3,
+            next_request_id,
             config,
         })
     }
@@ -573,6 +591,26 @@ fn initialize_request(id: u64) -> Value {
     })
 }
 
+fn config_read_request(id: u64, cwd: &str) -> Value {
+    json!({
+        "id": id,
+        "method": "config/read",
+        "params": {
+            "cwd": cwd,
+            "includeLayers": false
+        }
+    })
+}
+
+fn configured_model(response: &Value) -> Result<Option<String>, String> {
+    let result = response_result(response)?;
+    Ok(result
+        .pointer("/config/model")
+        .and_then(Value::as_str)
+        .filter(|model| !model.trim().is_empty())
+        .map(str::to_string))
+}
+
 fn thread_request(id: u64, config: &ProviderSessionConfig) -> Value {
     let mut params = json!({
         "cwd": config.workspace,
@@ -630,12 +668,14 @@ fn turn_start_request(
             json!(reasoning.clamped_str()),
         );
     }
-    params["collaborationMode"] = json!({
-        "mode": if config.interaction_mode == InteractionMode::Plan { "plan" } else { "default" },
-        // A null developer-instructions field explicitly asks app-server for
-        // Codex's own built-in mode behavior instead of an Onyx-authored prompt.
-        "settings": Value::Object(collaboration_settings)
-    });
+    if collaboration_settings.contains_key("model") {
+        params["collaborationMode"] = json!({
+            "mode": if config.interaction_mode == InteractionMode::Plan { "plan" } else { "default" },
+            // A null developer-instructions field explicitly asks app-server for
+            // Codex's own built-in mode behavior instead of an Onyx-authored prompt.
+            "settings": Value::Object(collaboration_settings)
+        });
+    }
     json!({
         "id": id,
         "method": "turn/start",
@@ -751,8 +791,46 @@ fn parse_reasoning(value: &str) -> Option<ReasoningEffort> {
         "medium" => Some(ReasoningEffort::Medium),
         "high" => Some(ReasoningEffort::High),
         "xhigh" => Some(ReasoningEffort::Xhigh),
-        "max" | "ultra" => Some(ReasoningEffort::Max),
+        "max" => Some(ReasoningEffort::Max),
+        "ultra" => Some(ReasoningEffort::Ultra),
         _ => None,
+    }
+}
+
+fn advertised_reasoning(model: &Value) -> Vec<ReasoningEffort> {
+    let mut efforts = Vec::new();
+    for effort in model
+        .get("supportedReasoningEfforts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .get("reasoningEffort")
+                .and_then(Value::as_str)
+                .and_then(parse_reasoning)
+        })
+    {
+        if !efforts.contains(&effort) {
+            efforts.push(effort);
+        }
+    }
+    efforts
+}
+
+fn configured_default_model_option() -> ProviderModelOption {
+    ProviderModelOption {
+        id: "default".to_string(),
+        name: "Codex CLI configured default".to_string(),
+        description: Some(
+            "Use the model and defaults from the active Codex configuration.".to_string(),
+        ),
+        is_default: true,
+        reasoning: Vec::new(),
+        default_reasoning: None,
+        speeds: vec![SpeedMode::Standard],
+        default_speed: SpeedMode::Standard,
+        context_length: None,
     }
 }
 
@@ -806,18 +884,7 @@ pub async fn model_catalog() -> Result<Vec<ProviderModelOption>, String> {
             let Some(model_id) = model.get("model").and_then(Value::as_str) else {
                 continue;
             };
-            let reasoning = model
-                .get("supportedReasoningEfforts")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|entry| {
-                    entry
-                        .get("reasoningEffort")
-                        .and_then(Value::as_str)
-                        .and_then(parse_reasoning)
-                })
-                .collect::<Vec<_>>();
+            let reasoning = advertised_reasoning(model);
             let default_reasoning = model
                 .get("defaultReasoningEffort")
                 .and_then(Value::as_str)
@@ -845,10 +912,9 @@ pub async fn model_catalog() -> Result<Vec<ProviderModelOption>, String> {
                     .get("description")
                     .and_then(Value::as_str)
                     .map(str::to_string),
-                is_default: model
-                    .get("isDefault")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
+                // The explicit "configured default" entry is the only automatic
+                // selection. Advertised models remain available as explicit choices.
+                is_default: false,
                 reasoning,
                 default_reasoning,
                 speeds: if has_fast {
@@ -879,6 +945,7 @@ pub async fn model_catalog() -> Result<Vec<ProviderModelOption>, String> {
     if models.is_empty() {
         Err("Codex returned an empty model catalog".into())
     } else {
+        models.insert(0, configured_default_model_option());
         Ok(models)
     }
 }
@@ -1145,10 +1212,12 @@ async fn send_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        approval_response, codex_user_input_prompt, codex_user_input_response,
-        completed_turn_result, initialize_request, interrupt_timeout_error, is_client_response,
-        item_activity, thread_request, turn_completion_matches, turn_interrupt_request,
-        turn_start_request, turn_steer_request,
+        advertised_reasoning, approval_response, codex_user_input_prompt,
+        codex_user_input_response, completed_turn_result, config_read_request,
+        configured_default_model_option, configured_model, initialize_request,
+        interrupt_timeout_error, is_client_response, item_activity, parse_reasoning,
+        thread_request, turn_completion_matches, turn_interrupt_request, turn_start_request,
+        turn_steer_request,
     };
     use crate::{
         model::{
@@ -1196,7 +1265,7 @@ mod tests {
     }
 
     #[test]
-    fn ask_mode_keeps_workspace_writes_available_for_approval() {
+    fn ask_mode_keeps_workspace_writes_and_omits_invalid_collaboration_settings() {
         let config = ProviderSessionConfig {
             provider: ProviderId::Codex,
             model: None,
@@ -1210,9 +1279,45 @@ mod tests {
         let turn = turn_start_request(3, "thread-1", "edit the file", &config);
         assert_eq!(turn["params"]["approvalPolicy"], "untrusted");
         assert_eq!(turn["params"]["sandboxPolicy"]["type"], "workspaceWrite");
-        assert!(
-            turn["params"]["collaborationMode"]["settings"]["developer_instructions"].is_null()
+        assert!(turn["params"].get("collaborationMode").is_none());
+    }
+
+    #[test]
+    fn configured_default_is_explicit_and_uses_config_read() {
+        let request = config_read_request(2, "/tmp/project");
+        assert_eq!(request["method"], "config/read");
+        assert_eq!(request["params"]["cwd"], "/tmp/project");
+        assert_eq!(request["params"]["includeLayers"], false);
+        assert_eq!(
+            configured_model(&json!({
+                "id": 2,
+                "result": {"config": {"model": "gpt-5.6-sol"}}
+            }))
+            .unwrap()
+            .as_deref(),
+            Some("gpt-5.6-sol")
         );
+
+        let option = configured_default_model_option();
+        assert_eq!(option.id, "default");
+        assert!(option.is_default);
+        assert!(option.reasoning.is_empty());
+    }
+
+    #[test]
+    fn native_ultra_effort_is_distinct_and_catalog_efforts_are_deduplicated() {
+        assert_eq!(parse_reasoning("max"), Some(ReasoningEffort::Max));
+        assert_eq!(parse_reasoning("ultra"), Some(ReasoningEffort::Ultra));
+        assert_eq!(ReasoningEffort::Ultra.clamped_str(), "ultra");
+
+        let efforts = advertised_reasoning(&json!({
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": "max"},
+                {"reasoningEffort": "ultra"},
+                {"reasoningEffort": "ultra"}
+            ]
+        }));
+        assert_eq!(efforts, vec![ReasoningEffort::Max, ReasoningEffort::Ultra]);
     }
 
     #[test]

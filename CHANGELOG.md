@@ -8,7 +8,10 @@
 - Codex command activities use stable upstream item IDs and native output-delta events, keeping the running command expanded with live output before collapsing on completion.
 - Installed runtimes expose **Open CLI** and **Update** actions inside an embedded Onyx terminal using each provider’s official command.
 - The session header can resume the official provider CLI in the bottom terminal, preserving access to native slash commands and interactive controls.
-- Fallback UI catalogs no longer invent provider model or reasoning choices; unavailable capabilities stay disabled until the installed CLI reports them.
+- Model and effort controls now come from Codex `model/list`, Claude Code `initialize`, Kimi's configured provider catalog, and Gemini CLI's documented rolling aliases.
+- Kimi sessions now use the official ACP transport used by IDE integrations, including native model, thinking, mode, permission, question, cancellation, session-resume, and slash-command behavior.
+- The non-native `Ultracode` pseudo-level has been removed; old local sessions migrate safely to `xhigh`, while Codex's real `ultra` remains a distinct native choice.
+- Claude Code's configured default is labeled explicitly: choosing it passes no `--model`, leaving the active Claude account and settings in control.
 
 ## 0.3.2 — Home and Codex session reliability
 

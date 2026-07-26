@@ -6,11 +6,56 @@ use super::{
     normalize::{NormalizedEvent, StreamNormalizer},
     process::{JsonProcess, ProcessOutput, find_executable, platform_command, probe_version},
 };
-use crate::model::{MessageKind, ProviderId, ProviderStatus};
+use crate::model::{MessageKind, ProviderId, ProviderModelOption, ProviderStatus, SpeedMode};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 const MAX_ONE_SHOT_STREAM: usize = 32 * 1024 * 1024;
+
+/// Gemini CLI's documented rolling aliases. These are intentionally aliases,
+/// not pinned preview model IDs: the installed CLI resolves them to the
+/// account-appropriate model just like its native `/model` picker.
+pub fn gemini_model_catalog() -> Vec<ProviderModelOption> {
+    [
+        (
+            "auto",
+            "Auto",
+            "Let Gemini CLI choose the model for this request.",
+            true,
+        ),
+        (
+            "pro",
+            "Pro",
+            "Use Gemini CLI's current Pro model alias.",
+            false,
+        ),
+        (
+            "flash",
+            "Flash",
+            "Use Gemini CLI's current Flash model alias.",
+            false,
+        ),
+        (
+            "flash-lite",
+            "Flash Lite",
+            "Use Gemini CLI's current Flash Lite model alias.",
+            false,
+        ),
+    ]
+    .into_iter()
+    .map(|(id, name, description, is_default)| ProviderModelOption {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        description: Some(description.to_owned()),
+        is_default,
+        reasoning: Vec::new(),
+        default_reasoning: None,
+        speeds: vec![SpeedMode::Standard],
+        default_speed: SpeedMode::Standard,
+        context_length: None,
+    })
+    .collect()
+}
 
 pub async fn probe_providers(openrouter_connected: bool) -> Vec<ProviderStatus> {
     let definitions = [
@@ -176,6 +221,7 @@ async fn run_one_shot(
     events: &mpsc::Sender<ProviderEvent>,
     next_continuation: &mut Option<String>,
 ) -> Result<(), String> {
+    validate_one_shot_config(config)?;
     let provider = config.provider;
     let command_name = provider
         .command()
@@ -243,6 +289,32 @@ async fn run_one_shot(
         } else {
             format!("{} exited with {status}: {detail}", provider.display_name())
         })
+    }
+}
+
+fn validate_one_shot_config(config: &ProviderSessionConfig) -> Result<(), String> {
+    if config.provider != ProviderId::Kimi {
+        return Ok(());
+    }
+    if config.interaction_mode == crate::model::InteractionMode::Plan {
+        return Err(
+            "Kimi Code Plan mode is unavailable in the non-interactive compatibility transport: \
+             the official CLI does not allow --plan with --prompt"
+                .to_string(),
+        );
+    }
+    match config.access_mode {
+        crate::model::AccessMode::ApprovalRequired => Ok(()),
+        crate::model::AccessMode::AutoAcceptEdits => Err(
+            "Kimi Code YOLO mode is unavailable in the non-interactive compatibility transport: \
+             the official CLI does not allow --yolo with --prompt"
+                .to_string(),
+        ),
+        crate::model::AccessMode::FullAccess => Err(
+            "Kimi Code Auto mode is unavailable in the non-interactive compatibility transport: \
+             the official CLI does not allow --auto with --prompt"
+                .to_string(),
+        ),
     }
 }
 
@@ -354,7 +426,7 @@ fn build_args(
                 "--permission-mode".to_string(),
                 match (config.interaction_mode, config.access_mode) {
                     (crate::model::InteractionMode::Plan, _) => "plan",
-                    (_, crate::model::AccessMode::ApprovalRequired) => "manual",
+                    (_, crate::model::AccessMode::ApprovalRequired) => "default",
                     (_, crate::model::AccessMode::AutoAcceptEdits) => "acceptEdits",
                     (_, crate::model::AccessMode::FullAccess) => "bypassPermissions",
                 }
@@ -365,15 +437,12 @@ fn build_args(
             {
                 args.push("--dangerously-skip-permissions".to_string());
             }
-            if let Some(reasoning) = config.reasoning {
-                args.extend(["--effort".to_string(), reasoning.clamped_str().to_string()]);
+            if let Some(reasoning) = config.reasoning.and_then(super::claude::claude_effort) {
+                args.extend(["--effort".to_string(), reasoning.to_string()]);
             }
             let mut settings = serde_json::Map::new();
             if config.speed_mode == crate::model::SpeedMode::Fast {
                 settings.insert("fastMode".into(), serde_json::Value::Bool(true));
-            }
-            if config.reasoning == Some(crate::model::ReasoningEffort::Ultracode) {
-                settings.insert("ultracode".into(), serde_json::Value::Bool(true));
             }
             if !settings.is_empty() {
                 args.extend([
@@ -394,8 +463,6 @@ fn build_args(
             let mut args = vec!["exec".to_string()];
             if let Some(id) = provider_session_id {
                 args.extend([
-                    "--sandbox".to_string(),
-                    config.sandbox_name().to_string(),
                     "resume".to_string(),
                     "--json".to_string(),
                     "--skip-git-repo-check".to_string(),
@@ -406,6 +473,8 @@ fn build_args(
                 args.extend([
                     "-c".to_string(),
                     format!("approval_policy=\"{}\"", config.approval_policy()),
+                    "-c".to_string(),
+                    format!("sandbox_mode=\"{}\"", config.sandbox_name()),
                 ]);
                 if let Some(reasoning) = config.reasoning {
                     args.extend([
@@ -474,14 +543,6 @@ fn build_args(
                 "--output-format".to_string(),
                 "stream-json".to_string(),
             ];
-            match config.access_mode {
-                crate::model::AccessMode::ApprovalRequired => {}
-                crate::model::AccessMode::AutoAcceptEdits => args.push("--yolo".to_string()),
-                crate::model::AccessMode::FullAccess => args.push("--auto".to_string()),
-            }
-            if config.interaction_mode == crate::model::InteractionMode::Plan {
-                args.push("--plan".to_string());
-            }
             if let Some(id) = provider_session_id {
                 args.extend(["--session".to_string(), id.to_string()]);
             }
@@ -496,7 +557,7 @@ fn build_args(
 
 #[cfg(test)]
 mod tests {
-    use super::build_args;
+    use super::{build_args, gemini_model_catalog, validate_one_shot_config};
     use crate::{
         model::{AccessMode, InteractionMode, ProviderId, SpeedMode},
         providers::driver::ProviderSessionConfig,
@@ -517,18 +578,32 @@ mod tests {
     }
 
     #[test]
+    fn gemini_catalog_uses_documented_aliases_without_fake_effort() {
+        let models = gemini_model_catalog();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["auto", "pro", "flash", "flash-lite"]
+        );
+        assert!(models[0].is_default);
+        assert!(models.iter().all(|model| model.reasoning.is_empty()));
+    }
+
+    #[test]
     fn codex_fallback_resume_uses_documented_subcommand() {
         assert_eq!(
             build_args(&config(ProviderId::Codex), Some("thread"), "continue"),
             [
                 "exec",
-                "--sandbox",
-                "workspace-write",
                 "resume",
                 "--json",
                 "--skip-git-repo-check",
                 "-c",
                 "approval_policy=\"on-request\"",
+                "-c",
+                "sandbox_mode=\"workspace-write\"",
                 "thread",
                 "continue"
             ]
@@ -580,21 +655,52 @@ mod tests {
     }
 
     #[test]
-    fn kimi_maps_plan_permissions_model_and_resume() {
+    fn kimi_headless_transport_rejects_cli_incompatible_modes() {
         let mut selected = config(ProviderId::Kimi);
-        selected.model = Some("kimi-latest".to_string());
         selected.interaction_mode = InteractionMode::Plan;
         selected.access_mode = AccessMode::FullAccess;
+        assert!(
+            validate_one_shot_config(&selected)
+                .expect_err("plan should fail before spawning Kimi")
+                .contains("--plan with --prompt")
+        );
+
+        selected.interaction_mode = InteractionMode::Build;
+        selected.access_mode = AccessMode::AutoAcceptEdits;
+        assert!(
+            validate_one_shot_config(&selected)
+                .expect_err("YOLO should fail before spawning Kimi")
+                .contains("--yolo with --prompt")
+        );
+
+        selected.access_mode = AccessMode::FullAccess;
+        assert!(
+            validate_one_shot_config(&selected)
+                .expect_err("auto should fail before spawning Kimi")
+                .contains("--auto with --prompt")
+        );
+    }
+
+    #[test]
+    fn kimi_headless_transport_keeps_prompt_model_and_resume_separate() {
+        let mut selected = config(ProviderId::Kimi);
+        selected.model = Some("configured/model".to_string());
+        selected.access_mode = AccessMode::ApprovalRequired;
+        validate_one_shot_config(&selected).expect("basic print transport should remain available");
         let args = build_args(&selected, Some("session-1"), "inspect");
-        assert!(args.iter().any(|arg| arg == "--auto"));
-        assert!(args.iter().any(|arg| arg == "--plan"));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "--plan" | "--yolo" | "--auto"))
+        );
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--session", "session-1"])
         );
         assert!(
             args.windows(2)
-                .any(|pair| pair == ["--model", "kimi-latest"])
+                .any(|pair| pair == ["--model", "configured/model"])
         );
+        assert!(args.iter().any(|arg| arg == "inspect"));
     }
 }

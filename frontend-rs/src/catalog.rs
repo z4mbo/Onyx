@@ -94,33 +94,46 @@ fn named_model(
     }
 }
 
+fn configured_default_model(provider: &str) -> ProviderModelOption {
+    let mut model = named_model(
+        "default",
+        &format!("Use {provider} setting"),
+        true,
+        Vec::new(),
+    );
+    model.description = Some(format!(
+        "Onyx does not pass --model; {provider} uses the model selected by its own account and configuration."
+    ));
+    model
+}
+
 pub fn fallback_catalogs() -> ProviderCatalogs {
     HashMap::from([
         (
             ProviderId::Codex,
-            vec![named_model("default", "Codex CLI default", true, vec![])],
+            vec![configured_default_model("Codex CLI")],
         ),
         (
             ProviderId::Claude,
-            vec![named_model(
-                "default",
-                "Claude Code configured default",
-                true,
-                vec![],
-            )],
+            vec![configured_default_model("Claude Code")],
         ),
         (
             ProviderId::Gemini,
-            vec![named_model("default", "Gemini CLI default", true, vec![])],
+            vec![
+                named_model("auto", "Auto · Gemini CLI", true, vec![]),
+                named_model("pro", "Pro · Gemini CLI", false, vec![]),
+                named_model("flash", "Flash · Gemini CLI", false, vec![]),
+                named_model(
+                    "flash-lite",
+                    "Flash Lite · Gemini CLI",
+                    false,
+                    vec![],
+                ),
+            ],
         ),
         (
             ProviderId::Kimi,
-            vec![named_model(
-                "default",
-                "Kimi configured default",
-                true,
-                vec![],
-            )],
+            vec![configured_default_model("Kimi Code")],
         ),
     ])
 }
