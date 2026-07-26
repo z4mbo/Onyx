@@ -21,8 +21,8 @@ use crate::{
         CreateSessionInput, EditorTarget, InteractionMode, NativeVoicePermissions, OpenRouterModel,
         ProviderBrand, ProviderId, ProviderUsage, ProviderUserInputRequest, ReasoningEffort,
         RepoSummary, SessionEvent, SpeedMode, TerminalEvent, UpdateInfo, UpdateProgress,
-        UpdateSessionOptionsInput, apply_session_event, demo_providers, replace_session,
-        workspace_name,
+        UpdateSessionOptionsInput, apply_session_event, default_session_title, demo_providers,
+        replace_session, workspace_name,
     },
     storage, theme,
 };
@@ -339,6 +339,10 @@ pub fn App() -> impl IntoView {
     let queued_messages = RwSignal::new(HashMap::<String, Vec<String>>::new());
     let queue_dispatching = RwSignal::new(HashSet::<String>::new());
     let queue_paused = RwSignal::new(HashSet::<String>::new());
+    // Composer drafts live here, not inside the composer, so a page re-render
+    // or a tab switch never discards half-typed text.
+    let draft_prompt = RwSignal::new(String::new());
+    let session_prompts = RwSignal::new(HashMap::<String, String>::new());
 
     let workspace_states = RwSignal::new(HashMap::<String, SessionWorkspaceUi>::new());
     let pending_events = RwSignal::new(HashMap::<String, Vec<SessionEvent>>::new());
@@ -497,9 +501,10 @@ pub fn App() -> impl IntoView {
     let open_draft = Callback::new(move |workspace: Option<String>| {
         let is_new = !draft_open.get_untracked();
         if is_new {
+            // An unnamed draft is named from its first prompt, so opening one
+            // never interrupts with a naming step.
             draft_title.set(String::new());
-            rename_value.set(String::new());
-            renaming_session.set(Some(DRAFT_TAB_ID.to_owned()));
+            draft_prompt.set(String::new());
         }
         if let Some(workspace) = workspace {
             draft_workspace.set(workspace);
@@ -567,6 +572,9 @@ pub fn App() -> impl IntoView {
         }
     });
     let delete_session = Callback::new(move |id: String| {
+        session_prompts.update(|prompts| {
+            prompts.remove(&id);
+        });
         queued_messages.update(|queues| {
             queues.remove(&id);
         });
@@ -597,6 +605,24 @@ pub fn App() -> impl IntoView {
             }
         });
     });
+    // Projects are derived from the sessions they hold, so removing one means
+    // deleting those sessions and forgetting the workspace itself.
+    let delete_project = Callback::new(move |path: String| {
+        let ids = sessions
+            .read_untracked()
+            .iter()
+            .filter(|session| session.workspace == path)
+            .map(|session| session.id.clone())
+            .collect::<Vec<_>>();
+        for id in ids {
+            delete_session.run(id);
+        }
+        if draft_workspace.get_untracked() == path {
+            draft_workspace.set(String::new());
+            draft_git_ready.set(false);
+            storage::remove(storage::LAST_WORKSPACE_KEY);
+        }
+    });
     let begin_rename = Callback::new(move |id: String| {
         if id == DRAFT_TAB_ID {
             rename_value.set(draft_title.get_untracked());
@@ -621,11 +647,9 @@ pub fn App() -> impl IntoView {
         };
         let title = rename_value.get_untracked();
         if id == DRAFT_TAB_ID {
+            // An empty name is not an error here: it restores automatic naming
+            // from the first prompt.
             let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
-            if title.is_empty() {
-                show_error.run("Choose a name for this session.".to_owned());
-                return;
-            }
             if title.chars().count() > 80 || title.chars().any(char::is_control) {
                 show_error
                     .run("Session names must contain at most 80 supported characters.".to_owned());
@@ -677,10 +701,11 @@ pub fn App() -> impl IntoView {
     let start_session = Callback::new(move |content: String| {
         spawn_local(async move {
             let title = draft_title.get();
-            if title.trim().is_empty() {
-                show_error.run("Choose a name for this session.".to_owned());
-                return;
-            }
+            let title = if title.trim().is_empty() {
+                default_session_title(&content)
+            } else {
+                title
+            };
             let workspace = if draft_workspace.get().trim().is_empty() {
                 match bridge::choose_workspace().await {
                     Ok(Some(workspace)) => {
@@ -778,6 +803,40 @@ pub fn App() -> impl IntoView {
         if accepted != Some(true) {
             show_error.run("The queue is full (8 messages or 96 KiB maximum).".to_owned());
         }
+    });
+    // Steering sends text into the turn that is already running, so it never
+    // touches the queue that feeds the next one.
+    let steer_session = Callback::new(move |content: String| {
+        let Some(session) = current.get_untracked() else {
+            return;
+        };
+        let content = content.trim().to_owned();
+        if content.is_empty() {
+            return;
+        }
+        let session_id = session.id;
+        spawn_local(async move {
+            match bridge::steer_turn(&session_id, &content).await {
+                Ok(session) => merge_live_command_session(sessions, tombstones, session),
+                Err(cause) => show_error.run(cause),
+            }
+        });
+    });
+    let drop_queued_session = Callback::new(move |_: ()| {
+        let Some(session_id) = current_id.get_untracked() else {
+            return;
+        };
+        queued_messages.update(|queues| {
+            let Some(queue) = queues.get_mut(&session_id) else {
+                return;
+            };
+            if !queue.is_empty() {
+                queue.remove(0);
+            }
+            if queue.is_empty() {
+                queues.remove(&session_id);
+            }
+        });
     });
     let steer_queued_session = Callback::new(move |_: ()| {
         let Some(session) = current.get_untracked() else {
@@ -1700,6 +1759,7 @@ pub fn App() -> impl IntoView {
                 on_new=open_draft
                 on_select=open_session
                 on_delete=delete_session
+                on_delete_project=delete_project
                 on_choose_workspace=choose_workspace
                 on_settings=Callback::new(move |_| settings_open.set(true))
                 on_voice=Callback::new(move |_| page.set(Page::Voice))
@@ -1739,6 +1799,9 @@ pub fn App() -> impl IntoView {
                                     approval=Signal::derive(move || None)
                                     approval_busy=Signal::derive(move || false)
                                     queued_messages=Signal::derive(Vec::new)
+                                    value=Signal::derive(move || draft_prompt.get())
+                                    on_value=Callback::new(move |value| draft_prompt.set(value))
+                                    steerable=Signal::derive(move || false)
                                     hero=true
                                     autofocus=false
                                     on_brand=select_draft_brand
@@ -1749,7 +1812,9 @@ pub fn App() -> impl IntoView {
                                     on_access_mode=Callback::new(move |value| draft_access.set(value))
                                     on_submit=start_session
                                     on_queue=Callback::new(move |_| {})
+                                    on_steer=Callback::new(move |_| {})
                                     on_steer_queued=Callback::new(move |_| {})
+                                    on_drop_queued=Callback::new(move |_| {})
                                     on_cancel=Callback::new(move |_| {})
                                     on_approval=Callback::new(move |_| {})
                                     on_error=show_error
@@ -1788,11 +1853,22 @@ pub fn App() -> impl IntoView {
             .into_any()
         }
         Page::Session => {
-            let Some(session) = current.get() else {
+            // Only the identity of the session is read reactively here. Reading
+            // the session itself would rebuild this page — composer draft and
+            // all — on every streamed delta.
+            let session = current_id.get().and_then(|id| {
+                sessions
+                    .read_untracked()
+                    .iter()
+                    .find(|session| session.id == id)
+                    .cloned()
+            });
+            let Some(session) = session else {
                 return view! { <Recovery message="The selected session is unavailable." /> }
                     .into_any();
             };
             let session_id = session.id.clone();
+            let prompt_session_id = session_id.clone();
             let activate_surface_session_id = session_id.clone();
             let close_surface_panel_session_id = session_id.clone();
             let activate_terminal_session_id = session_id.clone();
@@ -1808,6 +1884,13 @@ pub fn App() -> impl IntoView {
                 current
                     .get()
                     .map(|session| session.workspace)
+                    .unwrap_or_default()
+            });
+            // Renaming a session has to reach the header without rebuilding it.
+            let session_title = Signal::derive(move || {
+                current
+                    .get()
+                    .map(|session| session.title)
                     .unwrap_or_default()
             });
             let context_label = Signal::derive(move || {
@@ -1852,7 +1935,7 @@ pub fn App() -> impl IntoView {
                                             <span class="zai-workspace-header__project">{project}</span>
                                             <span class="zai-workspace-header__slash">"/"</span>
                                             <div class="zai-session-title">
-                                                <h2 title=session.title.clone()>{session.title.clone()}</h2>
+                                                <h2 title=move || session_title.get()>{move || session_title.get()}</h2>
                                             </div>
                                             <Show when=move || repo.get().and_then(|repo| repo.branch).is_some()>
                                                 <span class="zai-workspace-header__branch">
@@ -1916,7 +1999,14 @@ pub fn App() -> impl IntoView {
                                             models=session_models
                                             locked=running
                                             running=running
-                                            steerable=session.provider == ProviderId::Claude || session.provider == ProviderId::Codex
+                                            steerable=Signal::derive(move || {
+                                                current.get().is_some_and(|session| {
+                                                    matches!(
+                                                        session.provider,
+                                                        ProviderId::Claude | ProviderId::Codex,
+                                                    )
+                                                })
+                                            })
                                             approval=active_approval
                                             approval_busy=Signal::derive(move || approval_busy.get())
                                             queued_messages=Signal::derive(move || {
@@ -1925,6 +2015,23 @@ pub fn App() -> impl IntoView {
                                                     .as_ref()
                                                     .and_then(|id| queued_messages.read().get(id).cloned())
                                                     .unwrap_or_default()
+                                            })
+                                            value=Signal::derive(move || {
+                                                current_id
+                                                    .read()
+                                                    .as_ref()
+                                                    .and_then(|id| session_prompts.read().get(id).cloned())
+                                                    .unwrap_or_default()
+                                            })
+                                            on_value=Callback::new(move |value: String| {
+                                                let id = prompt_session_id.clone();
+                                                session_prompts.update(|prompts| {
+                                                    if value.is_empty() {
+                                                        prompts.remove(&id);
+                                                    } else {
+                                                        prompts.insert(id, value);
+                                                    }
+                                                });
                                             })
                                             hero=false
                                             autofocus=false
@@ -1936,7 +2043,9 @@ pub fn App() -> impl IntoView {
                                             on_access_mode=Callback::new(move |value| update_options.run(SessionOptionPatch::Access(value)))
                                             on_submit=continue_session
                                             on_queue=queue_session
+                                            on_steer=steer_session
                                             on_steer_queued=steer_queued_session
+                                            on_drop_queued=drop_queued_session
                                             on_cancel=cancel_session
                                             on_approval=respond_approval
                                             on_error=show_error

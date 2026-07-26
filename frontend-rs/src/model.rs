@@ -887,6 +887,29 @@ pub fn workspace_name(path: &str) -> String {
         .to_owned()
 }
 
+/// Names an unnamed session after its first prompt, the way the provider CLIs
+/// title a conversation you never explicitly named.
+pub fn default_session_title(prompt: &str) -> String {
+    const MAX_TITLE_CHARS: usize = 60;
+    let compact = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return "New session".to_owned();
+    }
+    if compact.chars().count() <= MAX_TITLE_CHARS {
+        return compact;
+    }
+    let mut title = compact.chars().take(MAX_TITLE_CHARS).collect::<String>();
+    // Prefer a word boundary so the name never ends mid-word.
+    if let Some(index) = title
+        .rfind(' ')
+        .filter(|index| *index >= MAX_TITLE_CHARS / 3)
+    {
+        title.truncate(index);
+    }
+    title.push('…');
+    title
+}
+
 pub fn replace_session(sessions: &mut Vec<AgentSession>, session: AgentSession) {
     if let Some(existing) = sessions.iter_mut().find(|item| item.id == session.id) {
         *existing = session;
@@ -1061,6 +1084,20 @@ mod tests {
         assert_eq!(workspace_name("/Users/onyx/Dev/project/"), "project");
         assert_eq!(workspace_name(r"C:\Users\onyx\project"), "project");
         assert_eq!(workspace_name(""), "Project");
+    }
+
+    #[test]
+    fn unnamed_sessions_are_titled_from_their_first_prompt() {
+        assert_eq!(
+            default_session_title("  Add   a  retry to the uploader\n"),
+            "Add a retry to the uploader",
+        );
+        assert_eq!(default_session_title("   \n  "), "New session");
+
+        let long = default_session_title(&"alpha ".repeat(40));
+        assert!(long.ends_with('…'));
+        assert!(long.chars().count() <= 61);
+        assert!(!long.contains("  "));
     }
 
     #[test]

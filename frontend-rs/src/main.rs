@@ -7,6 +7,7 @@ mod bridge;
 mod catalog;
 #[cfg(target_arch = "wasm32")]
 mod components;
+mod highlight;
 mod markdown;
 #[cfg(target_arch = "wasm32")]
 mod storage;

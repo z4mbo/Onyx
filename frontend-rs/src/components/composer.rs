@@ -1,6 +1,6 @@
 use icondata::{
-    LuBot, LuBrainCircuit, LuCheck, LuChevronDown, LuLoaderCircle, LuLock, LuLockOpen, LuPenLine,
-    LuPencilRuler, LuPlus, LuShieldAlert, LuZap,
+    LuBot, LuBrainCircuit, LuCheck, LuChevronDown, LuCornerDownLeft, LuListPlus, LuLoaderCircle,
+    LuLock, LuLockOpen, LuPenLine, LuPencilRuler, LuPlus, LuShieldAlert, LuTrash2, LuZap,
 };
 use leptos::ev::{KeyboardEvent, SubmitEvent};
 use leptos::prelude::*;
@@ -64,7 +64,11 @@ pub fn Composer(
     approval: Signal<Option<ApprovalRequest>>,
     approval_busy: Signal<bool>,
     queued_messages: Signal<Vec<String>>,
-    #[prop(default = false)] steerable: bool,
+    /// The draft lives with the caller so a re-render of the surrounding page
+    /// can never discard what the user is typing.
+    value: Signal<String>,
+    on_value: Callback<String>,
+    steerable: Signal<bool>,
     #[prop(default = false)] hero: bool,
     #[prop(default = false)] autofocus: bool,
     on_brand: Callback<ProviderBrand>,
@@ -75,12 +79,14 @@ pub fn Composer(
     on_access_mode: Callback<AccessMode>,
     on_submit: Callback<String>,
     on_queue: Callback<String>,
+    on_steer: Callback<String>,
     on_steer_queued: Callback<()>,
+    on_drop_queued: Callback<()>,
     on_cancel: Callback<()>,
     on_approval: Callback<(bool, bool)>,
     on_error: Callback<String>,
 ) -> impl IntoView {
-    let content = RwSignal::new(String::new());
+    let content = value;
     let submitting = RwSignal::new(false);
     let responding_approval = RwSignal::new(false);
 
@@ -93,7 +99,15 @@ pub fn Composer(
             .or_else(|| options.first())
             .cloned()
     });
-    let can_steer = Signal::derive(move || running.get() && steerable && approval.get().is_none());
+    let can_steer =
+        Signal::derive(move || running.get() && steerable.get() && approval.get().is_none());
+    let next_queued = Signal::derive(move || {
+        queued_messages
+            .read()
+            .first()
+            .map(|message| message.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default()
+    });
     let provider_available = Signal::derive(move || {
         providers
             .read()
@@ -108,8 +122,18 @@ pub fn Composer(
             || !provider_available.get()
             || model.get().as_deref().is_none_or(str::is_empty)
     });
+    let modifier_label = if web_sys::window()
+        .and_then(|window| window.navigator().platform().ok())
+        .is_some_and(|platform| platform.to_ascii_lowercase().contains("mac"))
+    {
+        "⌘"
+    } else {
+        "Ctrl+"
+    };
     let placeholder = Signal::derive(move || {
-        if running.get() {
+        if running.get() && steerable.get() {
+            format!("Queue a follow-up · {modifier_label}↵ steers the running turn…")
+        } else if running.get() {
             "Queue a follow-up for this agent…".to_owned()
         } else if workspace.get().trim().is_empty() {
             "Choose a project, then tell Onyx what to build…".to_owned()
@@ -129,7 +153,20 @@ pub fn Composer(
         } else {
             on_submit.run(value);
         }
-        content.set(String::new());
+        on_value.run(String::new());
+        submitting.set(false);
+    });
+
+    // Steering skips the queue: the text reaches the turn that is already
+    // running instead of waiting for the next one.
+    let steer = Callback::new(move |_: ()| {
+        if send_disabled.get() || !can_steer.get() {
+            return;
+        }
+        let value = content.get().trim().to_owned();
+        submitting.set(true);
+        on_steer.run(value);
+        on_value.run(String::new());
         submitting.set(false);
     });
 
@@ -151,12 +188,12 @@ pub fn Composer(
                         })
                         .collect::<Vec<_>>()
                         .join(" ");
-                    content.update(|value| {
-                        if !value.trim().is_empty() {
-                            value.push('\n');
-                        }
-                        value.push_str(&references);
-                    });
+                    let mut next = content.get_untracked();
+                    if !next.trim().is_empty() {
+                        next.push('\n');
+                    }
+                    next.push_str(&references);
+                    on_value.run(next);
                 }
                 Ok(_) => {}
                 Err(message) => on_error.run(message),
@@ -176,38 +213,51 @@ pub fn Composer(
             data-provider=move || provider.get().as_str()
         >
             <Show when=move || !hero && !queued_messages.read().is_empty()>
-                <div class="zai-composer__queued" data-slot="queued-follow-up">
-                    <div class="zai-composer__queued-copy">
-                        <span>
-                            {move || {
-                                let messages = queued_messages.get();
-                                if messages.len() > 1 {
-                                    format!("Next message · {} queued", messages.len())
-                                } else {
-                                    "Next message".to_owned()
-                                }
-                            }}
-                        </span>
-                        <p>
-                            {move || {
-                                queued_messages
-                                    .read()
-                                    .first()
-                                    .cloned()
-                                    .unwrap_or_default()
-                            }}
-                        </p>
-                    </div>
+                <div
+                    class="zai-session-statusbar zai-queue-bar"
+                    data-slot="queued-follow-up"
+                    role="status"
+                >
+                    <span class="zai-queue-bar__label">
+                        <Icon icon=LuListPlus width="14px" height="14px" />
+                        {move || {
+                            let count = queued_messages.read().len();
+                            if count > 1 {
+                                format!("Queued · {count}")
+                            } else {
+                                "Queued".to_owned()
+                            }
+                        }}
+                    </span>
+                    <span class="zai-workspace-divider">"/"</span>
+                    <span
+                        class="zai-queue-bar__preview"
+                        title=move || next_queued.get()
+                    >
+                        {move || next_queued.get()}
+                    </span>
+                    <span class="zai-workspace-divider">"/"</span>
                     <Show when=move || can_steer.get()>
                         <button
                             type="button"
-                            class="zai-composer__queued-steer"
+                            class="zai-queue-bar__action"
                             on:click=move |_| on_steer_queued.run(())
-                            title="Send this message to the active turn now"
+                            title="Send this message into the running turn now"
                         >
-                            "Steer"
+                            <Icon icon=LuCornerDownLeft width="14px" height="14px" />
+                            "Steer now"
                         </button>
+                        <span class="zai-workspace-divider">"/"</span>
                     </Show>
+                    <button
+                        type="button"
+                        class="zai-queue-bar__action"
+                        on:click=move |_| on_drop_queued.run(())
+                        title="Remove the next queued message"
+                    >
+                        <Icon icon=LuTrash2 width="14px" height="14px" />
+                        "Remove"
+                    </button>
                 </div>
             </Show>
             <Show
@@ -232,7 +282,7 @@ pub fn Composer(
                                     spellcheck="true"
                                     autofocus=autofocus
                                     placeholder=move || placeholder.get()
-                                    on:input=move |event| content.set(event_target_value(&event))
+                                    on:input=move |event| on_value.run(event_target_value(&event))
                                     on:keydown=move |event: KeyboardEvent| {
                                         if event.key() == "Escape" && running.get() {
                                             event.prevent_default();
@@ -247,7 +297,11 @@ pub fn Composer(
                                             return;
                                         }
                                         event.prevent_default();
-                                        submit.run(());
+                                        if (event.meta_key() || event.ctrl_key()) && can_steer.get() {
+                                            steer.run(());
+                                        } else {
+                                            submit.run(());
+                                        }
                                     }
                                 />
                             </div>
@@ -485,6 +539,18 @@ pub fn Composer(
                                             </button>
                                         }
                                     >
+                                        <Show when=move || can_steer.get()>
+                                            <button
+                                                type="button"
+                                                class="zai-composer__submit zai-composer__steer"
+                                                disabled=move || send_disabled.get()
+                                                on:click=move |_| steer.run(())
+                                                aria-label="Steer the running turn"
+                                                title=format!("Steer the running turn ({modifier_label}↵)")
+                                            >
+                                                <Icon icon=LuCornerDownLeft width="14px" height="14px" />
+                                            </button>
+                                        </Show>
                                         <button
                                             type="submit"
                                             class="zai-composer__submit zai-composer__queue"

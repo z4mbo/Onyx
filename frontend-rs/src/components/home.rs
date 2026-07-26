@@ -66,14 +66,26 @@ pub fn HomeView(
     on_new: Callback<Option<String>>,
     on_select: Callback<String>,
     on_delete: Callback<String>,
+    on_delete_project: Callback<String>,
     on_choose_workspace: Callback<()>,
     on_settings: Callback<()>,
     on_voice: Callback<()>,
 ) -> impl IntoView {
     let (query, set_query) = signal(String::new());
+    // Removing a project also removes its sessions, so it asks first.
+    let (confirming, set_confirming) = signal(None::<String>);
     let projects = Memo::new(move |_| {
         projects_for(sessions.get(), draft_workspace.get(), query.get().as_str())
     });
+    // The filtered list hides sessions that do not match a search; removal has
+    // to speak for every session the project actually holds.
+    let session_count = move |path: &str| {
+        sessions
+            .read()
+            .iter()
+            .filter(|session| session.workspace == path)
+            .count()
+    };
     let has_projects = move || !projects.read().is_empty();
     let has_sessions = move || {
         projects
@@ -116,10 +128,30 @@ pub fn HomeView(
                                 children=move |project| {
                                     let path = project.path.clone();
                                     let action_path = project.path.clone();
+                                    let remove_path = project.path.clone();
+                                    let confirm_path = project.path.clone();
+                                    let pending_path = project.path.clone();
                                     let initial = project.name.chars().next().unwrap_or('P').to_ascii_uppercase();
                                     let action_label = format!("New session in {}", project.name);
+                                    let remove_label = format!("Remove {}", project.name);
+                                    let count = session_count(&project.path);
+                                    let confirm_title = if count == 0 {
+                                        format!("Remove {}", project.name)
+                                    } else {
+                                        format!(
+                                            "Remove {} and delete {count} session{}",
+                                            project.name,
+                                            if count == 1 { "" } else { "s" },
+                                        )
+                                    };
+                                    let pending = Signal::derive(move || {
+                                        confirming.read().as_deref() == Some(pending_path.as_str())
+                                    });
                                     view! {
-                                        <div class="zai-home-project-row">
+                                        <div
+                                            class="zai-home-project-row"
+                                            data-confirming=move || if pending.get() { "true" } else { "false" }
+                                        >
                                             <button
                                                 class="zai-home-project"
                                                 on:click=move |_| on_new.run(Some(path.clone()))
@@ -127,13 +159,67 @@ pub fn HomeView(
                                                 <span class="zai-project-avatar">{initial}</span>
                                                 <span>{project.name}</span>
                                             </button>
-                                            <button
-                                                class="zai-home-project-action"
-                                                aria-label=action_label
-                                                on:click=move |_| on_new.run(Some(action_path.clone()))
+                                            <Show
+                                                when=move || pending.get()
+                                                fallback={
+                                                    let action_path = action_path.clone();
+                                                    let remove_path = remove_path.clone();
+                                                    let action_label = action_label.clone();
+                                                    let remove_label = remove_label.clone();
+                                                    move || {
+                                                        let action_path = action_path.clone();
+                                                        let remove_path = remove_path.clone();
+                                                        view! {
+                                                            <button
+                                                                class="zai-home-project-action"
+                                                                aria-label=action_label.clone()
+                                                                title=action_label.clone()
+                                                                on:click=move |_| on_new.run(Some(action_path.clone()))
+                                                            >
+                                                                <Icon icon=LuSquarePen width="14px" height="14px" />
+                                                            </button>
+                                                            <button
+                                                                class="zai-home-project-action zai-home-project-remove"
+                                                                aria-label=remove_label.clone()
+                                                                title=remove_label.clone()
+                                                                on:click=move |event: MouseEvent| {
+                                                                    event.stop_propagation();
+                                                                    set_confirming.set(Some(remove_path.clone()));
+                                                                }
+                                                            >
+                                                                <Icon icon=LuTrash2 width="14px" height="14px" />
+                                                            </button>
+                                                        }
+                                                    }
+                                                }
                                             >
-                                                <Icon icon=LuSquarePen width="14px" height="14px" />
-                                            </button>
+                                                {
+                                                    let confirm_path = confirm_path.clone();
+                                                    view! {
+                                                        <button
+                                                            class="zai-home-project-confirm"
+                                                            title=confirm_title.clone()
+                                                            on:click=move |event: MouseEvent| {
+                                                                event.stop_propagation();
+                                                                set_confirming.set(None);
+                                                                on_delete_project.run(confirm_path.clone());
+                                                            }
+                                                        >
+                                                            "Remove"
+                                                        </button>
+                                                        <button
+                                                            class="zai-home-project-cancel"
+                                                            title="Keep this project"
+                                                            on:click=move |event: MouseEvent| {
+                                                                event.stop_propagation();
+                                                                set_confirming.set(None);
+                                                            }
+                                                        >
+                                                            "Cancel"
+                                                        </button>
+                                                    }
+                                                }
+                                            </Show>
                                         </div>
                                     }
                                 }
@@ -206,21 +292,85 @@ pub fn HomeView(
                                     key=|project| project.path.clone()
                                     children=move |project| {
                                         let project_path = project.path.clone();
+                                        let remove_path = project.path.clone();
+                                        let confirm_path = project.path.clone();
+                                        let pending_path = project.path.clone();
                                         let project_initial = project.name.chars().next().unwrap_or('P').to_ascii_uppercase();
                                         let count = project.sessions.len();
                                         let count_label = format!("{count} session{}", if count == 1 { "" } else { "s" });
                                         let action_label = format!("New session in {}", project.name);
+                                        let total = session_count(&project.path);
+                                        let remove_label = format!(
+                                            "Remove {} and delete {total} session{}",
+                                            project.name,
+                                            if total == 1 { "" } else { "s" },
+                                        );
+                                        let pending = Signal::derive(move || {
+                                            confirming.read().as_deref() == Some(pending_path.as_str())
+                                        });
                                         view! {
                                             <section class="onyx-project-sessions">
                                                 <header>
                                                     <span class="zai-project-avatar">{project_initial}</span>
                                                     <div><strong>{project.name}</strong><small>{count_label}</small></div>
-                                                    <button
-                                                        on:click=move |_| on_new.run(Some(project_path.clone()))
-                                                        aria-label=action_label
+                                                    <Show
+                                                        when=move || pending.get()
+                                                        fallback={
+                                                            let project_path = project_path.clone();
+                                                            let remove_path = remove_path.clone();
+                                                            let action_label = action_label.clone();
+                                                            let remove_label = remove_label.clone();
+                                                            move || {
+                                                                let project_path = project_path.clone();
+                                                                let remove_path = remove_path.clone();
+                                                                view! {
+                                                                    <button
+                                                                        on:click=move |_| on_new.run(Some(project_path.clone()))
+                                                                        aria-label=action_label.clone()
+                                                                        title=action_label.clone()
+                                                                    >
+                                                                        <Icon icon=LuSquarePen width="14px" height="14px" />
+                                                                    </button>
+                                                                    <button
+                                                                        class="zai-home-project-remove"
+                                                                        aria-label=remove_label.clone()
+                                                                        title=remove_label.clone()
+                                                                        on:click=move |event: MouseEvent| {
+                                                                            event.stop_propagation();
+                                                                            set_confirming.set(Some(remove_path.clone()));
+                                                                        }
+                                                                    >
+                                                                        <Icon icon=LuTrash2 width="14px" height="14px" />
+                                                                    </button>
+                                                                }
+                                                            }
+                                                        }
                                                     >
-                                                        <Icon icon=LuSquarePen width="14px" height="14px" />
-                                                    </button>
+                                                        {
+                                                            let confirm_path = confirm_path.clone();
+                                                            view! {
+                                                                <button
+                                                                    class="zai-home-project-confirm"
+                                                                    on:click=move |event: MouseEvent| {
+                                                                        event.stop_propagation();
+                                                                        set_confirming.set(None);
+                                                                        on_delete_project.run(confirm_path.clone());
+                                                                    }
+                                                                >
+                                                                    "Remove project"
+                                                                </button>
+                                                                <button
+                                                                    class="zai-home-project-cancel"
+                                                                    on:click=move |event: MouseEvent| {
+                                                                        event.stop_propagation();
+                                                                        set_confirming.set(None);
+                                                                    }
+                                                                >
+                                                                    "Cancel"
+                                                                </button>
+                                                            }
+                                                        }
+                                                    </Show>
                                                 </header>
                                                 <For
                                                     each=move || project.sessions.clone()

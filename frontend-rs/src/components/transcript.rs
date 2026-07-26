@@ -11,7 +11,7 @@ use leptos_icons::Icon;
 use wasm_bindgen::{JsCast, closure::Closure};
 
 use crate::{
-    markdown,
+    highlight, markdown,
     model::{AccountProfile, AgentSession, Message, MessageKind, MessageRole},
     storage,
 };
@@ -106,13 +106,20 @@ fn tool_is_running(message: &Message) -> bool {
 #[component]
 fn ToolMessage(message: Message, current: bool) -> impl IntoView {
     let title = tool_title(&message);
+    let hint = highlight::tool_language_hint(&title);
+    let (label, command) = highlight::split_tool_summary(&title);
+    let command = command.map(|command| {
+        highlight::highlight_html(&command, hint)
+            .unwrap_or_else(|| highlight::escape_html(&command))
+    });
     let detail = message
         .content
         .lines()
         .skip(1)
         .collect::<Vec<_>>()
         .join("\n");
-    let has_detail = detail.clone();
+    let has_detail = !detail.is_empty();
+    let highlighted = highlight::highlight_html(&detail, hint);
     view! {
         <details
             class="zai-tool-event"
@@ -122,7 +129,10 @@ fn ToolMessage(message: Message, current: bool) -> impl IntoView {
         >
             <summary>
                 <Icon icon=LuSquareTerminal width="14px" height="14px" />
-                <span>{title}</span>
+                <span>{label}</span>
+                {command.map(|command| view! {
+                    <span class="zai-tool-event__command" inner_html=command />
+                })}
                 <Show when=move || current>
                     <span class="zai-tool-event__running">"Running"</span>
                 </Show>
@@ -133,8 +143,11 @@ fn ToolMessage(message: Message, current: bool) -> impl IntoView {
                     attr:class="zai-tool-chevron"
                 />
             </summary>
-            <Show when=move || !has_detail.is_empty()>
-                <pre>{detail.clone()}</pre>
+            <Show when=move || has_detail>
+                {match highlighted.clone() {
+                    Some(html) => view! { <pre class="zai-code" inner_html=html /> }.into_any(),
+                    None => view! { <pre class="zai-code">{detail.clone()}</pre> }.into_any(),
+                }}
             </Show>
         </details>
     }
@@ -154,6 +167,12 @@ fn ToolGroup(messages: Vec<Message>, running: bool) -> impl IntoView {
     }
     let count = messages.len();
     let latest = messages.last().map(tool_title).unwrap_or_default();
+    let latest_hint = highlight::tool_language_hint(&latest);
+    let (latest_label, latest_command) = highlight::split_tool_summary(&latest);
+    let latest_command = latest_command.map(|command| {
+        highlight::highlight_html(&command, latest_hint)
+            .unwrap_or_else(|| highlight::escape_html(&command))
+    });
     let group_current = current_id.is_some();
     view! {
         <details
@@ -165,7 +184,12 @@ fn ToolGroup(messages: Vec<Message>, running: bool) -> impl IntoView {
             <summary>
                 <Icon icon=LuSquareTerminal width="14px" height="14px" />
                 <span class="zai-tool-group__count">{format!("{count} steps")}</span>
-                <span class="zai-tool-group__latest">{latest}</span>
+                <span class="zai-tool-group__latest">
+                    {latest_label}
+                    {latest_command.map(|command| view! {
+                        <span class="zai-tool-event__command" inner_html=command />
+                    })}
+                </span>
                 <Icon
                     icon=LuChevronRight
                     width="13px"

@@ -30,6 +30,16 @@ pub fn normalized_session_title(value: &str) -> Result<String, String> {
     Ok(title)
 }
 
+/// Creation accepts an unnamed session: the UI titles it from the first prompt,
+/// and a client that sends nothing at all still gets a usable name. Renaming
+/// stays strict, because clearing a name there is a mistake, not a default.
+pub fn session_title_or_default(value: &str) -> Result<String, String> {
+    if value.trim().is_empty() {
+        return Ok("New session".to_string());
+    }
+    normalized_session_title(value)
+}
+
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PersistedState {
@@ -299,7 +309,10 @@ impl SessionStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{PersistedState, SessionStore, deserialize_state, normalized_session_title};
+    use super::{
+        PersistedState, SessionStore, deserialize_state, normalized_session_title,
+        session_title_or_default,
+    };
     use crate::model::{
         AccessMode, AgentSession, InteractionMode, Message, MessageKind, MessageRole,
         ProviderBrand, ProviderId, ReasoningEffort, RenameSessionInput, SessionStatus, SpeedMode,
@@ -353,6 +366,16 @@ mod tests {
         );
         assert!(normalized_session_title("   ").is_err());
         assert!(normalized_session_title(&"x".repeat(81)).is_err());
+    }
+
+    #[test]
+    fn creating_a_session_without_a_name_falls_back_to_a_default() {
+        assert_eq!(session_title_or_default("   ").unwrap(), "New session");
+        assert_eq!(
+            session_title_or_default(" Fix  the parser ").unwrap(),
+            "Fix the parser",
+        );
+        assert!(session_title_or_default(&"x".repeat(81)).is_err());
     }
 
     #[test]

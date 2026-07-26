@@ -177,7 +177,7 @@ fn create_session(
     input: CreateSessionInput,
     state: State<'_, AppState>,
 ) -> Result<AgentSession, String> {
-    let title = storage::normalized_session_title(&input.title)?;
+    let title = storage::session_title_or_default(&input.title)?;
     let workspace = Path::new(input.workspace.trim())
         .canonicalize()
         .map_err(|error| format!("Workspace is unavailable: {error}"))?;
