@@ -593,13 +593,18 @@ struct ClaudeInitialize {
 
 pub(super) fn claude_effort(effort: ReasoningEffort) -> Option<&'static str> {
     match effort {
-        ReasoningEffort::Auto => Some("auto"),
         ReasoningEffort::Low => Some("low"),
         ReasoningEffort::Medium => Some("medium"),
         ReasoningEffort::High => Some("high"),
         ReasoningEffort::Xhigh => Some("xhigh"),
         ReasoningEffort::Max => Some("max"),
-        ReasoningEffort::None | ReasoningEffort::Minimal | ReasoningEffort::Ultra => None,
+        // Auto is Onyx's name for leaving the choice to Claude Code, which is
+        // why the CLI itself offers no such level. It omits `--effort` rather
+        // than sending a value Claude Code does not accept.
+        ReasoningEffort::Auto
+        | ReasoningEffort::None
+        | ReasoningEffort::Minimal
+        | ReasoningEffort::Ultra => None,
     }
 }
 
@@ -878,6 +883,8 @@ mod tests {
     #[test]
     fn persistent_transport_omits_non_claude_effort_values() {
         for reasoning in [
+            // Auto is Onyx's "let Claude Code decide", not a CLI effort level.
+            ReasoningEffort::Auto,
             ReasoningEffort::None,
             ReasoningEffort::Minimal,
             ReasoningEffort::Ultra,

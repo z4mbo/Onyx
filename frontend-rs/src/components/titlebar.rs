@@ -1,12 +1,11 @@
 use icondata::{
-    LuDownload, LuLogOut, LuPanelBottom, LuPanelRight, LuPencil, LuPlus, LuSettings, LuTrash2,
-    LuUserRound, LuX,
+    LuDownload, LuPanelBottom, LuPanelRight, LuPencil, LuPlus, LuSettings, LuTrash2, LuX,
 };
 use leptos::ev::{KeyboardEvent, MouseEvent, SubmitEvent};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
-use crate::model::{AccountProfile, UpdateInfo};
+use crate::model::UpdateInfo;
 
 use super::OnyxOrb;
 
@@ -43,10 +42,8 @@ pub fn Titlebar(
     on_cancel_rename: Callback<()>,
     on_home: Callback<()>,
     on_settings: Callback<()>,
-    on_sign_out: Callback<()>,
     update: Signal<Option<UpdateInfo>>,
     on_update: Callback<()>,
-    profile: Signal<Option<AccountProfile>>,
     show_layout_controls: Signal<bool>,
     bottom_panel_open: Signal<bool>,
     right_panel_open: Signal<bool>,
@@ -56,7 +53,6 @@ pub fn Titlebar(
     on_toggle_right_panel: Callback<()>,
 ) -> impl IntoView {
     let (new_menu_open, set_new_menu_open) = signal(false);
-    let (profile_menu_open, set_profile_menu_open) = signal(false);
     let (tab_menu, set_tab_menu) = signal(None::<(String, i32, i32, bool)>);
     let is_macos = web_sys::window()
         .map(|window| window.navigator().platform().unwrap_or_default())
@@ -428,71 +424,18 @@ pub fn Titlebar(
                     </button>
                 </Show>
 
-                <div class="zai-titlebar__profile-wrap">
-                    <button
-                        type="button"
-                        class="zai-titlebar__control zai-titlebar__profile"
-                        style="-webkit-app-region:no-drag;appearance:none;border:0;margin:0;padding:0"
-                        on:click=move |_| set_profile_menu_open.update(|open| *open = !*open)
-                        aria-label="Account and settings"
-                        aria-haspopup="menu"
-                        aria-expanded=move || profile_menu_open.get()
-                        title=move || profile
-                            .get()
-                            .map(|profile| profile.name)
-                            .unwrap_or_else(|| "Account and settings".to_owned())
-                    >
-                        {move || profile.get().and_then(|profile| profile.image_url).map(|url| view! {
-                            <img
-                                class="zai-titlebar__profile-avatar"
-                                src=url
-                                alt=""
-                                referrerpolicy="no-referrer"
-                            />
-                        }.into_any()).unwrap_or_else(|| view! {
-                            <span class="zai-titlebar__profile-avatar zai-titlebar__profile-avatar--fallback">
-                                <Icon icon=LuUserRound width="14px" height="14px" />
-                            </span>
-                        }.into_any())}
-                        <Show when=move || profile.get().is_some()>
-                            <span class="zai-titlebar__profile-name">
-                                {move || profile.get().map(|profile| profile.name).unwrap_or_default()}
-                            </span>
-                        </Show>
-                    </button>
-                    <Show when=move || profile_menu_open.get()>
-                        <div class="zai-titlebar__profile-menu" role="menu">
-                            <Show when=move || profile.get().is_some()>
-                                <div class="zai-titlebar__profile-summary">
-                                    <strong>{move || profile.get().map(|profile| profile.name).unwrap_or_default()}</strong>
-                                    <span>{move || profile.get().map(|profile| profile.email).unwrap_or_default()}</span>
-                                </div>
-                            </Show>
-                            <button
-                                role="menuitem"
-                                on:click=move |_| {
-                                    set_profile_menu_open.set(false);
-                                    on_settings.run(());
-                                }
-                            >
-                                <Icon icon=LuSettings width="14px" height="14px" />
-                                <span>"Settings"</span>
-                            </button>
-                            <Show when=move || profile.get().is_some()>
-                                <button
-                                    role="menuitem"
-                                    on:click=move |_| {
-                                        set_profile_menu_open.set(false);
-                                        on_sign_out.run(());
-                                    }
-                                >
-                                    <Icon icon=LuLogOut width="14px" height="14px" />
-                                    <span>"Sign out"</span>
-                                </button>
-                            </Show>
-                        </div>
-                    </Show>
-                </div>
+                <button
+                    type="button"
+                    class="zai-titlebar__control zai-titlebar__settings"
+                    style="-webkit-app-region:no-drag;appearance:none;border:0;margin:0;padding:0;\
+                           display:inline-flex;align-items:center;justify-content:center;width:28px;\
+                           height:28px;min-width:28px;border-radius:6px;background:transparent"
+                    on:click=move |_| on_settings.run(())
+                    aria-label="Settings"
+                    title="Settings (⌘,)"
+                >
+                    <Icon icon=LuSettings width="15px" height="15px" />
+                </button>
             </div>
         </header>
     }

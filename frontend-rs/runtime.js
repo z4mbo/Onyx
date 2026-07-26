@@ -10,14 +10,6 @@ const closedTerminals = /* @__PURE__ */ new Set();
 let nextTerminalHandle = 1;
 let terminalRuntimeLoad = null;
 const MAX_TERMINAL_REPLAY = 1048576;
-const convexUrl = import.meta.env.VITE_CONVEX_URL?.trim() ?? "";
-let convex = null;
-let convexApi = null;
-let convexLoad = null;
-function nativeRuntimeAvailable() {
-  return typeof window.__TAURI_INTERNALS__?.invoke === "function"
-    || typeof window.__TAURI__?.core?.invoke === "function";
-}
 function terminalTheme(element) {
   const styles = getComputedStyle(element);
   return {
@@ -322,56 +314,6 @@ function toBase64(blob) {
   });
 }
 const speechCapture = new SpeechCapture();
-function cloudConfigured() {
-  return Boolean(convexUrl && nativeRuntimeAvailable());
-}
-async function loadConvex() {
-  if (!convexUrl) throw new Error("Cloud sync is not configured");
-  if (convex) return convex;
-  convexLoad ??= Promise.all([
-    import("convex/browser"),
-    import("convex/server")
-  ]).then(([browser, server]) => {
-    convexApi = server.anyApi;
-    convex = new browser.ConvexClient(convexUrl);
-    return convex;
-  }).catch((error) => {
-    convex = null;
-    convexApi = null;
-    convexLoad = null;
-    throw error;
-  });
-  return await convexLoad;
-}
-function startCloudAuth(onAuthenticated) {
-  if (!convexUrl || !nativeRuntimeAvailable()) return false;
-  const start = () => {
-    void loadConvex()
-      .then((client) => {
-        client.setAuth(
-          async ({ forceRefreshToken }) => await invoke("clerk_account_token", {
-            forceRefresh: forceRefreshToken
-          }),
-          onAuthenticated
-        );
-      })
-      .catch(() => onAuthenticated(false));
-  };
-  if (typeof window.requestIdleCallback === "function") {
-    window.requestIdleCallback(start, { timeout: 1500 });
-  } else {
-    window.setTimeout(start, 500);
-  }
-  return true;
-}
-async function pushCloud(payload) {
-  const client = await loadConvex();
-  await client.mutation(convexApi.sync.upsertSnapshot, { payload });
-}
-async function pullCloud() {
-  const client = await loadConvex();
-  return await client.query(convexApi.sync.latestSnapshot, {});
-}
 const runtime = {
   invoke,
   listen,
@@ -393,10 +335,6 @@ const runtime = {
   playAudio: async (source) => {
     if (source) await new Audio(source).play();
   },
-  copyText: (text) => navigator.clipboard.writeText(text),
-  cloudConfigured,
-  startCloudAuth,
-  pushCloud,
-  pullCloud
+  copyText: (text) => navigator.clipboard.writeText(text)
 };
 Object.assign(window, { __ONYX_RUNTIME__: runtime });

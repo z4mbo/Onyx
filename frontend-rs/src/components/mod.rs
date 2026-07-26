@@ -1,4 +1,3 @@
-mod account;
 mod composer;
 mod home;
 mod internal_browser;
@@ -13,7 +12,6 @@ mod user_input;
 mod voice_history;
 mod workspace;
 
-pub use account::AccountGate;
 pub use composer::Composer;
 pub use home::HomeView;
 pub use internal_browser::InternalBrowser;

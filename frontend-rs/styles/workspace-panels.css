@@ -134,7 +134,9 @@
 .zai-workspace-action-menu > button svg { width: 14px; height: 14px; color: var(--zai-workspace-muted); }
 
 .zai-right-workspace-panel {
+  position: relative;
   display: flex;
+  /* Fallback only: the component sets an inline width from session state. */
   width: var(--zai-workspace-panel-width);
   min-width: 300px;
   max-width: min(78vw, 920px);
@@ -325,10 +327,19 @@
   background: var(--zai-workspace-panel-bg);
   color: var(--zai-workspace-text);
 }
-.zai-bottom-terminal__resize-handle { position: absolute; z-index: 5; top: -3px; right: 0; left: 0; height: 7px; cursor: row-resize; outline: 0; }
+.zai-bottom-terminal__resize-handle { position: absolute; z-index: 5; top: -3px; right: 0; left: 0; height: 7px; cursor: row-resize; outline: 0; touch-action: none; }
 .zai-bottom-terminal__resize-handle:focus-visible::after,
 .zai-bottom-terminal__resize-handle:hover::after { position: absolute; top: 3px; right: 0; left: 0; height: 1px; background: var(--v2-border-border-focus, #6f8fff); content: ""; }
-html[data-workspace-panel-resizing="true"] { cursor: row-resize !important; user-select: none !important; }
+
+/* Mirror of the drawer handle, on the panel's leading edge. */
+.zai-right-workspace-panel__resize-handle { position: absolute; z-index: 5; top: 0; bottom: 0; left: -3px; width: 7px; cursor: col-resize; outline: 0; touch-action: none; }
+.zai-right-workspace-panel__resize-handle:focus-visible::after,
+.zai-right-workspace-panel__resize-handle:hover::after { position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: var(--v2-border-border-focus, #6f8fff); content: ""; }
+
+/* The cursor has to survive the pointer leaving the 7px handle mid-drag. */
+html[data-workspace-panel-resizing="true"] { user-select: none !important; }
+html[data-workspace-panel-resizing="true"]:has(.zai-bottom-terminal__resize-handle:active) { cursor: row-resize !important; }
+html[data-workspace-panel-resizing="true"]:has(.zai-right-workspace-panel__resize-handle:active) { cursor: col-resize !important; }
 
 .zai-bottom-terminal__header {
   display: flex;

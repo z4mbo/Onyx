@@ -1,6 +1,6 @@
 use icondata::{
     LuCheck, LuChevronDown, LuCpu, LuExternalLink, LuKeyRound, LuKeyboard, LuLoaderCircle, LuMic,
-    LuRefreshCw, LuSlidersHorizontal, LuSparkles, LuUserRound, LuX,
+    LuRefreshCw, LuSlidersHorizontal, LuSparkles, LuX,
 };
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -11,9 +11,9 @@ use crate::{
     bridge,
     catalog::ProviderCatalogs,
     model::{
-        AccountProfile, AgentSession, ConnectionStatus, NativeVoicePermissions, OpenRouterModel,
-        OpenRouterVoiceCatalog, OpenRouterVoiceModel, OverlayPosition, ProviderBrand, ProviderId,
-        ProviderStatus, TerminalSession, UpdateProgress, VoiceSettings, normalized_speech_voice,
+        ConnectionStatus, NativeVoicePermissions, OpenRouterModel, OpenRouterVoiceCatalog,
+        OpenRouterVoiceModel, OverlayPosition, ProviderBrand, ProviderId, ProviderStatus,
+        TerminalSession, UpdateProgress, VoiceSettings, normalized_speech_voice,
         resolved_openrouter_speech_selection, supported_speech_voices,
     },
     storage, theme,
@@ -59,7 +59,6 @@ enum SettingsPage {
     Voice,
     Providers,
     Models,
-    Account,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -76,7 +75,6 @@ fn page_label(page: SettingsPage) -> &'static str {
         SettingsPage::Voice => "Voice",
         SettingsPage::Providers => "Runtimes",
         SettingsPage::Models => "Models",
-        SettingsPage::Account => "Account & cloud",
     }
 }
 
@@ -297,18 +295,13 @@ fn NavButton(
 #[component]
 pub fn SettingsDialog(
     open: Signal<bool>,
-    sessions: Signal<Vec<AgentSession>>,
     providers: RwSignal<Vec<ProviderStatus>>,
     catalogs: Signal<ProviderCatalogs>,
     openrouter: RwSignal<ConnectionStatus>,
     openai: RwSignal<ConnectionStatus>,
     openrouter_models: RwSignal<Vec<OpenRouterModel>>,
     color_scheme: RwSignal<ColorScheme>,
-    profile: Signal<Option<AccountProfile>>,
-    cloud_configured: Signal<bool>,
-    cloud_authenticated: Signal<bool>,
     on_close: Callback<()>,
-    on_sign_out: Callback<()>,
 ) -> impl IntoView {
     let page = RwSignal::new(SettingsPage::General);
     let router_key = RwSignal::new(String::new());
@@ -579,34 +572,6 @@ pub fn SettingsDialog(
             }
         });
     });
-    let sync_now = Callback::new(move |_: ()| {
-        saving.set(true);
-        message.set(None);
-        spawn_local(async move {
-            let snapshot = serde_json::json!({
-                "version": 1,
-                "exportedAt": storage::timestamp(),
-                "sessions": sessions.get(),
-                "voiceHistory": storage::read_json::<serde_json::Value>(
-                    storage::VOICE_HISTORY_KEY,
-                    serde_json::json!([]),
-                ),
-                "preferences": {
-                    "colorScheme": storage::get(storage::COLOR_SCHEME_KEY),
-                    "desktop": storage::read_json::<serde_json::Value>(
-                        storage::DESKTOP_PREFERENCES_KEY,
-                        serde_json::Value::Null,
-                    ),
-                },
-            });
-            let result = bridge::push_cloud(&snapshot.to_string()).await;
-            message.set(Some(match result {
-                Ok(()) => "Sessions, voice history, and preferences synced.".to_owned(),
-                Err(cause) => cause,
-            }));
-            saving.set(false);
-        });
-    });
     let open_provider_terminal = Callback::new(move |(provider, action): (ProviderId, String)| {
         saving.set(true);
         message.set(None);
@@ -719,7 +684,6 @@ pub fn SettingsDialog(
                             <nav>
                                 <NavButton target=SettingsPage::Providers page=page icon=LuCpu />
                                 <NavButton target=SettingsPage::Models page=page icon=LuSparkles />
-                                <NavButton target=SettingsPage::Account page=page icon=LuUserRound />
                             </nav>
                         </div>
                         <div class="zai-settings-version">
@@ -1221,29 +1185,6 @@ pub fn SettingsDialog(
                             </div>
                         </Show>
 
-                        <Show when=move || page.get() == SettingsPage::Account>
-                            <div class="zai-settings-page">
-                                <h1 id="zai-settings-page-title">"Account & cloud"</h1>
-                                <p class="zai-settings-intro">"Onyx is local-first. Signing in enables optional sync through your Clerk and Convex deployment."</p>
-                                <section class="zai-settings-card">
-                                    <Show when=move || profile.get().is_some()>
-                                        <div class="zai-setting-row">
-                                            <div><strong>{move || profile.get().map(|value| value.name).unwrap_or_default()}</strong><span>{move || profile.get().map(|value| value.email).unwrap_or_default()}</span></div>
-                                            <span class="zai-settings-ready"><Icon icon=LuCheck width="13px" height="13px" />"Signed in"</span>
-                                        </div>
-                                        <div class="zai-setting-row">
-                                            <div><strong>"Cloud sync"</strong><span>{move || if cloud_configured.get() { "Convex is configured for this build" } else { "Add VITE_CONVEX_URL to enable sync" }}</span></div>
-                                            <button class="zai-neutral-button" disabled=move || !cloud_authenticated.get() || saving.get() on:click=move |_| sync_now.run(())>"Sync now"</button>
-                                        </div>
-                                        <div class="zai-setting-row">
-                                            <div><strong>"Account session"</strong><span>"Sign out of Onyx on this device"</span></div>
-                                            <button class="zai-danger-link" on:click=move |_| on_sign_out.run(())>"Sign out"</button>
-                                        </div>
-                                    </Show>
-                                </section>
-                                <Show when=move || message.get().is_some()><p class="zai-settings-message">{move || message.get().unwrap_or_default()}</p></Show>
-                            </div>
-                        </Show>
                     </div>
                 </section>
                 <Show when=move || provider_terminal.get().is_some()>

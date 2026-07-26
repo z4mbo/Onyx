@@ -7,7 +7,7 @@ windows. Tauri remains the native shell and owns provider processes,
 credentials, persistence, approvals, terminals, and updates.
 
 The small `frontend-rs/runtime.js` module is browser API glue for Tauri plugins,
-xterm, audio capture, and Convex. It does not own application screens or
+xterm, and audio capture. It does not own application screens or
 session state. The CSS lives beside the Rust frontend under `frontend-rs/styles/`.
 
 ## Commands

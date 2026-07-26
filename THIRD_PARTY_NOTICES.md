@@ -31,6 +31,6 @@ The general chat interaction is informed by the publicly accessible T3 Chat prod
 - xterm.js and addon-fit: MIT, [licenses/xterm-MIT.txt](licenses/xterm-MIT.txt)
 - portable-pty: MIT, [licenses/portable-pty-MIT.txt](licenses/portable-pty-MIT.txt)
 
-Claude/Claude Code, Codex/OpenAI, Gemini, Kimi/Moonshot AI, xAI, OpenRouter, Clerk, and Convex are names of compatible third-party tools and services. Their licenses, subscriptions, terms, privacy policies, and charges apply independently.
+Claude/Claude Code, Codex/OpenAI, Gemini, Kimi/Moonshot AI, xAI, and OpenRouter are names of compatible third-party tools and services. Their licenses, subscriptions, terms, privacy policies, and charges apply independently.
 
 The root [LICENSE](LICENSE), this notice, and the complete `licenses/` directory are embedded as Tauri bundle resources.

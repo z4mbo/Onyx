@@ -12,16 +12,16 @@ use crate::{
     catalog::{fallback_catalogs, models_for_brand, runtime_for_brand, selected_or_default},
     commands::CommandAction,
     components::{
-        AccountGate, AgentOverlay, BottomTerminalPanel, ColorScheme, Composer, GitCommitDialog,
-        HomeView, Hud, RightWorkspacePanel, SessionWorkspaceUi, SettingsDialog, Titlebar,
-        TitlebarSession, TitlebarTab, Transcript, UpdateDialog, UserInputCard, VoiceHistoryView,
-        WorkspaceSurface, WorkspaceSurfaceKind, WorkspaceTerminal, WorkspaceTopbarActions,
+        AgentOverlay, BottomTerminalPanel, ColorScheme, Composer, GitCommitDialog, HomeView, Hud,
+        RightWorkspacePanel, SessionWorkspaceUi, SettingsDialog, Titlebar, TitlebarSession,
+        TitlebarTab, Transcript, UpdateDialog, UserInputCard, VoiceHistoryView, WorkspaceSurface,
+        WorkspaceSurfaceKind, WorkspaceTerminal, WorkspaceTopbarActions,
     },
     model::{
-        AccessMode, AccountEvent, AccountProfile, AgentSession, ApprovalRequest, ConnectionStatus,
-        CreateSessionInput, EditorTarget, InteractionMode, NativeVoicePermissions, OpenRouterModel,
-        ProviderBrand, ProviderId, ProviderUsage, ProviderUserInputRequest, ReasoningEffort,
-        RepoSummary, SessionEvent, SpeedMode, TerminalEvent, UpdateInfo, UpdateProgress,
+        AccessMode, AgentSession, ApprovalRequest, ConnectionStatus, CreateSessionInput,
+        EditorTarget, InteractionMode, NativeVoicePermissions, OpenRouterModel, ProviderBrand,
+        ProviderId, ProviderUsage, ProviderUserInputRequest, ReasoningEffort, RepoSummary,
+        SessionEvent, SpeedMode, TerminalEvent, UpdateInfo, UpdateProgress,
         UpdateSessionOptionsInput, apply_session_event, default_session_title, demo_providers,
         replace_session, workspace_name,
     },
@@ -253,52 +253,6 @@ fn selected_wsl_distribution() -> Option<String> {
     }
 }
 
-fn apply_cloud_snapshot(raw: &str) {
-    let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return;
-    };
-    if let Some(history) = snapshot
-        .get("voiceHistory")
-        .filter(|value| value.is_array())
-    {
-        storage::write_json(storage::VOICE_HISTORY_KEY, history);
-    }
-    if let Some(preferences) = snapshot.get("preferences") {
-        if let Some(scheme) = preferences
-            .get("colorScheme")
-            .and_then(|value| value.as_str())
-        {
-            storage::set(storage::COLOR_SCHEME_KEY, scheme);
-        }
-        if let Some(desktop) = preferences.get("desktop").filter(|value| !value.is_null()) {
-            storage::write_json(storage::DESKTOP_PREFERENCES_KEY, desktop);
-        }
-    }
-    storage::dispatch("onyx:cloud-hydrated");
-    storage::dispatch("onyx:voice-history");
-    theme::apply_document_theme();
-}
-
-fn cloud_snapshot(sessions: &[AgentSession]) -> String {
-    serde_json::json!({
-        "version": 1,
-        "exportedAt": storage::timestamp(),
-        "sessions": sessions,
-        "voiceHistory": storage::read_json::<serde_json::Value>(
-            storage::VOICE_HISTORY_KEY,
-            serde_json::json!([]),
-        ),
-        "preferences": {
-            "colorScheme": storage::get(storage::COLOR_SCHEME_KEY),
-            "desktop": storage::read_json::<serde_json::Value>(
-                storage::DESKTOP_PREFERENCES_KEY,
-                serde_json::Value::Null,
-            ),
-        },
-    })
-    .to_string()
-}
-
 #[component]
 pub fn App() -> impl IntoView {
     if let Some(window_name) = theme::window_name() {
@@ -370,11 +324,6 @@ pub fn App() -> impl IntoView {
         RwSignal::new(storage::get(storage::PREFERRED_EDITOR_KEY).unwrap_or_default());
     let git_busy = RwSignal::new(None::<String>);
     let commit_open = RwSignal::new(false);
-    let account_profile = RwSignal::new(None::<AccountProfile>);
-    let account_loading = RwSignal::new(true);
-    let account_error = RwSignal::new(None::<String>);
-    let cloud_configured = RwSignal::new(false);
-    let cloud_authenticated = RwSignal::new(false);
 
     let current = Signal::derive(move || {
         let id = current_id.get()?;
@@ -492,23 +441,6 @@ pub fn App() -> impl IntoView {
                         show_error.run(cause);
                     }
                 }
-            }
-        });
-    });
-
-    Effect::new(move |_| {
-        let version = sessions
-            .read()
-            .iter()
-            .map(|session| format!("{}:{}:{:?}", session.id, session.updated_at, session.status))
-            .collect::<String>();
-        if version.is_empty() || !cloud_authenticated.get() {
-            return;
-        }
-        spawn_local(async move {
-            TimeoutFuture::new(1_500).await;
-            if cloud_authenticated.get() {
-                let _ = bridge::push_cloud(&cloud_snapshot(&sessions.get())).await;
             }
         });
     });
@@ -1335,15 +1267,6 @@ pub fn App() -> impl IntoView {
         });
     });
 
-    let sign_out = Callback::new(move |_: ()| {
-        spawn_local(async move {
-            match bridge::clerk_sign_out().await {
-                Ok(()) => account_profile.set(None),
-                Err(cause) => show_error.run(cause),
-            }
-        });
-    });
-
     let tabs = Signal::derive(move || {
         let mut result = Vec::new();
         if draft_open.get() {
@@ -1593,22 +1516,6 @@ pub fn App() -> impl IntoView {
                 }
             });
             spawn_local(async move {
-                match bridge::listen::<AccountEvent, _>("onyx://account-changed", move |event| {
-                    if let Some(error) = event.error {
-                        account_error.set(Some(error));
-                    } else {
-                        account_profile.set(event.profile);
-                        account_error.set(None);
-                    }
-                    account_loading.set(false);
-                })
-                .await
-                {
-                    Ok(listener) => listener.forget(),
-                    Err(cause) => account_error.set(Some(cause)),
-                }
-            });
-            spawn_local(async move {
                 if let Ok(listener) = bridge::listen::<NativeVoicePermissions, _>(
                     "onyx://native-permissions",
                     move |permissions| {
@@ -1626,40 +1533,6 @@ pub fn App() -> impl IntoView {
                 }
             });
         }
-    });
-
-    Effect::new(move |_| {
-        spawn_local(async move {
-            if cfg!(debug_assertions) {
-                account_loading.set(false);
-            } else {
-                match bridge::account_profile().await {
-                    Ok(profile) => {
-                        account_profile.set(profile);
-                        account_loading.set(false);
-                    }
-                    Err(cause) => {
-                        account_error.set(Some(cause));
-                        account_loading.set(false);
-                    }
-                }
-            }
-            cloud_configured.set(bridge::cloud_configured().await.unwrap_or(false));
-            match bridge::start_cloud_auth(move |authenticated| {
-                cloud_authenticated.set(authenticated);
-                if authenticated {
-                    spawn_local(async move {
-                        if let Ok(Some(raw)) = bridge::pull_cloud().await {
-                            apply_cloud_snapshot(&raw);
-                        }
-                    });
-                }
-            }) {
-                Ok(Some(handle)) => std::mem::forget(handle),
-                Ok(None) => {}
-                Err(cause) => account_error.set(Some(cause)),
-            }
-        });
     });
 
     Effect::new(move |_| {
@@ -1872,8 +1745,10 @@ pub fn App() -> impl IntoView {
             let rename_session_id = session_id.clone();
             let activate_surface_session_id = session_id.clone();
             let close_surface_panel_session_id = session_id.clone();
+            let resize_surface_session_id = session_id.clone();
             let activate_terminal_session_id = session_id.clone();
             let close_terminal_panel_session_id = session_id.clone();
+            let resize_terminal_session_id = session_id.clone();
             let workspace = session.workspace.clone();
             let project = workspace_name(&workspace);
             let running = Signal::derive(move || {
@@ -1964,7 +1839,6 @@ pub fn App() -> impl IntoView {
 
                                     <Transcript
                                         session=Signal::derive(move || current.get())
-                                        profile=Signal::derive(move || account_profile.get())
                                     />
                                     <For
                                         each=move || active_user_input.get().into_iter()
@@ -2091,6 +1965,7 @@ pub fn App() -> impl IntoView {
                                     on_close_surface=close_surface
                                     on_add_surface=add_surface
                                     on_close_panel=Callback::new(move |_| update_workspace_ui(workspace_states, &close_surface_panel_session_id, |ui| ui.right_panel_open = false))
+                                    on_resize=Callback::new(move |width: u32| update_workspace_ui(workspace_states, &resize_surface_session_id, |ui| ui.panel_width = width))
                                     on_error=show_error
                                 />
                             </div>
@@ -2102,6 +1977,7 @@ pub fn App() -> impl IntoView {
                                 on_new_terminal=new_terminal
                                 on_clear=clear_terminal
                                 on_close_panel=Callback::new(move |_| update_workspace_ui(workspace_states, &close_terminal_panel_session_id, |ui| ui.bottom_panel_open = false))
+                                on_resize=Callback::new(move |height: u32| update_workspace_ui(workspace_states, &resize_terminal_session_id, |ui| ui.terminal_height = height))
                             />
                         </div>
                     </div>
@@ -2130,10 +2006,8 @@ pub fn App() -> impl IntoView {
                 on_cancel_rename=Callback::new(move |_| renaming_session.set(None))
                 on_home=Callback::new(move |_| page.set(Page::Home))
                 on_settings=Callback::new(move |_| settings_open.set(true))
-                on_sign_out=sign_out
                 update=Signal::derive(move || available_update.get())
                 on_update=Callback::new(move |_| update_dialog_open.set(true))
-                profile=Signal::derive(move || account_profile.get())
                 show_layout_controls=Signal::derive(move || false)
                 bottom_panel_open=Signal::derive(move || page.get() == Page::Session && active_ui.get().bottom_panel_open)
                 right_panel_open=Signal::derive(move || page.get() == Page::Session && active_ui.get().right_panel_open)
@@ -2147,18 +2021,13 @@ pub fn App() -> impl IntoView {
 
             <SettingsDialog
                 open=Signal::derive(move || settings_open.get())
-                sessions=Signal::derive(move || sessions.get())
                 providers=providers
                 catalogs=Signal::derive(move || catalogs.get())
                 openrouter=openrouter
                 openai=openai
                 openrouter_models=openrouter_models
                 color_scheme=color_scheme
-                profile=Signal::derive(move || account_profile.get())
-                cloud_configured=Signal::derive(move || cloud_configured.get())
-                cloud_authenticated=Signal::derive(move || cloud_authenticated.get())
                 on_close=Callback::new(move |_| settings_open.set(false))
-                on_sign_out=sign_out
             />
             <GitCommitDialog
                 open=Signal::derive(move || commit_open.get())
@@ -2193,16 +2062,7 @@ pub fn App() -> impl IntoView {
         }
     };
 
-    view! {
-        <AccountGate
-            profile=Signal::derive(move || account_profile.get())
-            loading=Signal::derive(move || account_loading.get())
-            error=Signal::derive(move || account_error.get())
-        >
-            {shell}
-        </AccountGate>
-    }
-    .into_any()
+    shell().into_any()
 }
 
 #[component]

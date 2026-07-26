@@ -806,28 +806,6 @@ pub struct ChatReply {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct AccountProfile {
-    pub id: String,
-    pub name: String,
-    pub email: String,
-    pub image_url: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OAuthStart {
-    pub authorize_url: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountEvent {
-    pub profile: Option<AccountProfile>,
-    pub error: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct CapturedAudio {
     pub audio_base64: String,
     pub format: String,

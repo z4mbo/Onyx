@@ -17,22 +17,25 @@
 
 Onyx gives Claude Code, Codex, Gemini CLI, and Kimi Code a consistent graphical workspace without replacing their official runtimes. Provider credentials, configuration, model availability, approvals, and session continuity remain owned by each installed CLI; Onyx turns their events into one native interface.
 
-> Onyx is independent and is not affiliated with or endorsed by OpenCode, T3 Tools, Anthropic, OpenAI, Google, Moonshot AI, xAI, OpenRouter, Clerk, or Convex.
+> Onyx is independent and is not affiliated with or endorsed by OpenCode, T3 Tools, Anthropic, OpenAI, Google, Moonshot AI, xAI, or OpenRouter.
+
+<p align="center">
+  <img src="docs/screenshots/onyx-session.png" width="900" alt="An Onyx coding session: transcript, composer, and workspace panels">
+</p>
 
 ## Onyx 0.3.3
 
 | Area | What changed |
 | --- | --- |
-| Home | Onyx opens on the real Home screen without creating a draft tab. |
-| Sessions | Name the draft directly in its tab; right-click any session tab to rename or permanently delete it. Closing a tab never deletes history. |
-| CLI fidelity | Codex models come from `model/list`, Claude models/effort/Fast from `initialize`, and Kimi uses its official ACP IDE transport for model, thinking, mode, permissions, streaming, resume, and slash commands. **CLI** still opens the real provider TUI inside Onyx. |
-| Conversation | Sent prompts remain visible with profile and timestamp. Follow-ups queue above the composer and can steer Codex/Claude through their native live-input protocols. |
-| Navigation | Every user prompt has a compact rail marker; hover to animate and preview it, then click to jump back to it. |
-| Workspace | Terminal, Files, Diff, Browser, Git actions, and the active agent are available without leaving the session. |
-| Provider chats | The standalone Chat page is gone; ChatGPT, Claude, Gemini, and Grok remain inside each session workspace as internal Onyx child webviews. |
-| Voice | Dictation, agent, speech, and voice choices are dropdowns; retired TTS defaults migrate to a current model and errors retain their actionable cause. |
-| Updates | Onyx updates retain signed progress and release notes; installed coding agents also expose their official **Update** command in an internal terminal. |
-| Performance | The unused standalone chat/image/video stack was removed; xterm/FitAddon and optional Convex code remain lazy-loaded. |
+| Home | Opens on the real Home screen. Projects can be removed along with the sessions they hold. |
+| Sessions | Unnamed sessions take their title from the first prompt, the way the CLIs do. Right-click a tab to rename or delete it; closing a tab never deletes history. |
+| Commands | A slash palette replaces the CLI launcher. `/model`, `/effort`, `/usage`, `/rename` and the rest run Onyx's own action; commands that are prompt-level in a provider's protocol are forwarded as written. |
+| Conversation | Finished tool steps collapse into one row while the running step stays in view. Shell commands and fenced code are syntax highlighted. |
+| Steering | Sending during a turn queues the message in a bar above the composer; ⌘↵ steers the running turn on Codex and Claude. |
+| Navigation | Every prompt gets a rail marker that magnifies under the pointer; click to jump back. |
+| Workspace | Terminal, Files, Diff, Browser and Git actions live in panels you can drag to resize. |
+| Voice | Dictation, agent, speech, and voice choices are dropdowns; retired TTS defaults migrate to a current model. |
+| Privacy | No accounts, no sign-in, no telemetry. |
 
 ## How it is built
 
@@ -41,10 +44,9 @@ Onyx gives Claude Code, Codex, Gemini CLI, and Kimi Code a consistent graphical 
 | Interface and application state | Rust, Leptos, and WebAssembly in `frontend-rs/src/` |
 | Desktop shell and backend | Rust and Tauri 2 in `src-tauri/src/` |
 | CLI providers and terminal lifecycle | Rust processes, normalized events, bounded output, and process-group cleanup |
-| Webview integration | A small `frontend-rs/runtime.js` bridge for Tauri browser APIs, audio capture, lazy-loaded xterm, and optional Convex |
-| Optional cloud sync | Clerk authentication plus a Convex backend |
+| Webview integration | A small `frontend-rs/runtime.js` bridge for Tauri browser APIs, audio capture, and lazy-loaded xterm |
 
-There are **zero tracked TypeScript files**. Onyx is not literally JavaScript-free: WebAssembly boot code, a narrow WebView runtime bridge, xterm, and the optional Convex backend use the JavaScript ecosystem where the platform requires it. Application screens, session state, provider orchestration, persistence, permissions, and update logic remain in Rust.
+There are **zero tracked TypeScript files**. Onyx is not literally JavaScript-free: WebAssembly boot code, a narrow WebView runtime bridge, and xterm use the JavaScript ecosystem where the platform requires it. Application screens, session state, provider orchestration, persistence, permissions, and update logic remain in Rust.
 
 ## Providers
 
@@ -114,16 +116,14 @@ cargo clippy --manifest-path frontend-rs/Cargo.toml --target wasm32-unknown-unkn
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-## Accounts and optional Convex sync
+## Data and accounts
 
-Packaged releases currently use Clerk for Onyx account sign-in. Session, voice, and preference data is stored locally by default; Convex sync activates only when `VITE_CONVEX_URL` and the matching deployment authentication are configured.
+Onyx has no account system and no telemetry. There is nothing to sign in to: it
+opens straight into the workspace.
 
-```sh
-cp .env.example .env.local
-npx convex dev
-```
-
-Set `CLERK_JWT_ISSUER_DOMAIN` in Convex to the Clerk issuer documented in `.env.example`. Sync requests are authenticated and scoped to the Clerk subject. Convex is retained as the optional hosted backend; it is not required by the Rust CLI runtime, terminal, or local persistence layers.
+Everything lives on your machine. Sessions, voice history, and preferences are
+written under the Tauri app data directory; provider logins stay with the
+official CLIs, and OpenRouter/OpenAI keys go to the OS credential manager.
 
 ## macOS releases
 
@@ -174,7 +174,7 @@ GitHub Actions runs checks and creates Windows/Linux desktop bundles. Tagged rel
 
 ## Updates and current distribution status
 
-Onyx uses Tauri's signed updater. When a newer version is reachable, an **Update** button appears beside the profile, and installation shows progress plus release notes before restart. Every updater archive must match the public key embedded in `src-tauri/tauri.conf.json`.
+Onyx uses Tauri's signed updater. When a newer version is reachable, an **Update** button appears in the title bar, and installation shows progress plus release notes before restart. Every updater archive must match the public key embedded in `src-tauri/tauri.conf.json`.
 
 The configured endpoint is:
 
@@ -197,7 +197,7 @@ before publishing a Gatekeeper-trusted macOS update.
 - CLI credentials and configuration stay with the official provider tools.
 - OpenRouter and OpenAI API keys are validated and stored in the OS credential manager, never returned to the WebView.
 - OpenRouter file tools are constrained to the canonical workspace; mutations require explicit Rust-side approval.
-- Local session JSON is not encrypted. Convex sync is optional and subject to the configured deployment's policies.
+- Local session JSON is not encrypted. It never leaves your machine.
 - Internal browser panels load third-party websites; their terms, privacy policies, and authentication rules still apply.
 
 ## Screenshots

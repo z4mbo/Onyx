@@ -122,38 +122,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .zai-titlebar__context-menu > button:hover { background: var(--v2-overlay-simple-overlay-hover); color: var(--v2-text-text-base); }
 .zai-titlebar__context-menu > .zai-titlebar__context-danger { color: var(--v2-text-text-danger, #d14343); }
 .zai-titlebar__tabs-scroll::-webkit-scrollbar { display: none; }
-.zai-titlebar__profile-wrap { position: relative; flex: 0 0 auto; -webkit-app-region: no-drag; }
-.zai-titlebar__profile {
-  display: inline-flex;
-  max-width: 190px;
-  height: 28px;
-  align-items: center;
-  gap: 7px;
-  border-radius: 7px !important;
-  padding: 0 7px 0 4px !important;
-  background: transparent;
-}
-.zai-titlebar__profile-avatar { display: block; width: 21px; height: 21px; flex: 0 0 21px; border-radius: 999px; object-fit: cover; }
-.zai-titlebar__profile-avatar--fallback { display: grid; place-items: center; background: var(--v2-background-bg-layer-02); color: var(--v2-icon-icon-muted); }
-.zai-titlebar__profile-name { min-width: 0; overflow: hidden; color: var(--v2-text-text-muted); font-size: 11px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
-.zai-titlebar__profile-menu {
-  position: absolute;
-  z-index: 100;
-  top: 32px;
-  right: 0;
-  width: 220px;
-  padding: 5px;
-  border: .5px solid var(--v2-border-border-base);
-  border-radius: 10px;
-  background: var(--v2-background-bg-deep);
-  box-shadow: var(--v2-elevation-overlay);
-}
-.zai-titlebar__profile-summary { display: flex; min-width: 0; flex-direction: column; gap: 2px; margin: 3px 4px 5px; padding: 7px 7px 9px; border-bottom: 1px solid var(--v2-border-border-base); }
-.zai-titlebar__profile-summary strong,.zai-titlebar__profile-summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zai-titlebar__profile-summary strong { color: var(--v2-text-text-base); font-size: 12px; }
-.zai-titlebar__profile-summary span { color: var(--v2-text-text-faint); font-size: 10px; }
-.zai-titlebar__profile-menu > button { display: flex; width: 100%; height: 34px; align-items: center; gap: 9px; border: 0; border-radius: 7px; padding: 0 9px; background: transparent; color: var(--v2-text-text-muted); text-align: left; }
-.zai-titlebar__profile-menu > button:hover { background: var(--v2-overlay-simple-overlay-hover); color: var(--v2-text-text-base); }
 .zai-titlebar__project-icon { width: 16px; height: 16px; flex: 0 0 16px; display: grid; place-items: center; border-radius: 5px; background: color-mix(in srgb, #6658df 13%, transparent); color: #6658df; font-size: 9px; font-weight: 700; }
 .zai-titlebar__new-wrap { position: relative; -webkit-app-region: no-drag; }
 .zai-titlebar__new-menu { position: absolute; z-index: 90; top: 32px; left: 0; width: 270px; max-height: 390px; overflow: auto; border: .5px solid var(--v2-border-border-base); border-radius: 10px; padding: 5px; background: var(--v2-background-bg-deep); box-shadow: var(--v2-elevation-overlay); }
@@ -165,10 +133,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .zai-titlebar__running-indicator rect { opacity: .18; animation: zai-running-dot 1.25s ease-in-out infinite; }
 .zai-titlebar__running-indicator rect:nth-child(3n + 1) { animation-delay: .16s; }
 .zai-titlebar__running-indicator rect:nth-child(3n + 2) { animation-delay: .32s; }
-@media (max-width: 860px) {
-  .zai-titlebar__profile-name { display: none; }
-  .zai-titlebar__profile { width: 28px; padding: 0 !important; justify-content: center; }
-}
 
 /* New session */
 .zai-new-session { position: relative; display: flex; width: 100%; height: 100%; min-height: 0; overflow: hidden; background: var(--v2-background-bg-deep); }
@@ -488,11 +452,24 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .zai-prompt-rail { position: absolute; top: 50%; left: 16px; z-index: 8; display: flex; width: 52px; max-height: min(360px, calc(100% - 100px)); flex-direction: column; align-items: flex-start; transform: translateY(-50%); }
 .zai-prompt-rail__track { display: flex; width: 52px; max-height: inherit; flex-direction: column; align-items: flex-start; gap: var(--prompt-rail-gap, 8px); overflow-y: auto; scrollbar-width: none; }
 .zai-prompt-rail__track::-webkit-scrollbar { display: none; }
-.zai-prompt-rail button { position: relative; display: flex; width: 52px; min-height: 1px; height: 12px; max-height: 12px; flex: 1 1 12px; align-items: center; border: 0; padding: 0; background: transparent; cursor: pointer; }
-.zai-prompt-rail__mark { display: block; width: 12px; height: min(3px, 100%); min-height: 2px; border-radius: 999px; background: var(--v2-text-text-faint); opacity: .44; transition: width 180ms cubic-bezier(.2,.75,.2,1),background 140ms ease,opacity 140ms ease; }
-.zai-prompt-rail button:hover .zai-prompt-rail__mark,.zai-prompt-rail button:focus-visible .zai-prompt-rail__mark { width: 52px; opacity: .72; }
-.zai-prompt-rail button.active .zai-prompt-rail__mark { width: 12px; background: var(--v2-text-text-base); opacity: 1; }
-.zai-prompt-rail button.active:hover .zai-prompt-rail__mark,.zai-prompt-rail button.active:focus-visible .zai-prompt-rail__mark { width: 52px; }
+.zai-prompt-rail button { position: relative; display: flex; width: 52px; min-height: 1px; height: 8px; max-height: 8px; flex: 1 1 8px; align-items: center; border: 0; padding: 0; background: transparent; cursor: pointer; }
+.zai-prompt-rail__mark { display: block; width: var(--mark-width, 12px); height: min(2px, 100%); min-height: 1px; border-radius: 999px; background: var(--v2-text-text-faint); opacity: var(--mark-opacity, .4); transition: width 180ms cubic-bezier(.2,.75,.2,1),background 140ms ease,opacity 140ms ease; }
+.zai-prompt-rail button.active .zai-prompt-rail__mark { background: var(--v2-text-text-base); opacity: 1; }
+/*
+ * Dock magnification: the mark under the pointer extends furthest and its
+ * neighbours taper off either side. Each pair of selectors reaches one step
+ * away — forwards with a sibling combinator, backwards with :has().
+ */
+.zai-prompt-rail__track button:hover { --mark-width: 52px; --mark-opacity: .82; }
+.zai-prompt-rail__track button:focus-visible { --mark-width: 52px; --mark-opacity: .82; }
+.zai-prompt-rail__track button:hover + button,
+.zai-prompt-rail__track button:has(+ button:hover) { --mark-width: 38px; --mark-opacity: .68; }
+.zai-prompt-rail__track button:hover + button + button,
+.zai-prompt-rail__track button:has(+ button + button:hover) { --mark-width: 27px; --mark-opacity: .58; }
+.zai-prompt-rail__track button:hover + button + button + button,
+.zai-prompt-rail__track button:has(+ button + button + button:hover) { --mark-width: 19px; --mark-opacity: .5; }
+.zai-prompt-rail__track button:hover + button + button + button + button,
+.zai-prompt-rail__track button:has(+ button + button + button + button:hover) { --mark-width: 15px; --mark-opacity: .45; }
 .zai-prompt-rail__preview { position: absolute; top: 50%; left: 78px; display: block; width: min(640px, calc(100vw - 148px)); max-height: 230px; overflow: hidden; transform: translateY(-50%); border: .5px solid var(--v2-border-border-base); border-radius: 18px; padding: 17px 18px; background: color-mix(in srgb, var(--v2-background-bg-base) 96%, transparent); box-shadow: var(--v2-elevation-overlay); color: var(--v2-text-text-muted); text-align: left; pointer-events: none; backdrop-filter: blur(18px); animation: zai-prompt-preview-in 140ms cubic-bezier(.2,.75,.2,1) both; }
 .zai-prompt-rail__preview strong,.zai-prompt-rail__preview span { display: block; overflow: hidden; text-overflow: ellipsis; }
 .zai-prompt-rail__preview strong { color: var(--v2-text-text-base); font-size: 16px; font-weight: 620; line-height: 22px; white-space: nowrap; }

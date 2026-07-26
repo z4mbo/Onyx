@@ -84,6 +84,7 @@ pub struct SessionWorkspaceUi {
     pub terminals: Vec<WorkspaceTerminal>,
     pub active_terminal_id: Option<String>,
     pub terminal_height: u32,
+    pub panel_width: u32,
 }
 
 impl Default for SessionWorkspaceUi {
@@ -96,8 +97,68 @@ impl Default for SessionWorkspaceUi {
             terminals: Vec::new(),
             active_terminal_id: None,
             terminal_height: 280,
+            panel_width: 420,
         }
     }
+}
+
+/// Bounds that match the panels' CSS, so a drag cannot leave either panel in a
+/// size the stylesheet would fight over.
+const MIN_TERMINAL_HEIGHT: f64 = 180.0;
+const MIN_PANEL_WIDTH: f64 = 300.0;
+const MAX_PANEL_WIDTH: f64 = 920.0;
+
+fn viewport(vertical: bool) -> f64 {
+    web_sys::window()
+        .and_then(|window| {
+            if vertical {
+                window.inner_height().ok()
+            } else {
+                window.inner_width().ok()
+            }
+        })
+        .and_then(|value| value.as_f64())
+        .unwrap_or(1024.0)
+}
+
+/// Marks the document while a drag is in flight. The stylesheet uses it to hold
+/// the resize cursor and suppress text selection across the whole window.
+fn set_resizing(active: bool) {
+    let Some(root) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.document_element())
+    else {
+        return;
+    };
+    if active {
+        let _ = root.set_attribute("data-workspace-panel-resizing", "true");
+    } else {
+        let _ = root.remove_attribute("data-workspace-panel-resizing");
+    }
+}
+
+/// Captures the pointer on the handle so the drag keeps tracking even when the
+/// cursor outruns the element.
+fn begin_drag(event: &leptos::ev::PointerEvent) {
+    use wasm_bindgen::JsCast;
+    if let Some(handle) = event
+        .current_target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+    {
+        let _ = handle.set_pointer_capture(event.pointer_id());
+    }
+    set_resizing(true);
+}
+
+fn end_drag(event: &leptos::ev::PointerEvent) {
+    use wasm_bindgen::JsCast;
+    if let Some(handle) = event
+        .current_target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+    {
+        let _ = handle.release_pointer_capture(event.pointer_id());
+    }
+    set_resizing(false);
 }
 
 thread_local! {
@@ -719,6 +780,7 @@ pub fn RightWorkspacePanel(
     on_close_surface: Callback<String>,
     on_add_surface: Callback<WorkspaceSurfaceKind>,
     on_close_panel: Callback<()>,
+    on_resize: Callback<u32>,
     on_error: Callback<String>,
 ) -> impl IntoView {
     let add_menu = RwSignal::new(false);
@@ -727,6 +789,13 @@ pub fn RightWorkspacePanel(
         let id = ui.active_surface_id?;
         ui.surfaces.into_iter().find(|surface| surface.id == id)
     });
+    let drag = RwSignal::new(None::<(f64, f64)>);
+    let apply_width = move |width: f64| {
+        let max = (viewport(false) * 0.78)
+            .min(MAX_PANEL_WIDTH)
+            .max(MIN_PANEL_WIDTH);
+        on_resize.run(width.clamp(MIN_PANEL_WIDTH, max).round() as u32);
+    };
 
     view! {
         <Show when=move || ui.get().right_panel_open>
@@ -734,7 +803,47 @@ pub fn RightWorkspacePanel(
                 class="zai-right-workspace-panel"
                 data-slot="right-workspace-panel"
                 aria-label="Workspace tools"
+                style=move || format!("width:{}px", ui.get().panel_width)
             >
+                <div
+                    class="zai-right-workspace-panel__resize-handle"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize the workspace panel"
+                    tabindex="0"
+                    on:pointerdown=move |event: leptos::ev::PointerEvent| {
+                        event.prevent_default();
+                        begin_drag(&event);
+                        drag.set(Some((
+                            f64::from(event.client_x()),
+                            f64::from(ui.get_untracked().panel_width),
+                        )));
+                    }
+                    on:pointermove=move |event: leptos::ev::PointerEvent| {
+                        let Some((origin, width)) = drag.get_untracked() else {
+                            return;
+                        };
+                        // The handle is on the left edge, so dragging left grows it.
+                        apply_width(width + (origin - f64::from(event.client_x())));
+                    }
+                    on:pointerup=move |event: leptos::ev::PointerEvent| {
+                        drag.set(None);
+                        end_drag(&event);
+                    }
+                    on:pointercancel=move |event: leptos::ev::PointerEvent| {
+                        drag.set(None);
+                        end_drag(&event);
+                    }
+                    on:keydown=move |event: KeyboardEvent| {
+                        let step = match event.key().as_str() {
+                            "ArrowLeft" => 24.0,
+                            "ArrowRight" => -24.0,
+                            _ => return,
+                        };
+                        event.prevent_default();
+                        apply_width(f64::from(ui.get_untracked().panel_width) + step);
+                    }
+                />
                 <header class="zai-right-workspace-panel__tabbar">
                     <div class="zai-right-workspace-panel__tabs" role="tablist">
                         <For
@@ -887,12 +996,19 @@ pub fn BottomTerminalPanel(
     on_new_terminal: Callback<()>,
     on_clear: Callback<String>,
     on_close_panel: Callback<()>,
+    on_resize: Callback<u32>,
 ) -> impl IntoView {
     let active = Signal::derive(move || {
         let ui = ui.get();
         let id = ui.active_terminal_id?;
         ui.terminals.into_iter().find(|terminal| terminal.id == id)
     });
+    // Start of the drag: pointer position paired with the height at that moment.
+    let drag = RwSignal::new(None::<(f64, f64)>);
+    let apply_height = move |height: f64| {
+        let max = (viewport(true) - 200.0).max(MIN_TERMINAL_HEIGHT);
+        on_resize.run(height.clamp(MIN_TERMINAL_HEIGHT, max).round() as u32);
+    };
 
     view! {
         <Show when=move || ui.get().bottom_panel_open>
@@ -902,7 +1018,45 @@ pub fn BottomTerminalPanel(
                 aria-label="Terminal drawer"
                 style=move || format!("height:{}px", ui.get().terminal_height)
             >
-                <div class="zai-bottom-terminal__resize-handle" role="separator" />
+                <div
+                    class="zai-bottom-terminal__resize-handle"
+                    role="separator"
+                    aria-orientation="horizontal"
+                    aria-label="Resize the terminal drawer"
+                    tabindex="0"
+                    on:pointerdown=move |event: leptos::ev::PointerEvent| {
+                        event.prevent_default();
+                        begin_drag(&event);
+                        drag.set(Some((
+                            f64::from(event.client_y()),
+                            f64::from(ui.get_untracked().terminal_height),
+                        )));
+                    }
+                    on:pointermove=move |event: leptos::ev::PointerEvent| {
+                        let Some((origin, height)) = drag.get_untracked() else {
+                            return;
+                        };
+                        // The handle sits on the top edge, so dragging up grows it.
+                        apply_height(height + (origin - f64::from(event.client_y())));
+                    }
+                    on:pointerup=move |event: leptos::ev::PointerEvent| {
+                        drag.set(None);
+                        end_drag(&event);
+                    }
+                    on:pointercancel=move |event: leptos::ev::PointerEvent| {
+                        drag.set(None);
+                        end_drag(&event);
+                    }
+                    on:keydown=move |event: KeyboardEvent| {
+                        let step = match event.key().as_str() {
+                            "ArrowUp" => 24.0,
+                            "ArrowDown" => -24.0,
+                            _ => return,
+                        };
+                        event.prevent_default();
+                        apply_height(f64::from(ui.get_untracked().terminal_height) + step);
+                    }
+                />
                 <header class="zai-bottom-terminal__header">
                     <div class="zai-bottom-terminal__tabs" role="tablist">
                         <For

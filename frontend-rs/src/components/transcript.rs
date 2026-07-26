@@ -3,6 +3,7 @@ use std::{
     collections::{HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     rc::Rc,
+    sync::Arc,
 };
 
 use icondata::{LuChevronRight, LuCircle, LuCircleAlert, LuSquareTerminal};
@@ -12,7 +13,7 @@ use wasm_bindgen::{JsCast, closure::Closure};
 
 use crate::{
     highlight, markdown,
-    model::{AccountProfile, AgentSession, Message, MessageKind, MessageRole},
+    model::{AgentSession, Message, MessageKind, MessageRole},
     storage,
 };
 
@@ -192,9 +193,11 @@ fn ToolGroup(
         highlight::highlight_html(&command, latest_hint)
             .unwrap_or_else(|| highlight::escape_html(&command))
     });
-    // The expanded list is built each time the group opens, so the messages
-    // have to outlive a single call.
-    let done = StoredValue::new(done);
+    // The list is rebuilt each time the group opens, so the messages must
+    // outlive a single call. An `Arc` rather than a `StoredValue`: the
+    // transcript re-keys this group on every streamed delta, and an
+    // arena-allocated value read while its owner is torn down panics.
+    let done = Arc::new(done);
 
     view! {
         <div class="zai-tool-run">
@@ -226,7 +229,10 @@ fn ToolGroup(
                 <Show when=move || expanded.get()>
                     <div class="zai-tool-group__list">
                         <For
-                            each=move || done.get_value()
+                            each={
+                                let done = Arc::clone(&done);
+                                move || done.as_ref().clone()
+                            }
                             key=message_revision
                             children=move |message| {
                                 view! { <ToolMessage message=message current=false /> }
@@ -242,7 +248,7 @@ fn ToolGroup(
 }
 
 #[component]
-fn UserMessage(message: Message, profile: Signal<Option<AccountProfile>>) -> impl IntoView {
+fn UserMessage(message: Message) -> impl IntoView {
     let prompt_dom_id = format!("onyx-prompt-{}", message.id);
     let created_at = message.created_at;
     let timestamp = storage::display_time(&created_at);
@@ -255,32 +261,8 @@ fn UserMessage(message: Message, profile: Signal<Option<AccountProfile>>) -> imp
             data-component="user-message"
         >
             <div class="zai-message__user-meta">
-                {move || profile.get().and_then(|profile| profile.image_url).map(|url| view! {
-                    <img
-                        class="zai-message__user-avatar"
-                        src=url
-                        alt=""
-                        referrerpolicy="no-referrer"
-                    />
-                }.into_any()).unwrap_or_else(|| {
-                    let initial = profile
-                        .get()
-                        .map(|profile| profile.name)
-                        .unwrap_or_else(|| "You".to_owned())
-                        .chars()
-                        .next()
-                        .unwrap_or('Y')
-                        .to_uppercase()
-                        .to_string();
-                    view! {
-                        <span class="zai-message__user-avatar zai-message__user-avatar--fallback">
-                            {initial}
-                        </span>
-                    }.into_any()
-                })}
-                <strong>
-                    {move || profile.get().map(|profile| profile.name).unwrap_or_else(|| "You".to_owned())}
-                </strong>
+                <span class="zai-message__user-avatar zai-message__user-avatar--fallback">"Y"</span>
+                <strong>"You"</strong>
                 <time datetime=created_at>{timestamp}</time>
             </div>
             <div class="zai-message__content" data-slot="user-message-text">
@@ -291,10 +273,7 @@ fn UserMessage(message: Message, profile: Signal<Option<AccountProfile>>) -> imp
 }
 
 #[component]
-pub fn Transcript(
-    session: Signal<Option<AgentSession>>,
-    profile: Signal<Option<AccountProfile>>,
-) -> impl IntoView {
+pub fn Transcript(session: Signal<Option<AgentSession>>) -> impl IntoView {
     let scroller = NodeRef::<leptos::html::Div>::new();
     let pinned = RwSignal::new(true);
     // Held here so expanding a group survives the rebuild that each streamed
@@ -435,9 +414,9 @@ pub fn Transcript(
                     style=move || {
                         let count = prompts.read().len();
                         let gap = match count {
-                            0..=16 => 8,
-                            17..=32 => 4,
-                            33..=64 => 2,
+                            0..=16 => 4,
+                            17..=32 => 2,
+                            33..=64 => 1,
                             _ => 0,
                         };
                         format!("--prompt-rail-gap:{gap}px")
@@ -595,7 +574,7 @@ pub fn Transcript(
                                 }.into_any()
                             }
                             TranscriptItem::Single(message) if message.role == MessageRole::User => {
-                                view! { <UserMessage message=message profile=profile /> }.into_any()
+                                view! { <UserMessage message=message /> }.into_any()
                             }
                             TranscriptItem::Single(message) => {
                                 let class = format!(

@@ -4,12 +4,12 @@ use wasm_bindgen::{JsCast, JsValue, closure::Closure, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
 use crate::model::{
-    AccountProfile, ActiveAppContext, AgentSession, CapturedAudio, ChatReply, ChatRequest,
-    ConnectionStatus, CreateSessionInput, EditorTarget, GitActionResult, NativeVoicePermissions,
-    OAuthStart, OpenRouterModel, OpenRouterVoiceCatalog, ProviderId, ProviderModelOption,
-    ProviderStatus, ProviderUsage, ProviderUserInputAnswers, RenameSessionInput, RepoSummary,
-    TerminalSession, TranscriptionReply, UpdateInfo, UpdateProgress, UpdateSessionOptionsInput,
-    VoiceSettings, WorkspaceEntry, WorkspaceFile, demo_providers,
+    ActiveAppContext, AgentSession, CapturedAudio, ChatReply, ChatRequest, ConnectionStatus,
+    CreateSessionInput, EditorTarget, GitActionResult, NativeVoicePermissions, OpenRouterModel,
+    OpenRouterVoiceCatalog, ProviderId, ProviderModelOption, ProviderStatus, ProviderUsage,
+    ProviderUserInputAnswers, RenameSessionInput, RepoSummary, TerminalSession, TranscriptionReply,
+    UpdateInfo, UpdateProgress, UpdateSessionOptionsInput, VoiceSettings, WorkspaceEntry,
+    WorkspaceFile, demo_providers,
 };
 
 #[wasm_bindgen(inline_js = r#"
@@ -90,9 +90,6 @@ extern "C" {
         on_resize: &Function,
         autofocus: bool,
     ) -> Result<Promise, JsValue>;
-
-    #[wasm_bindgen(catch, js_name = onyxCloudStart)]
-    fn raw_cloud_start(callback: &Function) -> Result<bool, JsValue>;
 }
 
 pub fn is_tauri() -> bool {
@@ -601,25 +598,6 @@ pub async fn cancel_user_input(request_id: &str) -> Result<(), String> {
     .await
 }
 
-pub async fn account_profile() -> Result<Option<AccountProfile>, String> {
-    if !is_tauri() {
-        return Ok(None);
-    }
-    invoke("clerk_account_profile", &serde_json::json!({})).await
-}
-
-pub async fn start_clerk_oauth(login_hint: Option<&str>) -> Result<OAuthStart, String> {
-    invoke(
-        "start_clerk_oauth",
-        &serde_json::json!({ "loginHint": login_hint }),
-    )
-    .await
-}
-
-pub async fn clerk_sign_out() -> Result<(), String> {
-    invoke("clerk_sign_out", &serde_json::json!({})).await
-}
-
 pub async fn open_url(url: &str) -> Result<(), String> {
     runtime("openUrl", &serde_json::json!([url])).await
 }
@@ -653,18 +631,6 @@ pub async fn check_update() -> Result<Option<UpdateInfo>, String> {
         return Ok(None);
     }
     invoke("check_update", &serde_json::json!({})).await
-}
-
-pub async fn cloud_configured() -> Result<bool, String> {
-    runtime("cloudConfigured", &serde_json::json!([])).await
-}
-
-pub async fn push_cloud(payload: &str) -> Result<(), String> {
-    runtime("pushCloud", &serde_json::json!([payload])).await
-}
-
-pub async fn pull_cloud() -> Result<Option<String>, String> {
-    runtime("pullCloud", &serde_json::json!([])).await
 }
 
 pub struct AudioCaptureHandle {
@@ -781,27 +747,6 @@ where
     let result = invoke("install_update", &serde_json::json!({})).await;
     drop(listener);
     result
-}
-
-pub struct CloudAuthHandle {
-    _callback: Closure<dyn FnMut(bool)>,
-}
-
-pub fn start_cloud_auth<F>(mut on_authenticated: F) -> Result<Option<CloudAuthHandle>, String>
-where
-    F: FnMut(bool) + 'static,
-{
-    let callback = Closure::wrap(Box::new(move |authenticated: bool| {
-        on_authenticated(authenticated);
-    }) as Box<dyn FnMut(bool)>);
-    let configured = raw_cloud_start(callback.as_ref().unchecked_ref()).map_err(error_text)?;
-    if configured {
-        Ok(Some(CloudAuthHandle {
-            _callback: callback,
-        }))
-    } else {
-        Ok(None)
-    }
 }
 
 pub struct EventListener {
