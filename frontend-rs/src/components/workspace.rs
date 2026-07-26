@@ -128,7 +128,6 @@ pub fn WorkspaceTopbarActions(
     on_commit: Callback<()>,
     on_push: Callback<()>,
     on_create_pr: Callback<()>,
-    on_open_cli: Callback<()>,
     on_toggle_bottom: Callback<()>,
     on_toggle_right: Callback<()>,
 ) -> impl IntoView {
@@ -275,16 +274,6 @@ pub fn WorkspaceTopbarActions(
                     </div>
                 </Show>
             </div>
-
-            <button
-                type="button"
-                class="zai-workspace-action zai-workspace-cli-action"
-                on:click=move |_| on_open_cli.run(())
-                title="Open the official provider CLI for this session"
-            >
-                <Icon icon=LuSquareTerminal width="15px" height="15px" />
-                <span>"CLI"</span>
-            </button>
 
             <div class="zai-layout-controls" data-slot="workspace-layout-controls">
                 <button

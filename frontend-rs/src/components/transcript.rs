@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::hash_map::DefaultHasher,
+    collections::{HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     rc::Rc,
 };
@@ -153,61 +153,90 @@ fn ToolMessage(message: Message, current: bool) -> impl IntoView {
     }
 }
 
+/// Finished steps collapse into one row and the step still running stays in
+/// view beneath it, so the transcript shows what the agent is doing now rather
+/// than a growing wall of what it already did.
 #[component]
-fn ToolGroup(messages: Vec<Message>, running: bool) -> impl IntoView {
-    let current_id = running
+fn ToolGroup(
+    messages: Vec<Message>,
+    running: bool,
+    expanded: Signal<bool>,
+    on_toggle: Callback<()>,
+) -> impl IntoView {
+    let active_id = running
         .then(|| messages.last())
         .flatten()
         .filter(|message| tool_is_running(message))
         .map(|message| message.id.clone());
-    if messages.len() == 1 {
-        let message = messages[0].clone();
-        let current = current_id.as_deref() == Some(message.id.as_str());
-        return view! { <ToolMessage message=message current=current /> }.into_any();
+    let (active, done): (Vec<Message>, Vec<Message>) = messages
+        .into_iter()
+        .partition(|message| active_id.as_deref() == Some(message.id.as_str()));
+    let active = active.into_iter().next();
+
+    if done.is_empty() {
+        return active
+            .map(|message| view! { <ToolMessage message=message current=true /> }.into_any())
+            .unwrap_or_else(|| ().into_any());
     }
-    let count = messages.len();
-    let latest = messages.last().map(tool_title).unwrap_or_default();
+    if done.len() == 1 && active.is_none() {
+        let message = done[0].clone();
+        return view! { <ToolMessage message=message current=false /> }.into_any();
+    }
+
+    let count = done.len();
+    let summary = format!("{count} step{}", if count == 1 { "" } else { "s" });
+    let latest = done.last().map(tool_title).unwrap_or_default();
     let latest_hint = highlight::tool_language_hint(&latest);
     let (latest_label, latest_command) = highlight::split_tool_summary(&latest);
     let latest_command = latest_command.map(|command| {
         highlight::highlight_html(&command, latest_hint)
             .unwrap_or_else(|| highlight::escape_html(&command))
     });
-    let group_current = current_id.is_some();
+    // The expanded list is built each time the group opens, so the messages
+    // have to outlive a single call.
+    let done = StoredValue::new(done);
+
     view! {
-        <details
-            class="zai-tool-group"
-            data-current=if group_current { "true" } else { "false" }
-            aria-busy=if group_current { "true" } else { "false" }
-            open=group_current
-        >
-            <summary>
-                <Icon icon=LuSquareTerminal width="14px" height="14px" />
-                <span class="zai-tool-group__count">{format!("{count} steps")}</span>
-                <span class="zai-tool-group__latest">
-                    {latest_label}
-                    {latest_command.map(|command| view! {
-                        <span class="zai-tool-event__command" inner_html=command />
-                    })}
-                </span>
-                <Icon
-                    icon=LuChevronRight
-                    width="13px"
-                    height="13px"
-                    attr:class="zai-tool-chevron"
-                />
-            </summary>
-            <div class="zai-tool-group__list">
-                <For
-                    each=move || messages.clone()
-                    key=message_revision
-                    children=move |message| {
-                        let current = current_id.as_deref() == Some(message.id.as_str());
-                        view! { <ToolMessage message=message current=current /> }
-                    }
-                />
+        <div class="zai-tool-run">
+            <div
+                class="zai-tool-group"
+                data-expanded=move || if expanded.get() { "true" } else { "false" }
+            >
+                <button
+                    type="button"
+                    class="zai-tool-group__summary"
+                    aria-expanded=move || expanded.get()
+                    on:click=move |_| on_toggle.run(())
+                >
+                    <Icon icon=LuSquareTerminal width="14px" height="14px" />
+                    <span class="zai-tool-group__count">{summary}</span>
+                    <span class="zai-tool-group__latest">
+                        {latest_label}
+                        {latest_command.map(|command| view! {
+                            <span class="zai-tool-event__command" inner_html=command />
+                        })}
+                    </span>
+                    <Icon
+                        icon=LuChevronRight
+                        width="13px"
+                        height="13px"
+                        attr:class="zai-tool-chevron"
+                    />
+                </button>
+                <Show when=move || expanded.get()>
+                    <div class="zai-tool-group__list">
+                        <For
+                            each=move || done.get_value()
+                            key=message_revision
+                            children=move |message| {
+                                view! { <ToolMessage message=message current=false /> }
+                            }
+                        />
+                    </div>
+                </Show>
             </div>
-        </details>
+            {active.map(|message| view! { <ToolMessage message=message current=true /> })}
+        </div>
     }
     .into_any()
 }
@@ -268,6 +297,9 @@ pub fn Transcript(
 ) -> impl IntoView {
     let scroller = NodeRef::<leptos::html::Div>::new();
     let pinned = RwSignal::new(true);
+    // Held here so expanding a group survives the rebuild that each streamed
+    // delta triggers.
+    let expanded_groups = RwSignal::new(HashSet::<String>::new());
     let last_user_message = Rc::new(RefCell::new(None::<String>));
     let active_prompt = RwSignal::new(None::<String>);
     let hovered_prompt = RwSignal::new(None::<PromptJump>);
@@ -543,8 +575,24 @@ pub fn Transcript(
                             ),
                         }
                         children=move |item| match item {
-                            TranscriptItem::Tools { messages, .. } => {
-                                view! { <ToolGroup messages=messages running=running.get() /> }.into_any()
+                            TranscriptItem::Tools { id, messages } => {
+                                let expanded_id = id.clone();
+                                view! {
+                                    <ToolGroup
+                                        messages=messages
+                                        running=running.get()
+                                        expanded=Signal::derive(move || {
+                                            expanded_groups.read().contains(&expanded_id)
+                                        })
+                                        on_toggle=Callback::new(move |_| {
+                                            expanded_groups.update(|open| {
+                                                if !open.remove(&id) {
+                                                    open.insert(id.clone());
+                                                }
+                                            });
+                                        })
+                                    />
+                                }.into_any()
                             }
                             TranscriptItem::Single(message) if message.role == MessageRole::User => {
                                 view! { <UserMessage message=message profile=profile /> }.into_any()

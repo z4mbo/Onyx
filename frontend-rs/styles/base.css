@@ -56,7 +56,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 /* t3code-style glow on the activity that is currently running. */
 .zai-agent-working span,
-.zai-tool-group[data-current="true"] > summary .zai-tool-group__latest,
 .zai-tool-event[data-current="true"] summary > span:not(.zai-tool-event__running) {
   background: linear-gradient(
     90deg,
@@ -78,7 +77,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 @media (prefers-reduced-motion: reduce) {
   .zai-agent-working span,
-  .zai-transcript--running .zai-tool-group:last-of-type > summary .zai-tool-group__latest,
   .zai-transcript--running .zai-tool-event:last-of-type summary > span {
     animation: none;
     background: none;
@@ -241,7 +239,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 /* Prompt input: mirrors OpenCode's 720×96 v2 surface. */
 .zai-composer { position: relative; width: 100%; min-width: 0; }
-.zai-composer > .zai-composer__frame { position: relative; z-index: 1; }
+/*
+ * Above the palette backdrop, so opening the palette by typing "/" never
+ * covers the prompt it is being typed into, and above the queue bar so that
+ * bar tucks behind the composer.
+ */
+.zai-composer > .zai-composer__frame { position: relative; z-index: 42; }
 .zai-composer__surface {
   position: relative;
   display: flex;
@@ -546,18 +549,22 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 /* The command a tool call runs, shown the way a terminal would show it. */
 .zai-tool-event__command { min-width: 0; color: var(--v2-text-text-muted); font: 11px/17px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; user-select: text; }
 
-/* Grouped tool activity: one row summarising an agent's command run. */
-.zai-tool-group { margin: 0 0 12px; color: var(--v2-text-text-faint); }
-.zai-tool-group > summary { display: flex; height: 28px; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
-.zai-tool-group > summary::-webkit-details-marker { display: none; }
+/*
+ * Grouped tool activity: finished steps fold into one row, and the step still
+ * running is rendered after the group so it is always the thing in view.
+ */
+.zai-tool-run { margin: 0 0 12px; }
+.zai-tool-group { color: var(--v2-text-text-faint); }
+.zai-tool-group__summary { display: flex; width: 100%; height: 28px; align-items: center; gap: 8px; border: 0; padding: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; text-align: left; }
 .zai-tool-group__count { flex: 0 0 auto; border: .5px solid var(--v2-border-border-base); border-radius: 999px; padding: 1px 8px; background: var(--v2-background-bg-layer-02); color: var(--v2-text-text-muted); font-size: 11px; line-height: 16px; white-space: nowrap; }
 .zai-tool-group__latest { display: inline-flex; min-width: 0; align-items: baseline; gap: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
 .zai-tool-group__latest .zai-tool-event__command { overflow: hidden; text-overflow: ellipsis; }
-.zai-tool-group[open] > summary .zai-tool-group__latest { display: none; }
-.zai-tool-group[open] .zai-tool-chevron { transform: rotate(90deg); }
+.zai-tool-group[data-expanded="true"] .zai-tool-group__latest { display: none; }
+.zai-tool-group[data-expanded="true"] .zai-tool-chevron { transform: rotate(90deg); }
 .zai-tool-group__list { margin: 2px 0 4px 8px; border-left: 1px solid var(--v2-border-border-base); padding-left: 12px; }
 .zai-tool-group__list .zai-tool-event { margin-bottom: 2px; }
 .zai-tool-group__list .zai-tool-event summary { height: 24px; }
+.zai-tool-run > .zai-tool-event { margin-bottom: 0; }
 
 /* Transcript syntax highlighting emitted by frontend-rs/src/markdown.rs. */
 .zai-shell .syn-kw { color: color-mix(in srgb, #c678dd 78%, var(--v2-text-text-base)); }
@@ -607,14 +614,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .zai-session-statusbar svg { width: 14px; height: 14px; flex: 0 0 14px; }
 
 /*
- * Queued follow-ups reuse the status bar exactly, mirrored to tuck above the
- * composer instead of below it.
+ * Queued follow-ups reuse the status bar, mirrored to tuck above the composer.
+ * It is inset and overlaps past the composer's 24px corner radius, otherwise
+ * the rounded top corners cut notches out of it and read as a gap.
  */
 .zai-queue-bar {
   z-index: 0;
-  margin: 0 0 -30px;
-  padding: 0 12px 30px;
-  border-radius: 24px 24px 0 0;
+  width: calc(100% - 28px);
+  margin: 0 14px -38px;
+  padding: 0 14px 38px;
+  border-radius: 18px 18px 0 0;
 }
 .zai-queue-bar__label { flex: 0 0 auto; }
 .zai-queue-bar__preview { flex: 0 1 auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
@@ -635,6 +644,50 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .zai-queue-bar__action:hover { background: var(--v2-overlay-simple-overlay-hover); color: var(--v2-text-text-muted); }
 /* The queue bar makes the docked composer taller; keep the transcript clear. */
 .zai-conversation-pane:has(.zai-queue-bar) .zai-transcript__inner { padding-bottom: 262px; }
+
+/* Slash commands and the + menu, anchored above the prompt. */
+/*
+ * Oversized on purpose: the hero composer sits inside a translated ancestor,
+ * which makes a fixed child resolve against that box instead of the viewport.
+ * Bleeding a viewport past every edge covers the screen either way, and the
+ * surrounding panes clip the overflow.
+ */
+.zai-command-palette__backdrop { position: fixed; z-index: 40; inset: -100vh -100vw; border: 0; padding: 0; background: transparent; cursor: default; }
+.zai-command-palette {
+  position: absolute;
+  z-index: 41;
+  bottom: calc(100% + 8px);
+  left: 0;
+  display: flex;
+  width: min(420px, 100%);
+  max-height: 320px;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  border: .5px solid var(--v2-border-border-base);
+  border-radius: 12px;
+  padding: 6px;
+  background: var(--v2-background-bg-layer-02);
+  box-shadow: var(--v2-elevation-floating);
+}
+.zai-command-palette button {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 10px;
+  border: 0;
+  border-radius: 7px;
+  padding: 7px 9px;
+  background: transparent;
+  color: var(--v2-text-text-muted);
+  cursor: pointer;
+  text-align: left;
+}
+.zai-command-palette button:hover { background: var(--v2-overlay-simple-overlay-hover); color: var(--v2-text-text-base); }
+.zai-command-palette button[data-selected="true"] { color: var(--v2-text-text-accent); }
+.zai-command-palette strong { flex: 0 0 auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; font-weight: 600; }
+.zai-command-palette small { min-width: 0; overflow: hidden; color: var(--v2-text-text-faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.zai-command-palette__empty { margin: 0; padding: 10px; color: var(--v2-text-text-faint); font-size: 12px; }
 @media (max-width: 820px) {
   .zai-queue-bar { gap: 7px; font-size: 11px; }
 }

@@ -9,6 +9,7 @@ use wasm_bindgen_futures::spawn_local;
 
 use crate::{
     bridge,
+    commands::{self, CommandAction},
     model::{
         AccessMode, ApprovalRequest, InteractionMode, ProviderBrand, ProviderId,
         ProviderModelOption, ProviderStatus, ReasoningEffort, SpeedMode,
@@ -82,6 +83,9 @@ pub fn Composer(
     on_steer: Callback<String>,
     on_steer_queued: Callback<()>,
     on_drop_queued: Callback<()>,
+    /// Commands the shell owns rather than the composer: rename, new session,
+    /// settings, and the read-outs that live in the status bar.
+    on_command: Callback<CommandAction>,
     on_cancel: Callback<()>,
     on_approval: Callback<(bool, bool)>,
     on_error: Callback<String>,
@@ -171,7 +175,9 @@ pub fn Composer(
     });
 
     let attach = Callback::new(move |_: ()| {
-        if locked.get() || running.get() || submitting.get() {
+        // Attaching stays available during a turn, because the prompt being
+        // written is a follow-up that has not been sent yet.
+        if submitting.get() {
             return;
         }
         spawn_local(async move {
@@ -201,6 +207,67 @@ pub fn Composer(
         });
     });
 
+    // The palette follows a `/` prompt the way a terminal does, and the `+`
+    // button pins it open so it can also be browsed without typing.
+    let palette_open = RwSignal::new(false);
+    let palette_pinned = RwSignal::new(false);
+    let palette_values = RwSignal::new(None::<CommandAction>);
+    let close_palette = Callback::new(move |_: ()| {
+        palette_open.set(false);
+        palette_pinned.set(false);
+        palette_values.set(None);
+    });
+    Effect::new(move |_| {
+        if commands::is_command_query(&content.get()) {
+            palette_open.set(true);
+        } else if !palette_pinned.get_untracked() {
+            palette_open.set(false);
+            palette_values.set(None);
+        }
+    });
+    let matching_commands = Signal::derive(move || {
+        let all = commands::commands_for(provider.get());
+        let value = content.get();
+        let query = if commands::is_command_query(&value) {
+            value
+        } else {
+            String::new()
+        };
+        commands::filter(&all, &query)
+    });
+
+    let run_command = Callback::new(move |action: CommandAction| {
+        if action.opens_values() {
+            palette_values.set(Some(action));
+            return;
+        }
+        // The typed command token is an instruction, never part of the prompt.
+        if commands::is_command_query(&content.get_untracked()) {
+            on_value.run(String::new());
+        }
+        close_palette.run(());
+        match action {
+            CommandAction::AttachFiles => attach.run(()),
+            CommandAction::ToggleMode => {
+                on_interaction_mode.run(
+                    if interaction_mode.get_untracked() == InteractionMode::Plan {
+                        InteractionMode::Build
+                    } else {
+                        InteractionMode::Plan
+                    },
+                );
+            }
+            CommandAction::Prompt(text) => {
+                if running.get_untracked() {
+                    on_queue.run(text.to_owned());
+                } else {
+                    on_submit.run(text.to_owned());
+                }
+            }
+            other => on_command.run(other),
+        }
+    });
+
     view! {
         <div
             class="zai-composer t3-composer"
@@ -212,6 +279,145 @@ pub fn Composer(
             data-layout=if hero { "hero" } else { "docked" }
             data-provider=move || provider.get().as_str()
         >
+            <Show when=move || palette_open.get()>
+                <button
+                    type="button"
+                    class="zai-command-palette__backdrop"
+                    aria-label="Close commands"
+                    on:click=move |_| close_palette.run(())
+                />
+                <div class="zai-command-palette" role="listbox" aria-label="Commands">
+                    {move || match palette_values.get() {
+                        Some(CommandAction::PickModel) => view! {
+                            <For
+                                each=move || models.get()
+                                key=|item| item.id.clone()
+                                children=move |item| {
+                                    let id = item.id.clone();
+                                    let selected = model.get().as_deref() == Some(item.id.as_str());
+                                    view! {
+                                        <button
+                                            type="button"
+                                            role="option"
+                                            aria-selected=selected
+                                            data-selected=if selected { "true" } else { "false" }
+                                            on:click=move |_| {
+                                                on_model.run(id.clone());
+                                                close_palette.run(());
+                                            }
+                                        >
+                                            <strong>{item.name}</strong>
+                                            <small>{item.description.unwrap_or_default()}</small>
+                                        </button>
+                                    }
+                                }
+                            />
+                        }.into_any(),
+                        Some(CommandAction::PickReasoning) => view! {
+                            <For
+                                each=move || selected_model
+                                    .get()
+                                    .map(|item| item.reasoning)
+                                    .unwrap_or_default()
+                                key=|item| *item
+                                children=move |item| {
+                                    let selected = reasoning.get() == Some(item);
+                                    view! {
+                                        <button
+                                            type="button"
+                                            role="option"
+                                            aria-selected=selected
+                                            data-selected=if selected { "true" } else { "false" }
+                                            on:click=move |_| {
+                                                on_reasoning.run(item);
+                                                close_palette.run(());
+                                            }
+                                        >
+                                            <strong>{item.display_name()}</strong>
+                                        </button>
+                                    }
+                                }
+                            />
+                        }.into_any(),
+                        Some(CommandAction::PickAccess) => view! {
+                            <For
+                                each=move || [
+                                    AccessMode::ApprovalRequired,
+                                    AccessMode::AutoAcceptEdits,
+                                    AccessMode::FullAccess,
+                                ]
+                                key=|item| item.as_str()
+                                children=move |item| {
+                                    let selected = access_mode.get() == item;
+                                    view! {
+                                        <button
+                                            type="button"
+                                            role="option"
+                                            aria-selected=selected
+                                            data-selected=if selected { "true" } else { "false" }
+                                            on:click=move |_| {
+                                                on_access_mode.run(item);
+                                                close_palette.run(());
+                                            }
+                                        >
+                                            <strong>{access_name(provider.get(), item)}</strong>
+                                            <small>{access_description(provider.get(), item)}</small>
+                                        </button>
+                                    }
+                                }
+                            />
+                        }.into_any(),
+                        Some(CommandAction::PickSpeed) => view! {
+                            <For
+                                each=move || [SpeedMode::Standard, SpeedMode::Fast]
+                                key=|item| item.as_str()
+                                children=move |item| {
+                                    let selected = speed_mode.get() == item;
+                                    view! {
+                                        <button
+                                            type="button"
+                                            role="option"
+                                            aria-selected=selected
+                                            data-selected=if selected { "true" } else { "false" }
+                                            on:click=move |_| {
+                                                on_speed_mode.run(item);
+                                                close_palette.run(());
+                                            }
+                                        >
+                                            <strong>{if item == SpeedMode::Fast { "Fast" } else { "Standard" }}</strong>
+                                        </button>
+                                    }
+                                }
+                            />
+                        }.into_any(),
+                        _ => view! {
+                            <Show
+                                when=move || !matching_commands.read().is_empty()
+                                fallback=move || view! {
+                                    <p class="zai-command-palette__empty">"No matching command"</p>
+                                }
+                            >
+                                <For
+                                    each=move || matching_commands.get()
+                                    key=|command| command.name
+                                    children=move |command| view! {
+                                        <button
+                                            type="button"
+                                            role="option"
+                                            aria-selected="false"
+                                            on:click=move |_| run_command.run(command.action)
+                                        >
+                                            <strong>{command.name}</strong>
+                                            <small>{command.summary}</small>
+                                        </button>
+                                    }
+                                />
+                            </Show>
+                        }.into_any(),
+                    }}
+                </div>
+            </Show>
+
             <Show when=move || !hero && !queued_messages.read().is_empty()>
                 <div
                     class="zai-session-statusbar zai-queue-bar"
@@ -284,9 +490,16 @@ pub fn Composer(
                                     placeholder=move || placeholder.get()
                                     on:input=move |event| on_value.run(event_target_value(&event))
                                     on:keydown=move |event: KeyboardEvent| {
-                                        if event.key() == "Escape" && running.get() {
-                                            event.prevent_default();
-                                            on_cancel.run(());
+                                        if event.key() == "Escape" {
+                                            if palette_open.get() {
+                                                event.prevent_default();
+                                                close_palette.run(());
+                                                return;
+                                            }
+                                            if running.get() {
+                                                event.prevent_default();
+                                                on_cancel.run(());
+                                            }
                                             return;
                                         }
                                         if event.key() != "Enter"
@@ -297,6 +510,15 @@ pub fn Composer(
                                             return;
                                         }
                                         event.prevent_default();
+                                        // A command prompt runs the best match, the way
+                                        // pressing Enter does in the CLIs themselves.
+                                        if palette_open.get()
+                                            && commands::is_command_query(&content.get())
+                                            && let Some(command) = matching_commands.read().first()
+                                        {
+                                            run_command.run(command.action);
+                                            return;
+                                        }
                                         if (event.meta_key() || event.ctrl_key()) && can_steer.get() {
                                             steer.run(());
                                         } else {
@@ -311,10 +533,19 @@ pub fn Composer(
                                     <button
                                         type="button"
                                         class="zai-composer__control zai-composer__attach"
-                                        disabled=move || locked.get() || running.get()
-                                        on:click=move |_| attach.run(())
-                                        aria-label="Attach files"
-                                        title="Attach files"
+                                        data-active=move || if palette_open.get() { "true" } else { "false" }
+                                        on:click=move |_| {
+                                            if palette_open.get_untracked() {
+                                                close_palette.run(());
+                                            } else {
+                                                palette_values.set(None);
+                                                palette_pinned.set(true);
+                                                palette_open.set(true);
+                                            }
+                                        }
+                                        aria-label="Attach files or run a command"
+                                        aria-expanded=move || palette_open.get()
+                                        title="Attach files or run a command (/)"
                                     >
                                         <Icon icon=LuPlus width="18px" height="18px" />
                                     </button>
@@ -439,12 +670,15 @@ pub fn Composer(
 
                                     <Show when=move || selected_model.get().is_some_and(|item| item.speeds.len() > 1)>
                                         <label
-                                            class="zai-composer__control zai-composer__select-control"
-                                            title="Model service tier"
+                                            class="zai-composer__control zai-composer__select-control zai-composer__control--icon"
+                                            data-active=move || if speed_mode.get() == SpeedMode::Fast { "true" } else { "false" }
+                                            title=move || if speed_mode.get() == SpeedMode::Fast {
+                                                "Service tier: Fast"
+                                            } else {
+                                                "Service tier: Standard"
+                                            }
                                         >
-                                            <Icon icon=LuZap width="14px" height="14px" />
-                                            <span>{move || if speed_mode.get() == SpeedMode::Fast { "Fast" } else { "Standard" }}</span>
-                                            <Icon icon=LuChevronDown width="12px" height="12px" />
+                                            <Icon icon=LuZap width="15px" height="15px" />
                                             <select
                                                 class="zai-composer__native-select"
                                                 aria-label="Speed"
@@ -466,9 +700,16 @@ pub fn Composer(
 
                                     <button
                                         type="button"
-                                        class="zai-composer__control zai-composer__mode-toggle"
+                                        class="zai-composer__control zai-composer__mode-toggle zai-composer__control--icon"
                                         class:active=move || interaction_mode.get() == InteractionMode::Plan
                                         disabled=move || locked.get()
+                                        aria-pressed=move || interaction_mode.get() == InteractionMode::Plan
+                                        aria-label=move || if interaction_mode.get() == InteractionMode::Plan { "Plan mode" } else { "Build mode" }
+                                        title=move || if interaction_mode.get() == InteractionMode::Plan {
+                                            "Plan mode — research and propose, no changes"
+                                        } else {
+                                            "Build mode — make the changes"
+                                        }
                                         on:click=move |_| {
                                             on_interaction_mode.run(if interaction_mode.get() == InteractionMode::Plan {
                                                 InteractionMode::Build
@@ -482,20 +723,22 @@ pub fn Composer(
                                         } else {
                                             view! { <Icon icon=LuBot width="15px" height="15px" /> }.into_any()
                                         }}
-                                        <span>{move || if interaction_mode.get() == InteractionMode::Plan { "Plan" } else { "Build" }}</span>
                                     </button>
 
                                     <label
-                                        class="zai-composer__control zai-composer__select-control"
-                                        title=move || access_description(provider.get(), access_mode.get())
+                                        class="zai-composer__control zai-composer__select-control zai-composer__control--icon"
+                                        data-access=move || access_mode.get().as_str()
+                                        title=move || format!(
+                                            "{} — {}",
+                                            access_name(provider.get(), access_mode.get()),
+                                            access_description(provider.get(), access_mode.get()),
+                                        )
                                     >
                                         {move || match access_mode.get() {
                                             AccessMode::ApprovalRequired => view! { <Icon icon=LuLock width="15px" height="15px" /> }.into_any(),
                                             AccessMode::AutoAcceptEdits => view! { <Icon icon=LuPenLine width="15px" height="15px" /> }.into_any(),
                                             AccessMode::FullAccess => view! { <Icon icon=LuLockOpen width="15px" height="15px" /> }.into_any(),
                                         }}
-                                        <span>{move || access_name(provider.get(), access_mode.get())}</span>
-                                        <Icon icon=LuChevronDown width="12px" height="12px" />
                                         <select
                                             class="zai-composer__native-select"
                                             aria-label="Access"
@@ -539,27 +782,21 @@ pub fn Composer(
                                             </button>
                                         }
                                     >
-                                        <Show when=move || can_steer.get()>
-                                            <button
-                                                type="button"
-                                                class="zai-composer__submit zai-composer__steer"
-                                                disabled=move || send_disabled.get()
-                                                on:click=move |_| steer.run(())
-                                                aria-label="Steer the running turn"
-                                                title=format!("Steer the running turn ({modifier_label}↵)")
-                                            >
-                                                <Icon icon=LuCornerDownLeft width="14px" height="14px" />
-                                            </button>
-                                        </Show>
+                                        // Sending during a turn needs no separate control:
+                                        // the message lands in the bar above the composer.
                                         <button
                                             type="submit"
-                                            class="zai-composer__submit zai-composer__queue"
+                                            class="zai-composer__submit"
                                             disabled=move || send_disabled.get()
-                                            aria-label="Queue message for the next turn"
-                                            title="Queue next (Enter)"
+                                            aria-label="Send message"
+                                            title=move || if can_steer.get() {
+                                                format!("Send (Enter) · steer now ({modifier_label}↵)")
+                                            } else {
+                                                "Send (Enter)".to_owned()
+                                            }
                                         >
                                             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                                                <path d="M3 4.5H11M3 7H9M3 9.5H7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                                                <path d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
                                             </svg>
                                         </button>
                                         <button

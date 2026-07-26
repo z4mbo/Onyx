@@ -260,6 +260,12 @@ impl SessionStore {
         if !message.content.trim().is_empty() {
             session.messages.push(message);
         }
+        // Activities reach the store only when the turn ends, while a steering
+        // message is stored the moment it is sent. Ordering by creation time
+        // keeps a steered prompt where it appeared while the turn streamed,
+        // instead of jumping above the activity that preceded it. Messages are
+        // already created in order, so this is a no-op for every other turn.
+        session.messages.sort_by_key(|message| message.created_at);
         if let Some(provider_session_id) = provider_session_id {
             session.provider_session_id = Some(provider_session_id);
         }
@@ -445,6 +451,56 @@ mod tests {
 
         let restored = SessionStore::load(&data_dir).expect("store should reload");
         assert!(restored.get(&id).is_none());
+        fs::remove_dir_all(data_dir).expect("temporary store should be removable");
+    }
+
+    #[test]
+    fn a_steered_prompt_keeps_its_place_when_the_turn_finishes() {
+        let data_dir = std::env::temp_dir().join(format!("onyx-session-steer-{}", Uuid::new_v4()));
+        let id = Uuid::new_v4().to_string();
+        let store = SessionStore::load(&data_dir).expect("store should load");
+        let mut session = test_session(id.clone());
+        session.messages.clear();
+        store.insert(session).expect("session should persist");
+
+        let started = Utc::now();
+        let mut prompt = Message::new(MessageRole::User, MessageKind::Text, "build it");
+        prompt.created_at = started;
+        store.begin_turn(&id, prompt).expect("turn should start");
+
+        // One activity happens, then the user steers, then another activity.
+        let mut first = Message::new(MessageRole::Tool, MessageKind::Tool, "Running Bash");
+        first.created_at = started + chrono::Duration::seconds(1);
+        let mut steer = Message::new(MessageRole::User, MessageKind::Text, "also add tests");
+        steer.created_at = started + chrono::Duration::seconds(2);
+        let mut second = Message::new(MessageRole::Tool, MessageKind::Tool, "Running Edit");
+        second.created_at = started + chrono::Duration::seconds(3);
+        let mut reply = Message::new(MessageRole::Assistant, MessageKind::Text, "done");
+        reply.created_at = started + chrono::Duration::seconds(4);
+
+        store
+            .append_user_message(&id, steer)
+            .expect("steering should be recorded");
+        let finished = store
+            .finish_turn(&id, vec![first, second], reply, None, None, false)
+            .expect("turn should finish");
+
+        let contents = finished
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            contents,
+            vec![
+                "build it",
+                "Running Bash",
+                "also add tests",
+                "Running Edit",
+                "done"
+            ],
+        );
+        drop(store);
         fs::remove_dir_all(data_dir).expect("temporary store should be removable");
     }
 

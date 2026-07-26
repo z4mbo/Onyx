@@ -5,6 +5,7 @@ mod app;
 #[cfg(target_arch = "wasm32")]
 mod bridge;
 mod catalog;
+mod commands;
 #[cfg(target_arch = "wasm32")]
 mod components;
 mod highlight;

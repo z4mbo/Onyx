@@ -223,6 +223,32 @@
   cursor: default;
 }
 
+/*
+ * Mode controls carry their meaning in the icon. The footer holds provider,
+ * model and reasoning labels already, and spelling these out too is what makes
+ * the row truncate. The full name stays in the tooltip and the ARIA label.
+ */
+.t3-composer .zai-composer__control--icon {
+  width: 32px;
+  flex: 0 0 32px;
+  gap: 0;
+  padding: 0;
+}
+
+.t3-composer .zai-composer__control--icon[data-active="true"] > svg,
+.t3-composer .zai-composer__control--icon[data-access="full_access"] > svg {
+  color: var(--v2-icon-icon-accent);
+  opacity: 1;
+}
+
+.t3-composer .zai-composer__control--icon[data-access="full_access"] {
+  background: color-mix(in srgb, var(--v2-state-fg-danger) 10%, transparent);
+}
+
+.t3-composer .zai-composer__control--icon[data-access="full_access"] > svg {
+  color: var(--v2-state-fg-danger);
+}
+
 .t3-composer .zai-composer__separator {
   width: 1px;
   height: 16px;

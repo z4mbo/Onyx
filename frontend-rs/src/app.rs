@@ -10,6 +10,7 @@ use wasm_bindgen_futures::spawn_local;
 use crate::{
     bridge,
     catalog::{fallback_catalogs, models_for_brand, runtime_for_brand, selected_or_default},
+    commands::CommandAction,
     components::{
         AccountGate, AgentOverlay, BottomTerminalPanel, ColorScheme, Composer, GitCommitDialog,
         HomeView, Hud, RightWorkspacePanel, SessionWorkspaceUi, SettingsDialog, Titlebar,
@@ -57,6 +58,20 @@ enum SessionOptionPatch {
     Speed(SpeedMode),
     Interaction(InteractionMode),
     Access(AccessMode),
+}
+
+fn usage_summary(usage: Option<ProviderUsage>) -> String {
+    usage
+        .filter(|usage| !usage.windows.is_empty())
+        .map(|usage| {
+            usage
+                .windows
+                .into_iter()
+                .map(|window| format!("{} {:.0}%", window.label, window.used_percent))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        })
+        .unwrap_or_else(|| "Usage not reported".to_owned())
 }
 
 fn compact_tokens(tokens: u64) -> String {
@@ -1267,40 +1282,6 @@ pub fn App() -> impl IntoView {
             }
         });
     });
-    let open_provider_cli = Callback::new(move |_: ()| {
-        let Some(session) = current.get_untracked() else {
-            return;
-        };
-        if session.status.is_running() {
-            show_error.run("Wait for the active turn before opening the official CLI.".to_owned());
-            return;
-        }
-        spawn_local(async move {
-            match bridge::provider_terminal_open(
-                session.provider,
-                "interactive",
-                Some(&session.workspace),
-                session.provider_session_id.as_deref(),
-            )
-            .await
-            {
-                Ok(opened) => {
-                    update_workspace_ui(workspace_states, &session.id, |ui| {
-                        let terminal = WorkspaceTerminal {
-                            id: opened.id,
-                            title: format!("{} CLI", session.provider.display_name()),
-                            cwd: opened.cwd,
-                            status: "running".to_owned(),
-                        };
-                        ui.active_terminal_id = Some(terminal.id.clone());
-                        ui.terminals.push(terminal);
-                        ui.bottom_panel_open = true;
-                    });
-                }
-                Err(cause) => show_error.run(cause),
-            }
-        });
-    });
     let toggle_bottom = Callback::new(move |_: ()| {
         let Some(session) = current.get() else {
             return;
@@ -1815,6 +1796,27 @@ pub fn App() -> impl IntoView {
                                     on_steer=Callback::new(move |_| {})
                                     on_steer_queued=Callback::new(move |_| {})
                                     on_drop_queued=Callback::new(move |_| {})
+                                    on_command=Callback::new(move |action: CommandAction| match action {
+                                        CommandAction::Rename => begin_rename.run(DRAFT_TAB_ID.to_owned()),
+                                        CommandAction::NewSession => open_draft.run(None),
+                                        CommandAction::OpenSettings => settings_open.set(true),
+                                        CommandAction::OpenProject => choose_workspace.run(()),
+                                        CommandAction::ShowContext => show_notice.run((
+                                            format!(
+                                                "Context window {}",
+                                                draft_context
+                                                    .get()
+                                                    .map(compact_tokens)
+                                                    .unwrap_or_else(|| "not reported".to_owned()),
+                                            ),
+                                            "success",
+                                        )),
+                                        CommandAction::ShowUsage => show_notice.run((
+                                            usage_summary(draft_usage.get()),
+                                            "success",
+                                        )),
+                                        _ => {}
+                                    })
                                     on_cancel=Callback::new(move |_| {})
                                     on_approval=Callback::new(move |_| {})
                                     on_error=show_error
@@ -1841,9 +1843,7 @@ pub fn App() -> impl IntoView {
                                 <span class="zai-workspace-divider">"/"</span>
                                 <span class="zai-draft-usage">
                                     <Icon icon=LuTimerReset width="14px" height="14px" />
-                                    {move || draft_usage.get().filter(|usage| !usage.windows.is_empty()).map(|usage| {
-                                        usage.windows.into_iter().map(|window| format!("{} {:.0}%", window.label, window.used_percent)).collect::<Vec<_>>().join(" · ")
-                                    }).unwrap_or_else(|| "Usage not reported".to_owned())}
+                                    {move || usage_summary(draft_usage.get())}
                                 </span>
                             </div>
                         </div>
@@ -1869,6 +1869,7 @@ pub fn App() -> impl IntoView {
             };
             let session_id = session.id.clone();
             let prompt_session_id = session_id.clone();
+            let rename_session_id = session_id.clone();
             let activate_surface_session_id = session_id.clone();
             let close_surface_panel_session_id = session_id.clone();
             let activate_terminal_session_id = session_id.clone();
@@ -1956,7 +1957,6 @@ pub fn App() -> impl IntoView {
                                             on_commit=Callback::new(move |_| commit_open.set(true))
                                             on_push=push_workspace
                                             on_create_pr=create_pr
-                                            on_open_cli=open_provider_cli
                                             on_toggle_bottom=toggle_bottom
                                             on_toggle_right=toggle_right
                                         />
@@ -2046,6 +2046,20 @@ pub fn App() -> impl IntoView {
                                             on_steer=steer_session
                                             on_steer_queued=steer_queued_session
                                             on_drop_queued=drop_queued_session
+                                            on_command=Callback::new(move |action: CommandAction| match action {
+                                                CommandAction::Rename => begin_rename.run(rename_session_id.clone()),
+                                                CommandAction::NewSession => open_draft.run(None),
+                                                CommandAction::OpenSettings => settings_open.set(true),
+                                                CommandAction::OpenProject => open_workspace.run(()),
+                                                CommandAction::ShowContext => {
+                                                    show_notice.run((context_label.get(), "success"));
+                                                }
+                                                CommandAction::ShowUsage => show_notice.run((
+                                                    usage_summary(current_usage.get()),
+                                                    "success",
+                                                )),
+                                                _ => {}
+                                            })
                                             on_cancel=cancel_session
                                             on_approval=respond_approval
                                             on_error=show_error
@@ -2064,7 +2078,7 @@ pub fn App() -> impl IntoView {
                                             <span class="zai-workspace-divider">"/"</span>
                                             <span><Icon icon=LuGauge width="14px" height="14px" />{move || context_label.get()}</span>
                                             <span class="zai-workspace-divider">"/"</span>
-                                            <span><Icon icon=LuTimerReset width="14px" height="14px" />{move || current_usage.get().filter(|usage| !usage.windows.is_empty()).map(|usage| usage.windows.into_iter().map(|window| format!("{} {:.0}%", window.label, window.used_percent)).collect::<Vec<_>>().join(" · ")).unwrap_or_else(|| "Usage not reported".to_owned())}</span>
+                                            <span><Icon icon=LuTimerReset width="14px" height="14px" />{move || usage_summary(current_usage.get())}</span>
                                         </div>
                                     </div>
                                 </section>
