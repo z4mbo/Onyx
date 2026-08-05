@@ -1,0 +1,19 @@
+# Check out every text file with LF on all platforms. Tools that round-trip
+# files (tauri-cli rewrites src-tauri/Cargo.toml during Windows builds) emit
+# LF, and a CRLF working copy would make the release workflow's
+# clean-checkout provenance check flag them as modified.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.icns binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.dmg binary
+*.gz binary
