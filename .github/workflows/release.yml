@@ -91,7 +91,14 @@ jobs:
           if ($releaseInfo.visibility -ne "public") {
             throw "Release repository '$releaseRepository' must be public for updater downloads."
           }
-          if (-not $releaseInfo.permissions.push) {
+          # When releasing into the source repository itself, the workflow's
+          # own `contents: write` grant is sufficient; the repos API reports
+          # permissions.push=false for the installation GITHUB_TOKEN, so the
+          # push check only applies to cross-repository release targets.
+          if (
+            $releaseRepository -ne $env:SOURCE_REPOSITORY -and
+            -not $releaseInfo.permissions.push
+          ) {
             throw "The configured token has no push permission on '$releaseRepository'."
           }
           if (-not $releaseInfo.default_branch) {
