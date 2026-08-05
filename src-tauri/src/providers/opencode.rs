@@ -81,6 +81,187 @@ impl Drop for OpencodeSession {
     }
 }
 
+/// Shared-only view of the session's HTTP transport. The turn loop's futures
+/// hold `&self` of THIS type across awaits instead of `&OpencodeSession`,
+/// which keeps them `Send` on Windows where the child-process handle inside
+/// `JsonProcess` is not `Sync`.
+#[derive(Clone, Copy)]
+struct SessionHttp<'a> {
+    client: &'a reqwest::Client,
+    base_url: &'a str,
+    directory: &'a str,
+    session_id: &'a str,
+    config: &'a ProviderSessionConfig,
+}
+
+impl SessionHttp<'_> {
+    fn session_url(&self, suffix: &str) -> String {
+        format!("{}/session/{}{suffix}", self.base_url, self.session_id)
+    }
+
+    async fn post_prompt(&self, text: &str) -> Result<(), String> {
+        let body = prompt_body(text, self.config.model());
+        http_json(
+            self.client
+                .post(self.session_url("/prompt_async"))
+                .query(&[("directory", self.directory)])
+                .json(&body),
+            "OpenCode prompt",
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Ask the server to interrupt the running turn, bounded by the shared
+    /// abort deadline so a wedged server cannot stall cancellation forever.
+    async fn abort_turn(&self, deadline: Instant) -> Result<(), String> {
+        timeout_at(
+            deadline,
+            http_json(
+                self.client
+                    .post(self.session_url("/abort"))
+                    .query(&[("directory", self.directory)]),
+                "OpenCode abort",
+            ),
+        )
+        .await
+        .map_err(|_| "OpenCode turn interrupt timed out".to_string())?
+        .map_err(|error| format!("OpenCode could not abort the turn: {error}"))?;
+        Ok(())
+    }
+
+    async fn handle_permission(
+        &self,
+        properties: &Value,
+        cancelling: bool,
+        cancellation: &CancellationToken,
+        events: &mpsc::Sender<ProviderEvent>,
+    ) -> Result<bool, String> {
+        let request_id = properties
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "OpenCode permission request did not include an id".to_string())?
+            .to_string();
+        if cancelling {
+            // The turn is being interrupted; do not surface new prompts.
+            self.reply_permission(&request_id, ApprovalDecision::Deny)
+                .await?;
+            return Ok(true);
+        }
+        let (title, detail, risk) = permission_request_parts(properties);
+        let (sender, receiver) = oneshot::channel();
+        send_event(
+            events,
+            ProviderEvent::Approval(ProviderApproval {
+                title,
+                detail,
+                risk,
+                responder: sender,
+            }),
+        )
+        .await?;
+        let decision = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                self.reply_permission(&request_id, ApprovalDecision::Deny).await?;
+                return Ok(true);
+            }
+            result = receiver => result.unwrap_or(ApprovalDecision::Deny),
+        };
+        self.reply_permission(&request_id, decision).await?;
+        Ok(cancellation.is_cancelled())
+    }
+
+    async fn reply_permission(
+        &self,
+        request_id: &str,
+        decision: ApprovalDecision,
+    ) -> Result<(), String> {
+        http_json(
+            self.client
+                .post(format!("{}/permission/{request_id}/reply", self.base_url))
+                .query(&[("directory", self.directory)])
+                .json(&permission_reply_body(decision)),
+            "OpenCode permission reply",
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn handle_question(
+        &self,
+        properties: &Value,
+        cancelling: bool,
+        cancellation: &CancellationToken,
+        events: &mpsc::Sender<ProviderEvent>,
+    ) -> Result<bool, String> {
+        let request_id = properties
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "OpenCode question request did not include an id".to_string())?
+            .to_string();
+        if cancelling {
+            self.reject_question(&request_id).await?;
+            return Ok(true);
+        }
+        let prompt = question_prompt(properties)?;
+        let question_ids = prompt
+            .questions
+            .iter()
+            .map(|question| question.id.clone())
+            .collect::<Vec<_>>();
+        let (sender, receiver) = oneshot::channel();
+        send_event(
+            events,
+            ProviderEvent::UserInput(ProviderUserInput {
+                prompt,
+                responder: sender,
+            }),
+        )
+        .await?;
+        let response = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                self.reject_question(&request_id).await?;
+                return Ok(true);
+            }
+            result = receiver => result.unwrap_or(ProviderUserInputResponse::Cancelled),
+        };
+        match response {
+            ProviderUserInputResponse::Answered(answers) => {
+                if cancellation.is_cancelled() {
+                    self.reject_question(&request_id).await?;
+                    return Ok(true);
+                }
+                http_json(
+                    self.client
+                        .post(format!("{}/question/{request_id}/reply", self.base_url))
+                        .query(&[("directory", self.directory)])
+                        .json(&question_answers_body(&question_ids, &answers)),
+                    "OpenCode question reply",
+                )
+                .await?;
+                Ok(false)
+            }
+            ProviderUserInputResponse::Cancelled => {
+                self.reject_question(&request_id).await?;
+                Ok(cancellation.is_cancelled())
+            }
+        }
+    }
+
+    async fn reject_question(&self, request_id: &str) -> Result<(), String> {
+        http_json(
+            self.client
+                .post(format!("{}/question/{request_id}/reject", self.base_url))
+                .query(&[("directory", self.directory)]),
+            "OpenCode question reject",
+        )
+        .await
+        .map(|_| ())
+    }
+}
+
 impl OpencodeSession {
     async fn connect(config: ProviderSessionConfig) -> Result<Self, String> {
         let executable = find_executable("opencode")
@@ -153,23 +334,6 @@ impl OpencodeSession {
         })
     }
 
-    fn session_url(&self, suffix: &str) -> String {
-        format!("{}/session/{}{suffix}", self.base_url, self.session_id)
-    }
-
-    async fn post_prompt(&self, text: &str) -> Result<(), String> {
-        let body = prompt_body(text, self.config.model());
-        http_json(
-            self.client
-                .post(self.session_url("/prompt_async"))
-                .query(&[("directory", self.directory.as_str())])
-                .json(&body),
-            "OpenCode prompt",
-        )
-        .await
-        .map(|_| ())
-    }
-
     async fn run_turn_inner(
         &mut self,
         prompt: &str,
@@ -177,7 +341,16 @@ impl OpencodeSession {
         events: &mpsc::Sender<ProviderEvent>,
         mut steer: mpsc::UnboundedReceiver<String>,
     ) -> Result<(), String> {
-        self.post_prompt(prompt).await?;
+        // Field-level borrows keep the shared HTTP view disjoint from the
+        // `&mut self.events` receiver used in the select loop below.
+        let http = SessionHttp {
+            client: &self.client,
+            base_url: &self.base_url,
+            directory: &self.directory,
+            session_id: &self.session_id,
+            config: &self.config,
+        };
+        http.post_prompt(prompt).await?;
 
         let mut steer_open = true;
         let mut cancelling = false;
@@ -212,13 +385,13 @@ impl OpencodeSession {
                     cancelling = true;
                     let deadline =
                         *abort_deadline.get_or_insert_with(|| Instant::now() + ABORT_TIMEOUT);
-                    self.abort_turn(deadline).await?;
+                    http.abort_turn(deadline).await?;
                     continue;
                 }
                 TurnInput::Steer(Some(text)) => {
                     // While the session is busy another prompt_async queues the
                     // message into the running turn.
-                    self.post_prompt(&text).await?;
+                    http.post_prompt(&text).await?;
                     continue;
                 }
                 TurnInput::Steer(None) => {
@@ -301,25 +474,25 @@ impl OpencodeSession {
                     }
                 }
                 Some("permission.asked") => {
-                    let was_cancelled = self
+                    let was_cancelled = http
                         .handle_permission(properties, cancelling, cancellation, events)
                         .await?;
                     if was_cancelled && !cancelling {
                         cancelling = true;
                         let deadline =
                             *abort_deadline.get_or_insert_with(|| Instant::now() + ABORT_TIMEOUT);
-                        self.abort_turn(deadline).await?;
+                        http.abort_turn(deadline).await?;
                     }
                 }
                 Some("question.asked") => {
-                    let was_cancelled = self
+                    let was_cancelled = http
                         .handle_question(properties, cancelling, cancellation, events)
                         .await?;
                     if was_cancelled && !cancelling {
                         cancelling = true;
                         let deadline =
                             *abort_deadline.get_or_insert_with(|| Instant::now() + ABORT_TIMEOUT);
-                        self.abort_turn(deadline).await?;
+                        http.abort_turn(deadline).await?;
                     }
                 }
                 Some("session.status") => {
@@ -343,155 +516,6 @@ impl OpencodeSession {
                 _ => {}
             }
         }
-    }
-
-    /// Ask the server to interrupt the running turn, bounded by the shared
-    /// abort deadline so a wedged server cannot stall cancellation forever.
-    async fn abort_turn(&self, deadline: Instant) -> Result<(), String> {
-        timeout_at(
-            deadline,
-            http_json(
-                self.client
-                    .post(self.session_url("/abort"))
-                    .query(&[("directory", self.directory.as_str())]),
-                "OpenCode abort",
-            ),
-        )
-        .await
-        .map_err(|_| "OpenCode turn interrupt timed out".to_string())?
-        .map_err(|error| format!("OpenCode could not abort the turn: {error}"))?;
-        Ok(())
-    }
-
-    async fn handle_permission(
-        &self,
-        properties: &Value,
-        cancelling: bool,
-        cancellation: &CancellationToken,
-        events: &mpsc::Sender<ProviderEvent>,
-    ) -> Result<bool, String> {
-        let request_id = properties
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "OpenCode permission request did not include an id".to_string())?
-            .to_string();
-        if cancelling {
-            // The turn is being interrupted; do not surface new prompts.
-            self.reply_permission(&request_id, ApprovalDecision::Deny)
-                .await?;
-            return Ok(true);
-        }
-        let (title, detail, risk) = permission_request_parts(properties);
-        let (sender, receiver) = oneshot::channel();
-        send_event(
-            events,
-            ProviderEvent::Approval(ProviderApproval {
-                title,
-                detail,
-                risk,
-                responder: sender,
-            }),
-        )
-        .await?;
-        let decision = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => {
-                self.reply_permission(&request_id, ApprovalDecision::Deny).await?;
-                return Ok(true);
-            }
-            result = receiver => result.unwrap_or(ApprovalDecision::Deny),
-        };
-        self.reply_permission(&request_id, decision).await?;
-        Ok(cancellation.is_cancelled())
-    }
-
-    async fn reply_permission(
-        &self,
-        request_id: &str,
-        decision: ApprovalDecision,
-    ) -> Result<(), String> {
-        http_json(
-            self.client
-                .post(format!("{}/permission/{request_id}/reply", self.base_url))
-                .query(&[("directory", self.directory.as_str())])
-                .json(&permission_reply_body(decision)),
-            "OpenCode permission reply",
-        )
-        .await
-        .map(|_| ())
-    }
-
-    async fn handle_question(
-        &self,
-        properties: &Value,
-        cancelling: bool,
-        cancellation: &CancellationToken,
-        events: &mpsc::Sender<ProviderEvent>,
-    ) -> Result<bool, String> {
-        let request_id = properties
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "OpenCode question request did not include an id".to_string())?
-            .to_string();
-        if cancelling {
-            self.reject_question(&request_id).await?;
-            return Ok(true);
-        }
-        let prompt = question_prompt(properties)?;
-        let question_ids = prompt
-            .questions
-            .iter()
-            .map(|question| question.id.clone())
-            .collect::<Vec<_>>();
-        let (sender, receiver) = oneshot::channel();
-        send_event(
-            events,
-            ProviderEvent::UserInput(ProviderUserInput {
-                prompt,
-                responder: sender,
-            }),
-        )
-        .await?;
-        let response = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => {
-                self.reject_question(&request_id).await?;
-                return Ok(true);
-            }
-            result = receiver => result.unwrap_or(ProviderUserInputResponse::Cancelled),
-        };
-        match response {
-            ProviderUserInputResponse::Answered(answers) => {
-                if cancellation.is_cancelled() {
-                    self.reject_question(&request_id).await?;
-                    return Ok(true);
-                }
-                http_json(
-                    self.client
-                        .post(format!("{}/question/{request_id}/reply", self.base_url))
-                        .query(&[("directory", self.directory.as_str())])
-                        .json(&question_answers_body(&question_ids, &answers)),
-                    "OpenCode question reply",
-                )
-                .await?;
-                Ok(false)
-            }
-            ProviderUserInputResponse::Cancelled => {
-                self.reject_question(&request_id).await?;
-                Ok(cancellation.is_cancelled())
-            }
-        }
-    }
-
-    async fn reject_question(&self, request_id: &str) -> Result<(), String> {
-        http_json(
-            self.client
-                .post(format!("{}/question/{request_id}/reject", self.base_url))
-                .query(&[("directory", self.directory.as_str())]),
-            "OpenCode question reject",
-        )
-        .await
-        .map(|_| ())
     }
 }
 
