@@ -791,6 +791,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 .zai-toast { position: fixed; z-index: 80; left: 50%; bottom: 22px; max-width: min(520px, calc(100vw - 48px)); transform: translateX(-50%); border: .5px solid var(--v2-state-border-danger); border-radius: 8px; padding: 9px 12px; background: var(--v2-state-bg-danger); box-shadow: var(--v2-elevation-floating); color: var(--v2-state-fg-danger); font-size: 12px; }
 .zai-toast[data-kind="success"] { border-color: var(--v2-state-border-success); background: var(--v2-state-bg-success); color: var(--v2-state-fg-success); }
+.zai-toast[data-kind="info"] { border-color: var(--v2-border-border-base); background: var(--v2-background-bg-layer-01); color: var(--v2-text-text-base); }
 .zai-update-banner { position: fixed; z-index: 82; right: 22px; bottom: 22px; display: flex; align-items: center; gap: 12px; border: .5px solid var(--v2-border-border-base); border-radius: 10px; padding: 10px 12px; background: var(--v2-background-bg-layer-01); box-shadow: var(--v2-elevation-floating); color: var(--v2-text-text-base); font-size: 12px; }
 .zai-update-dismiss { border: 0; background: transparent; color: var(--v2-icon-icon-muted); cursor: pointer; font-size: 12px; }
 .zai-update-dismiss:hover { color: var(--v2-icon-icon-base); }

@@ -161,6 +161,7 @@ async fn list_provider_models(provider: ProviderId) -> Result<Vec<ProviderModelO
 async fn provider_usage(provider: ProviderId) -> Result<Option<ProviderUsage>, String> {
     match provider {
         ProviderId::Codex => providers::codex::account_usage().await.map(Some),
+        ProviderId::Claude => providers::claude::account_usage().await.map(Some),
         _ => Ok(None),
     }
 }
@@ -1087,14 +1088,26 @@ async fn terminal_close(session_id: String, state: State<'_, AppState>) -> Resul
     state.terminals.close(session_id).await
 }
 
+/// True when the release feed simply has nothing published yet: GitHub serves
+/// 404 for `latest.json` until the first complete release, and the updater
+/// reports that as an invalid-JSON fetch. That is "no update", not a failure.
+fn feed_not_published(error: &str) -> bool {
+    let lowered = error.to_ascii_lowercase();
+    lowered.contains("could not fetch a valid") || lowered.contains("404")
+}
+
 #[tauri::command]
 async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
-    let update = app
+    let update = match app
         .updater()
         .map_err(|error| format!("Updater is unavailable: {error}"))?
         .check()
         .await
-        .map_err(|error| format!("Unable to check for updates: {error}"))?;
+    {
+        Ok(update) => update,
+        Err(error) if feed_not_published(&error.to_string()) => return Ok(None),
+        Err(error) => return Err(format!("Unable to check for updates: {error}")),
+    };
     Ok(update.map(|update| UpdateInfo {
         version: update.version,
         current_version: update.current_version,

@@ -484,11 +484,15 @@ fn FilesSurface(
         let workspace = workspace.get();
         loading.set(true);
         spawn_local(async move {
+            // The surface can unmount while the request is in flight; try_* keeps
+            // a disposed signal from panicking.
             match bridge::workspace_entries(&workspace).await {
-                Ok(result) => entries.set(result),
+                Ok(result) => {
+                    let _ = entries.try_set(result);
+                }
                 Err(cause) => on_error.run(cause),
             }
-            loading.set(false);
+            let _ = loading.try_set(false);
         });
     });
     Effect::new(move |_| load.run(()));
@@ -502,13 +506,15 @@ fn FilesSurface(
         loading.set(true);
         spawn_local(async move {
             match bridge::read_workspace_file(&workspace, &path).await {
-                Ok(result) => file.set(Some(result)),
+                Ok(result) => {
+                    let _ = file.try_set(Some(result));
+                }
                 Err(cause) => {
-                    file.set(None);
+                    let _ = file.try_set(None);
                     on_error.run(cause);
                 }
             }
-            loading.set(false);
+            let _ = loading.try_set(false);
         });
     });
 
@@ -633,14 +639,18 @@ fn DiffSurface(
         let selected_path = selected_for_load.clone();
         loading.set(true);
         spawn_local(async move {
+            // The surface can unmount while the request is in flight; try_* keeps
+            // a disposed signal from panicking.
             match bridge::git_diff(&workspace).await {
-                Ok(value) => diff.set(diff_for_path(&value, selected_path.as_deref())),
+                Ok(value) => {
+                    let _ = diff.try_set(diff_for_path(&value, selected_path.as_deref()));
+                }
                 Err(cause) => {
-                    diff.set(String::new());
+                    let _ = diff.try_set(String::new());
                     on_error.run(cause);
                 }
             }
-            loading.set(false);
+            let _ = loading.try_set(false);
         });
     });
     Effect::new(move |_| load.run(()));

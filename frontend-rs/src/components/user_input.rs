@@ -327,10 +327,14 @@ pub fn UserInputCard(
         let submitted_answers = normalized_answers(&answers.get_untracked());
         spawn_local(async move {
             match bridge::respond_user_input(&request_id, &submitted_answers).await {
-                Ok(()) => on_resolved.run(()),
+                Ok(()) => {
+                    let _ = on_resolved.try_run(());
+                }
                 Err(error) => {
-                    responding.set(false);
-                    inline_error.set(Some(error.clone()));
+                    // The card can auto-resolve and unmount while the call is in
+                    // flight; try_* keeps a disposed signal from panicking.
+                    let _ = responding.try_set(false);
+                    let _ = inline_error.try_set(Some(error.clone()));
                     on_error.run(error);
                 }
             }
@@ -346,10 +350,12 @@ pub fn UserInputCard(
         let request_id = request_id.get_value();
         spawn_local(async move {
             match bridge::cancel_user_input(&request_id).await {
-                Ok(()) => on_resolved.run(()),
+                Ok(()) => {
+                    let _ = on_resolved.try_run(());
+                }
                 Err(error) => {
-                    responding.set(false);
-                    inline_error.set(Some(error.clone()));
+                    let _ = responding.try_set(false);
+                    let _ = inline_error.try_set(Some(error.clone()));
                     on_error.run(error);
                 }
             }

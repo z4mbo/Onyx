@@ -11,7 +11,7 @@ use super::{
 };
 use crate::model::{
     AccessMode, ApprovalDecision, ContextUsage, InteractionMode, MessageKind, ProviderId,
-    ProviderModelOption, ReasoningEffort, SpeedMode,
+    ProviderModelOption, ProviderUsage, ReasoningEffort, SpeedMode, UsageWindow,
 };
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -763,6 +763,130 @@ async fn wait_for_initialize(process: &mut JsonProcess) -> Result<ClaudeInitiali
             }
         }
     }
+}
+
+const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
+const USAGE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The OAuth credentials Claude Code stored at login: macOS keeps them in the
+/// Keychain under "Claude Code-credentials"; other platforms (and older
+/// setups) use `~/.claude/.credentials.json`.
+async fn oauth_credentials() -> Result<Value, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = tokio::process::Command::new("security")
+            .args([
+                "find-generic-password",
+                "-s",
+                "Claude Code-credentials",
+                "-w",
+            ])
+            .output()
+            .await;
+        if let Ok(output) = output
+            && output.status.success()
+            && let Ok(raw) = String::from_utf8(output.stdout)
+            && let Ok(value) = serde_json::from_str::<Value>(raw.trim())
+        {
+            return Ok(value);
+        }
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .ok_or_else(|| "Could not locate the home directory".to_string())?;
+    let path = std::path::PathBuf::from(home).join(".claude/.credentials.json");
+    let raw = tokio::fs::read_to_string(&path).await.map_err(|_| {
+        "Claude Code login was not found. Sign in with the claude CLI first.".to_string()
+    })?;
+    serde_json::from_str(&raw).map_err(|_| "Claude Code credentials could not be read".to_string())
+}
+
+/// The same rate-limit windows Claude Code's `/usage` screen shows, read from
+/// the account usage endpoint with the CLI's own OAuth token.
+pub async fn account_usage() -> Result<ProviderUsage, String> {
+    let credentials = oauth_credentials().await?;
+    let token = credentials
+        .pointer("/claudeAiOauth/accessToken")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Claude Code credentials did not include an access token".to_string())?;
+    let plan = credentials
+        .pointer("/claudeAiOauth/subscriptionType")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(USAGE_ENDPOINT)
+        .bearer_auth(token)
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .timeout(USAGE_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| format!("Claude usage request failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Claude usage request failed with status {}",
+            response.status()
+        ));
+    }
+    let value = response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("Claude usage response could not be read: {error}"))?;
+
+    let mut windows = Vec::new();
+    for limit in value
+        .get("limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(percent) = limit.get("percent").and_then(Value::as_f64) else {
+            continue;
+        };
+        let kind = limit
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let label = match kind {
+            "session" => "5 hour".to_string(),
+            "weekly_all" => "Weekly".to_string(),
+            "weekly_scoped" => {
+                let model = limit
+                    .pointer("/scope/model/display_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("model");
+                format!("Weekly · {model}")
+            }
+            "" => continue,
+            other => other.replace('_', " "),
+        };
+        let window_minutes = match kind {
+            "session" => Some(5 * 60),
+            kind if kind.starts_with("weekly") => Some(7 * 24 * 60),
+            _ => None,
+        };
+        let resets_at = limit
+            .get("resets_at")
+            .and_then(Value::as_str)
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.timestamp());
+        windows.push(UsageWindow {
+            label,
+            used_percent: percent,
+            window_minutes,
+            resets_at,
+        });
+    }
+    if windows.is_empty() {
+        return Err("Claude did not report any usage windows".to_string());
+    }
+    Ok(ProviderUsage {
+        provider: ProviderId::Claude,
+        plan,
+        windows,
+        updated_at: chrono::Utc::now(),
+    })
 }
 
 pub async fn model_catalog() -> Result<Vec<ProviderModelOption>, String> {

@@ -102,6 +102,9 @@ async fn finish_hud(
         let audio = bridge::stop_audio_capture().await?;
         release_capture();
         let transcription = bridge::transcribe_audio(&audio.audio_base64, &audio.format).await?;
+        if transcription.text.trim().is_empty() {
+            return Err("No speech was detected".to_string());
+        }
         storage::append_voice_history(VoiceHistoryItem {
             id: storage::unique_id("voice"),
             created_at: storage::timestamp(),
@@ -212,25 +215,24 @@ pub fn Hud() -> impl IntoView {
         });
     });
 
-    let weights = [0.35, 0.6, 0.85, 1.0, 0.78, 0.5, 0.3];
+    // The HUD is the orb alone: state is spoken through motion and glow, not
+    // a text bar. The phase text stays reachable in the tooltip.
+    let state = Signal::derive(move || match phase.get().as_str() {
+        "Ready" => "idle",
+        "Starting microphone" => "starting",
+        "Listening" => "listening",
+        "Transcribing" => "busy",
+        "Inserted" => "done",
+        _ => "error",
+    });
     view! {
         <main
             class="onyx-hud"
-            style=move || format!("--app-accent:{}", app.get().accent)
+            data-state=move || state.get()
+            style=move || format!("--onyx-level:{:.3}", level.get().clamp(0.0, 1.0))
             title=move || format!("{} · {}", phase.get(), app.get().name)
         >
-            <OnyxOrb class="onyx-hud__app" />
-            <i />
-            <div class="onyx-hud__wave">
-                <For
-                    each=move || weights
-                    key=|weight| format!("{weight}")
-                    children=move |weight| view! {
-                        <b style=move || format!("height:{}px", 4.0 + level.get() * 23.0 * weight) />
-                    }
-                />
-            </div>
-            <span class="onyx-hud__phase">{move || phase.get()}</span>
+            <OnyxOrb class="onyx-hud__orb" label="Onyx dictation" />
         </main>
     }
 }
@@ -599,7 +601,6 @@ pub fn AgentOverlay() -> impl IntoView {
         escape.forget();
     }
 
-    let listen_weights = [0.35, 0.62, 1.0, 0.74, 0.44];
     view! {
         <main
             class="onyx-agent"
@@ -615,18 +616,14 @@ pub fn AgentOverlay() -> impl IntoView {
             </Show>
 
             <Show when=move || mode.get() == OverlayMode::Listening>
-                <section class="onyx-agent__listening">
-                    <OnyxOrb class="onyx-agent__orb" />
-                    <div class="onyx-agent__wave" aria-hidden="true">
-                        <For
-                            each=move || listen_weights
-                            key=|weight| format!("{weight}")
-                            children=move |weight| view! {
-                                <i style=move || format!("height:{}px", 4.0 + level.get() * 18.0 * weight) />
-                            }
-                        />
-                    </div>
-                    <span>{move || phase.get()}</span>
+                // Same language as the dictation HUD: only the animated orb,
+                // scaled by the live input level; the phase lives in the title.
+                <section
+                    class="onyx-agent__listening"
+                    style=move || format!("--onyx-level:{:.3}", level.get().clamp(0.0, 1.0))
+                    title=move || phase.get()
+                >
+                    <OnyxOrb class="onyx-agent__listening-orb" label="Onyx agent listening" />
                 </section>
             </Show>
 

@@ -11,6 +11,15 @@
 - Cancelling an OpenCode turn while a permission or question card is showing now aborts the turn on the server immediately instead of timing out and discarding the session.
 - The voice agent overlay is properly centered in every mode — positioning no longer races the window resize — and the dictation pill, agent panel, dialogs, and toasts share one entrance-motion vocabulary that respects Reduced Motion.
 - On macOS, global shortcuts respond to ⌘ only, so Ctrl+K and Ctrl+N inside text fields keep their standard line-editing behavior; while the launcher is open, other app shortcuts and the Escape-to-stop fallback are suspended.
+- The launcher also searches transcript content: sessions whose titles don't match still surface with a `You:`/`Agent:` snippet around the matching message text.
+- Approvals now stack above the composer as a dock instead of replacing it — the draft stays visible and editable, and a "Cancel turn" action sits next to Deny / Allow for session / Allow once.
+- Streaming events coalesce per frame before touching application state, so fast providers no longer force a re-render per delta chunk.
+- Claude usage is now reported like Codex usage: the 5-hour session window, weekly window, and per-model weekly windows — read with the Claude Code CLI's own login, matching what its `/usage` screen shows.
+- The voice indicators are now the animated Onyx orb alone — no text bar. The orb scales with your live input level while listening, pulses while transcribing, pops when the text lands, and shakes if something failed; details stay in the hover tooltip.
+- Dictation that hears nothing now reports it instead of silently inserting an empty transcription.
+- Missing macOS Accessibility or Input Monitoring permissions now trigger the native permission prompts instead of a red warning toast; if the prompts were already dismissed once, a neutral notice points at System Settings.
+- Checking for updates before the first release is published now reports "you are on the latest version" instead of "Could not fetch a valid JSON from the remote".
+- Fixed the intermittent "Onyx needs to reload — Tried to access a reactive value that has already been disposed" crash: async work in the browser, files, diff, and question surfaces no longer touches state after its panel was closed.
 - Installing an update no longer reports a failure when a shutdown race occurs after the download, and a stuck restart releases the dialog with clear guidance instead of spinning forever.
 - Closing the release-notes dialog always remembers it was seen; a pending update stays reachable from the titlebar without re-opening the dialog on every launch.
 - Overlay and window errors that were still written in Italian now read in English, and two unreachable IPC commands were removed.

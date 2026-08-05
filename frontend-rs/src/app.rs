@@ -1594,12 +1594,26 @@ pub fn App() -> impl IntoView {
                 if let Ok(listener) = bridge::listen::<NativeVoicePermissions, _>(
                     "onyx://native-permissions",
                     move |permissions| {
-                        if !permissions.accessibility || !permissions.input_monitoring {
-                            show_error.run(
-                                "Voice needs macOS Accessibility and Input Monitoring permissions. Open Settings → Voice to enable them."
-                                    .to_owned(),
-                            );
+                        if permissions.accessibility && permissions.input_monitoring {
+                            return;
                         }
+                        // Ask macOS to show its own permission prompts instead
+                        // of nagging with a red toast. If the prompts were
+                        // already dismissed once, point at System Settings.
+                        spawn_local(async move {
+                            match bridge::request_native_voice_permissions().await {
+                                Ok(after)
+                                    if !after.accessibility || !after.input_monitoring =>
+                                {
+                                    show_notice.run((
+                                        "Voice needs the Accessibility and Input Monitoring permissions. Enable Onyx under System Settings → Privacy & Security."
+                                            .to_owned(),
+                                        "info",
+                                    ));
+                                }
+                                _ => {}
+                            }
+                        });
                     },
                 )
                 .await

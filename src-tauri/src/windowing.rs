@@ -49,7 +49,8 @@ pub fn set_agent_mode(app: &AppHandle, mode: &str) -> Result<(), String> {
         .ok_or_else(|| "The agent overlay is not available.".to_string())?;
     let (size, focusable, ignore_cursor) = match mode {
         "inactive" => (LogicalSize::new(180.0, 18.0), false, false),
-        "listening" => (LogicalSize::new(260.0, 50.0), false, true),
+        // Orb-only listening indicator: a compact square window.
+        "listening" => (LogicalSize::new(64.0, 56.0), false, true),
         "expanded" => (LogicalSize::new(410.0, 460.0), true, false),
         _ => return Err("Unknown agent overlay mode".to_string()),
     };

@@ -229,34 +229,38 @@ impl BrowserController {
         self.opening.set(true);
         let controller = self.clone();
         spawn_local(async move {
+            // The component can unmount while these calls are in flight, which
+            // disposes every controller signal (including `disposed` itself);
+            // try_* keeps a disposed signal from panicking.
             match open_browser(&controller.label, &url, bounds).await {
                 Ok(canonical) => {
-                    if controller.disposed.get_untracked() {
+                    if controller.disposed.try_get_untracked().unwrap_or(true) {
                         let _ = browser_action("internal_browser_close", &controller.label).await;
                         return;
                     }
-                    controller.opened.set(true);
-                    controller.open_error.set(None);
-                    controller.address.set(canonical.clone());
-                    controller.opening.set(false);
-                    let latest = controller.current.get_untracked();
+                    let _ = controller.opened.try_set(true);
+                    let _ = controller.open_error.try_set(None);
+                    let _ = controller.address.try_set(canonical.clone());
+                    let _ = controller.opening.try_set(false);
+                    let latest = controller.current.try_get_untracked().unwrap_or_default();
                     if let Ok(latest) = normalize_address(&latest)
                         && latest != canonical
                     {
                         match navigate_browser(&controller.label, &latest).await {
                             Ok(canonical) => {
-                                controller.current.set(canonical.clone());
-                                controller.address.set(canonical);
+                                let _ = controller.current.try_set(canonical.clone());
+                                let _ = controller.address.try_set(canonical);
                             }
                             Err(cause) => controller.report(cause),
                         }
                     } else {
-                        controller.current.set(canonical);
+                        let _ = controller.current.try_set(canonical);
                     }
                 }
                 Err(cause) => {
-                    controller.opening.set(false);
-                    controller.report_open_error(cause);
+                    let _ = controller.opening.try_set(false);
+                    let _ = controller.open_error.try_set(Some(cause.clone()));
+                    controller.report(cause);
                 }
             }
         });
@@ -301,8 +305,10 @@ impl BrowserController {
             spawn_local(async move {
                 match navigate_browser(&controller.label, &url).await {
                     Ok(canonical) => {
-                        controller.current.set(canonical.clone());
-                        controller.address.set(canonical);
+                        // The component can unmount mid-navigation; try_* keeps a
+                        // disposed signal from panicking.
+                        let _ = controller.current.try_set(canonical.clone());
+                        let _ = controller.address.try_set(canonical);
                     }
                     Err(cause) => controller.report(cause),
                 }
@@ -370,20 +376,32 @@ pub fn InternalBrowser(
                 "onyx://internal-browser-navigation",
                 move |navigation| {
                     if navigation.label == *controller.label {
-                        controller.current.set(navigation.url.clone());
-                        controller.address.set(navigation.url);
+                        // A late event can race component disposal; try_* keeps a
+                        // disposed signal from panicking.
+                        let _ = controller.current.try_set(navigation.url.clone());
+                        let _ = controller.address.try_set(navigation.url);
                     }
                 },
             )
             .await
             {
-                Ok(listener) if !lifecycle_controller.disposed.get_untracked() => {
+                Ok(listener)
+                    if !lifecycle_controller
+                        .disposed
+                        .try_get_untracked()
+                        .unwrap_or(true) =>
+                {
                     NAVIGATION_LISTENERS.with(|items| {
                         items.borrow_mut().insert(listener_key, listener);
                     });
                 }
                 Ok(_) => {}
-                Err(cause) if !lifecycle_controller.disposed.get_untracked() => {
+                Err(cause)
+                    if !lifecycle_controller
+                        .disposed
+                        .try_get_untracked()
+                        .unwrap_or(true) =>
+                {
                     lifecycle_controller.report(cause);
                 }
                 Err(_) => {}
@@ -426,7 +444,7 @@ pub fn InternalBrowser(
 
     let cleanup_label = controller.label.as_str().to_owned();
     on_cleanup(move || {
-        disposed.set(true);
+        let _ = disposed.try_set(true);
         BOUNDS_OBSERVERS.with(|items| {
             items.borrow_mut().remove(&observer_key);
         });
