@@ -149,6 +149,31 @@
 }
 .zai-titlebar__update:hover { background: color-mix(in srgb, #6877ff 20%, transparent); }
 .zai-titlebar__update svg { color: #7782ff; }
+.zai-titlebar__update span {
+  font-variant-numeric: tabular-nums;
+}
+
+.zai-titlebar__update[data-stage="downloading"] svg {
+  animation: zai-update-pulse 1.4s ease-in-out infinite;
+}
+
+.zai-titlebar__update[data-stage="ready"] {
+  border-color: color-mix(in srgb, #3ecf8e 55%, var(--zai-workspace-border));
+  background: color-mix(in srgb, #3ecf8e 13%, transparent);
+}
+.zai-titlebar__update[data-stage="ready"]:hover {
+  background: color-mix(in srgb, #3ecf8e 20%, transparent);
+}
+.zai-titlebar__update[data-stage="ready"] svg { color: #3ecf8e; }
+
+@keyframes zai-update-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .zai-titlebar__update[data-stage="downloading"] svg { animation: none; }
+}
 
 @media (max-width: 760px) {
   .zai-titlebar__update span { display: none; }

@@ -33,6 +33,9 @@ pub enum CommandAction {
 
 impl CommandAction {
     /// True when the palette stays open to show a second level of choices.
+    // Only called from the wasm-gated components tree, so the native test
+    // build would otherwise flag it as dead code.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub const fn opens_values(self) -> bool {
         matches!(
             self,
@@ -173,9 +176,9 @@ pub fn commands_for(provider: ProviderId) -> Vec<CommandEntry> {
         ProviderId::Codex => CODEX_FORWARDED,
         ProviderId::Gemini => GEMINI_FORWARDED,
         ProviderId::Kimi => KIMI_FORWARDED,
-        // OpenRouter is a direct API loop with no CLI behind it, so there is
-        // nothing to forward.
-        ProviderId::Openrouter => &[],
+        // OpenCode's server API has no forwarded slash commands; OpenRouter is
+        // a direct API loop with no CLI behind it.
+        ProviderId::Opencode | ProviderId::Openrouter => &[],
     };
     SHARED.iter().chain(forwarded).copied().collect()
 }

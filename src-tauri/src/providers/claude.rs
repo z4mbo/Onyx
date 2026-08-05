@@ -677,6 +677,7 @@ fn parse_initialize_models(value: &Value) -> Vec<ProviderModelOption> {
                     .filter(|value| !value.is_empty())
                     .map(str::to_string),
                 is_default: id == "default",
+                legacy: is_legacy_claude_model(id),
                 reasoning,
                 default_reasoning: supports_effort.then_some(ReasoningEffort::Auto),
                 speeds: if supports_fast {
@@ -691,6 +692,20 @@ fn parse_initialize_models(value: &Value) -> Vec<ProviderModelOption> {
         .collect()
 }
 
+/// Follows T3 Code's convention: only the current model families stay at the
+/// top level; superseded versions fold behind a "Legacy models" group.
+/// Versionless ids ("sonnet", "opusplan") are rolling aliases and never legacy.
+fn is_legacy_claude_model(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    if id == "default" || !id.chars().any(|character| character.is_ascii_digit()) {
+        return false;
+    }
+    !(id.contains("fable-5")
+        || id.contains("opus-5")
+        || id.contains("sonnet-5")
+        || id.contains("haiku-5"))
+}
+
 fn configured_default_model_option() -> ProviderModelOption {
     ProviderModelOption {
         id: "default".to_string(),
@@ -700,6 +715,7 @@ fn configured_default_model_option() -> ProviderModelOption {
                 .to_string(),
         ),
         is_default: true,
+        legacy: false,
         reasoning: Vec::new(),
         default_reasoning: None,
         speeds: vec![SpeedMode::Standard],

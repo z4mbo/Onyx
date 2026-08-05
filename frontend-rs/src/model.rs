@@ -10,16 +10,18 @@ pub enum ProviderId {
     Codex,
     Gemini,
     Kimi,
+    Opencode,
     #[default]
     Openrouter,
 }
 
 impl ProviderId {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Claude,
         Self::Codex,
         Self::Gemini,
         Self::Kimi,
+        Self::Opencode,
         Self::Openrouter,
     ];
 
@@ -29,6 +31,7 @@ impl ProviderId {
             Self::Codex => "Codex",
             Self::Gemini => "Gemini CLI",
             Self::Kimi => "Kimi Code",
+            Self::Opencode => "OpenCode",
             Self::Openrouter => "OpenRouter",
         }
     }
@@ -39,6 +42,7 @@ impl ProviderId {
             Self::Codex => "codex",
             Self::Gemini => "gemini",
             Self::Kimi => "kimi",
+            Self::Opencode => "opencode",
             Self::Openrouter => "openrouter",
         }
     }
@@ -52,6 +56,7 @@ pub enum ProviderBrand {
     Google,
     Xai,
     Moonshot,
+    Opencode,
     #[default]
     Openrouter,
 }
@@ -63,6 +68,7 @@ impl ProviderBrand {
             ProviderId::Codex => Self::Openai,
             ProviderId::Gemini => Self::Google,
             ProviderId::Kimi => Self::Moonshot,
+            ProviderId::Opencode => Self::Opencode,
             ProviderId::Openrouter => Self::Openrouter,
         }
     }
@@ -74,6 +80,7 @@ impl ProviderBrand {
             Self::Google => "Google",
             Self::Xai => "xAI",
             Self::Moonshot => "Moonshot",
+            Self::Opencode => "OpenCode",
             Self::Openrouter => "OpenRouter",
         }
     }
@@ -85,6 +92,7 @@ impl ProviderBrand {
             Self::Google => "google",
             Self::Xai => "xai",
             Self::Moonshot => "moonshot",
+            Self::Opencode => "opencode",
             Self::Openrouter => "openrouter",
         }
     }
@@ -96,6 +104,7 @@ impl ProviderBrand {
             "google" => Some(Self::Google),
             "xai" => Some(Self::Xai),
             "moonshot" => Some(Self::Moonshot),
+            "opencode" => Some(Self::Opencode),
             "openrouter" => Some(Self::Openrouter),
             _ => None,
         }
@@ -283,6 +292,8 @@ pub struct ProviderModelOption {
     pub name: String,
     pub description: Option<String>,
     pub is_default: bool,
+    #[serde(default)]
+    pub legacy: bool,
     #[serde(default)]
     pub reasoning: Vec<ReasoningEffort>,
     pub default_reasoning: Option<ReasoningEffort>,
@@ -897,6 +908,47 @@ pub fn replace_session(sessions: &mut Vec<AgentSession>, session: AgentSession) 
     sessions.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
 }
 
+/// Merges adjacent streaming deltas addressed to the same message, so a burst
+/// of tiny chunks arriving within one frame becomes a single state update.
+/// Only neighbours merge: ordering with other event kinds is preserved.
+pub fn coalesce_session_events(events: Vec<SessionEvent>) -> Vec<SessionEvent> {
+    let mut coalesced: Vec<SessionEvent> = Vec::with_capacity(events.len());
+    for event in events {
+        match (coalesced.last_mut(), event) {
+            (
+                Some(SessionEvent::Delta {
+                    session_id,
+                    message_id,
+                    delta,
+                }),
+                SessionEvent::Delta {
+                    session_id: next_session,
+                    message_id: next_message,
+                    delta: next_delta,
+                },
+            ) if *session_id == next_session && *message_id == next_message => {
+                delta.push_str(&next_delta);
+            }
+            (
+                Some(SessionEvent::ActivityDelta {
+                    session_id,
+                    message_id,
+                    delta,
+                }),
+                SessionEvent::ActivityDelta {
+                    session_id: next_session,
+                    message_id: next_message,
+                    delta: next_delta,
+                },
+            ) if *session_id == next_session && *message_id == next_message => {
+                delta.push_str(&next_delta);
+            }
+            (_, event) => coalesced.push(event),
+        }
+    }
+    coalesced
+}
+
 pub fn apply_session_event(
     sessions: &mut Vec<AgentSession>,
     event: SessionEvent,
@@ -1038,6 +1090,54 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_owned(),
             updated_at: "2026-01-01T00:00:00Z".to_owned(),
         }
+    }
+
+    fn delta(session_id: &str, message_id: &str, delta: &str) -> SessionEvent {
+        SessionEvent::Delta {
+            session_id: session_id.to_owned(),
+            message_id: message_id.to_owned(),
+            delta: delta.to_owned(),
+        }
+    }
+
+    #[test]
+    fn adjacent_deltas_for_one_message_coalesce() {
+        let events = vec![
+            delta("s", "m1", "Hel"),
+            delta("s", "m1", "lo "),
+            delta("s", "m1", "world"),
+            delta("s", "m2", "other"),
+        ];
+        let coalesced = coalesce_session_events(events);
+        assert_eq!(coalesced.len(), 2);
+        assert!(matches!(
+            &coalesced[0],
+            SessionEvent::Delta { delta, message_id, .. }
+                if delta == "Hello world" && message_id == "m1"
+        ));
+    }
+
+    #[test]
+    fn interleaved_events_are_not_reordered_or_merged() {
+        let events = vec![
+            delta("s", "m1", "a"),
+            SessionEvent::ContextUsage {
+                session_id: "s".to_owned(),
+                usage: ContextUsage {
+                    used_tokens: 1,
+                    max_tokens: None,
+                    input_tokens: None,
+                    cached_input_tokens: None,
+                    output_tokens: None,
+                    reasoning_output_tokens: None,
+                },
+            },
+            delta("s", "m1", "b"),
+        ];
+        let coalesced = coalesce_session_events(events);
+        assert_eq!(coalesced.len(), 3);
+        assert!(matches!(&coalesced[0], SessionEvent::Delta { delta, .. } if delta == "a"));
+        assert!(matches!(&coalesced[2], SessionEvent::Delta { delta, .. } if delta == "b"));
     }
 
     #[test]

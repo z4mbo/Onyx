@@ -9,13 +9,13 @@
 </p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="Version 0.3.3" src="https://img.shields.io/badge/version-0.3.3-635bdb"></a>
+  <a href="CHANGELOG.md"><img alt="Version 0.4.0" src="https://img.shields.io/badge/version-0.4.0-635bdb"></a>
   <img alt="Rust and Leptos" src="https://img.shields.io/badge/UI-Rust%20%C2%B7%20Leptos-dea584">
   <img alt="Tauri 2" src="https://img.shields.io/badge/desktop-Tauri%202-24c8db">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2f855a"></a>
 </p>
 
-Onyx gives Claude Code, Codex, Gemini CLI, and Kimi Code a consistent graphical workspace without replacing their official runtimes. Provider credentials, configuration, model availability, approvals, and session continuity remain owned by each installed CLI; Onyx turns their events into one native interface.
+Onyx gives Claude Code, Codex, Gemini CLI, Kimi Code, and OpenCode a consistent graphical workspace without replacing their official runtimes. Provider credentials, configuration, model availability, approvals, and session continuity remain owned by each installed CLI; Onyx turns their events into one native interface.
 
 > Onyx is independent and is not affiliated with or endorsed by OpenCode, T3 Tools, Anthropic, OpenAI, Google, Moonshot AI, xAI, or OpenRouter.
 
@@ -23,18 +23,19 @@ Onyx gives Claude Code, Codex, Gemini CLI, and Kimi Code a consistent graphical 
   <img src="docs/screenshots/onyx-session.png" width="900" alt="An Onyx coding session: transcript, composer, and workspace panels">
 </p>
 
-## Onyx 0.3.3
+## Onyx 0.4.0
 
 | Area | What changed |
 | --- | --- |
-| Home | Opens on the real Home screen. Projects can be removed along with the sessions they hold. |
-| Sessions | Unnamed sessions take their title from the first prompt, the way the CLIs do. Right-click a tab to rename or delete it; closing a tab never deletes history. |
+| OpenCode | Native provider through the official `opencode serve` HTTP session: streaming, approvals, questions, steering, resume, and live model lists. |
+| Launcher | ⌘K opens a command palette with recent sessions and quick actions; typing searches sessions, projects, and actions with ranked results. `>` filters to actions, ⌘1–⌘9 runs a row directly. |
+| Updates | A staged titlebar pill — **Update available → Downloading (NN %) → Restart to update** — with background downloads that never lock the interface, modeled on T3 Code's updater. |
+| Models | Starred favorites group at the top of every picker, superseded models fold behind **Legacy models**, and each provider brand restores the model you last used for new drafts. |
+| Sessions | Unnamed sessions take their title from the first prompt, the way the CLIs do. Right-click a tab to rename or delete it; closing a tab never deletes history. Session storage preserves entries written by newer Onyx versions. |
 | Commands | A slash palette replaces the CLI launcher. `/model`, `/effort`, `/usage`, `/rename` and the rest run Onyx's own action; commands that are prompt-level in a provider's protocol are forwarded as written. |
-| Conversation | Finished tool steps collapse into one row while the running step stays in view. Shell commands and fenced code are syntax highlighted. |
-| Steering | Sending during a turn queues the message in a bar above the composer; ⌘↵ steers the running turn on Codex and Claude. |
-| Navigation | Every prompt gets a rail marker that magnifies under the pointer; click to jump back. |
+| Steering | Sending during a turn queues the message in a bar above the composer; ⌘↵ steers the running turn on Codex, Claude, and OpenCode. |
+| Voice | The agent overlay centers correctly in every mode, and the dictation pill and agent panel share the app-wide entrance motion (Reduced Motion respected). |
 | Workspace | Terminal, Files, Diff, Browser and Git actions live in panels you can drag to resize. |
-| Voice | Dictation, agent, speech, and voice choices are dropdowns; retired TTS defaults migrate to a current model. |
 | Privacy | No accounts, no sign-in, no telemetry. |
 
 ## How it is built
@@ -56,6 +57,7 @@ There are **zero tracked TypeScript files**. Onyx is not literally JavaScript-fr
 | Claude Code | Installed `claude` CLI | Existing Claude login |
 | Gemini | Installed `gemini` CLI | Existing Gemini login |
 | Kimi Code | Official `kimi acp` session, with bounded CLI fallback | Existing Kimi login |
+| OpenCode | Official `opencode serve` HTTP session | Existing OpenCode providers |
 | OpenRouter | Native Rust HTTP client and approved tool loop | API key stored in the OS credential manager |
 | OpenAI audio | Native transcription and speech routes | API key stored in the OS credential manager |
 
@@ -174,7 +176,7 @@ GitHub Actions runs checks and creates Windows/Linux desktop bundles. Tagged rel
 
 ## Updates and current distribution status
 
-Onyx uses Tauri's signed updater. When a newer version is reachable, an **Update** button appears in the title bar, and installation shows progress plus release notes before restart. Every updater archive must match the public key embedded in `src-tauri/tauri.conf.json`.
+Onyx uses Tauri's signed updater with a staged, user-driven flow. When a newer version is reachable, an **Update available** pill appears in the title bar; clicking through shows the release notes and starts a background download whose progress the pill tracks, and only an explicit **Restart to update** applies the downloaded build. The install step verifies it is applying exactly the version the user approved. Every updater archive must match the public key embedded in `src-tauri/tauri.conf.json`.
 
 The configured endpoint is:
 
@@ -216,7 +218,7 @@ before publishing a Gatekeeper-trusted macOS update.
 
 ## Attribution and license
 
-Onyx's visual language references the MIT-licensed OpenCode UI at [`411eff73f026d4950c07947c4d983788cb615baa`](https://github.com/anomalyco/opencode/tree/411eff73f026d4950c07947c4d983788cb615baa). Provider separation, persistent-session behavior, composer controls, and workspace interactions were informed by T3 Code at [`78a0ea55c1d9edce8bcd2b3caff9510b4093e6d3`](https://github.com/pingdotgg/t3code/tree/78a0ea55c1d9edce8bcd2b3caff9510b4093e6d3).
+Onyx's visual language references the MIT-licensed [OpenCode](https://github.com/anomalyco/opencode) UI at [`411eff73f026d4950c07947c4d983788cb615baa`](https://github.com/anomalyco/opencode/tree/411eff73f026d4950c07947c4d983788cb615baa), which also informed the overlay motion vocabulary and the OpenCode provider driver's session protocol. Provider separation, persistent-session behavior, composer controls, workspace interactions, the ⌘K command palette (ranking, `>` actions filter, ⌘1–⌘9 jumps), the staged download-then-restart updater flow, and the model-picker conventions (favorites, legacy folding, sticky per-provider selection) were informed by [T3 Code](https://github.com/pingdotgg/t3code) at [`78a0ea55c1d9edce8bcd2b3caff9510b4093e6d3`](https://github.com/pingdotgg/t3code/tree/78a0ea55c1d9edce8bcd2b3caff9510b4093e6d3).
 
 Onyx does not ship T3 Code as a runtime dependency and does not redistribute upstream brands or logos. Complete pinned provenance and license texts are preserved in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [`licenses/`](licenses/).
 

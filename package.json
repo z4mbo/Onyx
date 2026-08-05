@@ -1,6 +1,6 @@
 {
   "name": "onyx-desktop",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Coding agents, official provider webviews, and voice in one Rust-native desktop app",

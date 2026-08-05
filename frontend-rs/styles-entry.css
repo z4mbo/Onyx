@@ -4,6 +4,7 @@
 @import "./styles/workspace-panels.css";
 @import "./styles/git-dialog.css";
 @import "./styles/update.css";
+@import "./styles/launcher.css";
 @import "./styles/user-input.css";
 @import "./styles/surface-views.css";
 @import "@xterm/xterm/css/xterm.css";

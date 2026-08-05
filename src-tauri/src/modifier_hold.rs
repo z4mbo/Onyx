@@ -260,7 +260,7 @@ mod windows {
                 if hook == 0 {
                     let code = unsafe { GetLastError() };
                     eprintln!(
-                        "Onyx: impossibile avviare il listener Ctrl+Shift/Ctrl+Alt (Win32 {code})."
+                        "Onyx: failed to start the Ctrl+Shift/Ctrl+Alt listener (Win32 {code})."
                     );
                     return;
                 }

@@ -13,22 +13,26 @@ use crate::{
     commands::CommandAction,
     components::{
         AgentOverlay, BottomTerminalPanel, ColorScheme, Composer, GitCommitDialog, HomeView, Hud,
-        RightWorkspacePanel, SessionWorkspaceUi, SettingsDialog, Titlebar, TitlebarSession,
-        TitlebarTab, Transcript, UpdateDialog, UserInputCard, VoiceHistoryView, WorkspaceSurface,
-        WorkspaceSurfaceKind, WorkspaceTerminal, WorkspaceTopbarActions,
+        LauncherDialog, LauncherTarget, RightWorkspacePanel, SessionWorkspaceUi, SettingsDialog,
+        Titlebar, TitlebarSession, TitlebarTab, Transcript, UpdateDialog, UpdateStage,
+        UserInputCard, VoiceHistoryView, WorkspaceSurface, WorkspaceSurfaceKind, WorkspaceTerminal,
+        WorkspaceTopbarActions,
     },
     model::{
         AccessMode, AgentSession, ApprovalRequest, ConnectionStatus, CreateSessionInput,
         EditorTarget, InteractionMode, NativeVoicePermissions, OpenRouterModel, ProviderBrand,
         ProviderId, ProviderUsage, ProviderUserInputRequest, ReasoningEffort, RepoSummary,
         SessionEvent, SpeedMode, TerminalEvent, UpdateInfo, UpdateProgress,
-        UpdateSessionOptionsInput, apply_session_event, default_session_title, demo_providers,
-        replace_session, workspace_name,
+        UpdateSessionOptionsInput, apply_session_event, coalesce_session_events,
+        default_session_title, demo_providers, replace_session, workspace_name,
     },
     storage, theme,
 };
 
 const DRAFT_TAB_ID: &str = "onyx:draft";
+/// How often a running instance re-checks the release feed after the initial
+/// launch check (matches the cadence T3 Code uses for its desktop updater).
+const UPDATE_POLL_INTERVAL_MS: u32 = 4 * 60 * 1_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Page {
@@ -298,11 +302,12 @@ pub fn App() -> impl IntoView {
     let notice_kind = RwSignal::new("error".to_owned());
     let notice_generation = RwSignal::new(0_u64);
     let available_update = RwSignal::new(None::<UpdateInfo>);
-    let installing_update = RwSignal::new(false);
+    let update_stage = RwSignal::new(UpdateStage::None);
     let update_progress = RwSignal::new(None::<UpdateProgress>);
     let update_dialog_open = RwSignal::new(
         storage::get(storage::RELEASE_NOTES_SEEN_KEY).as_deref() != Some(env!("CARGO_PKG_VERSION")),
     );
+    let launcher_open = RwSignal::new(false);
     let renaming_session = RwSignal::new(None::<String>);
     let rename_value = RwSignal::new(String::new());
     let queued_messages = RwSignal::new(HashMap::<String, Vec<String>>::new());
@@ -316,6 +321,11 @@ pub fn App() -> impl IntoView {
     let workspace_states = RwSignal::new(HashMap::<String, SessionWorkspaceUi>::new());
     let pending_events = RwSignal::new(HashMap::<String, Vec<SessionEvent>>::new());
     let queued_events = RwSignal::new(Vec::<SessionEvent>::new());
+    // Streaming events buffer for one frame and adjacent deltas merge before
+    // touching signals (the coalescing OpenCode's desktop app applies to its
+    // SSE stream), so a fast provider cannot force a re-render per chunk.
+    let event_frame_buffer = StoredValue::new(Vec::<SessionEvent>::new());
+    let event_flush_scheduled = StoredValue::new(false);
     let tombstones = RwSignal::new(HashSet::<String>::new());
     let events_ready = RwSignal::new(false);
     let repo = RwSignal::new(None::<RepoSummary>);
@@ -617,11 +627,23 @@ pub fn App() -> impl IntoView {
         });
     });
 
+    // Set once the user explicitly picks a brand, model, reasoning, or speed,
+    // so the startup sticky-restore below can no longer override them.
+    let draft_touched = StoredValue::new(false);
     let select_draft_brand = Callback::new(move |brand: ProviderBrand| {
+        draft_touched.set_value(true);
         draft_brand.set(brand);
         draft_provider.set(runtime_for_brand(brand));
         let models = models_for_brand(brand, &catalogs.get(), &openrouter_models.get());
-        if let Some(model) = selected_or_default(&models) {
+        // Restore the model last used with this brand (T3-style sticky
+        // selection) before falling back to the catalog default.
+        let remembered = storage::read_json::<HashMap<ProviderBrand, String>>(
+            storage::MODEL_SELECTION_KEY,
+            HashMap::new(),
+        )
+        .remove(&brand)
+        .and_then(|id| models.iter().find(|model| model.id == id).cloned());
+        if let Some(model) = remembered.or_else(|| selected_or_default(&models)) {
             draft_model.set(Some(model.id));
             draft_reasoning.set(
                 model
@@ -635,8 +657,48 @@ pub fn App() -> impl IntoView {
         }
     });
     let select_draft_model = Callback::new(move |id: String| {
+        draft_touched.set_value(true);
         draft_model.set(Some(id.clone()));
+        let mut remembered = storage::read_json::<HashMap<ProviderBrand, String>>(
+            storage::MODEL_SELECTION_KEY,
+            HashMap::new(),
+        );
+        remembered.insert(draft_brand.get_untracked(), id.clone());
+        storage::write_json(storage::MODEL_SELECTION_KEY, &remembered);
         if let Some(model) = draft_models.read().iter().find(|model| model.id == id) {
+            draft_reasoning.set(
+                model
+                    .default_reasoning
+                    .or_else(|| model.reasoning.first().copied()),
+            );
+            draft_speed.set(model.default_speed);
+        }
+    });
+    // Apply the sticky selection once at startup, as soon as the brand's
+    // catalog (loaded asynchronously) actually contains the remembered model.
+    // Any explicit user choice before that point wins and ends the restore.
+    let sticky_applied = StoredValue::new(false);
+    Effect::new(move |_| {
+        let models = draft_models.get();
+        if sticky_applied.get_value() || models.is_empty() {
+            return;
+        }
+        if draft_touched.get_value() {
+            sticky_applied.set_value(true);
+            return;
+        }
+        let remembered = storage::read_json::<HashMap<ProviderBrand, String>>(
+            storage::MODEL_SELECTION_KEY,
+            HashMap::new(),
+        )
+        .remove(&draft_brand.get_untracked());
+        let Some(id) = remembered else {
+            sticky_applied.set_value(true);
+            return;
+        };
+        if let Some(model) = models.iter().find(|model| model.id == id).cloned() {
+            sticky_applied.set_value(true);
+            draft_model.set(Some(model.id));
             draft_reasoning.set(
                 model
                     .default_reasoning
@@ -1416,19 +1478,32 @@ pub fn App() -> impl IntoView {
             spawn_local(async move {
                 match bridge::listen::<SessionEvent, _>("onyx://session", move |event| {
                     if events_ready.get_untracked() {
-                        consume_session_event(
-                            event,
-                            sessions,
-                            approvals,
-                            user_inputs,
-                            open_session_ids,
-                            current_id,
-                            page,
-                            draft_open,
-                            workspace_states,
-                            pending_events,
-                            tombstones,
-                        );
+                        event_frame_buffer.update_value(|buffer| buffer.push(event));
+                        if !event_flush_scheduled.get_value() {
+                            event_flush_scheduled.set_value(true);
+                            spawn_local(async move {
+                                TimeoutFuture::new(16).await;
+                                event_flush_scheduled.set_value(false);
+                                let batch = event_frame_buffer
+                                    .try_update_value(std::mem::take)
+                                    .unwrap_or_default();
+                                for event in coalesce_session_events(batch) {
+                                    consume_session_event(
+                                        event,
+                                        sessions,
+                                        approvals,
+                                        user_inputs,
+                                        open_session_ids,
+                                        current_id,
+                                        page,
+                                        draft_open,
+                                        workspace_states,
+                                        pending_events,
+                                        tombstones,
+                                    );
+                                }
+                            });
+                        }
                     } else {
                         queued_events.update(|items| items.push(event));
                     }
@@ -1535,21 +1610,38 @@ pub fn App() -> impl IntoView {
         }
     });
 
+    // Check shortly after launch (T3 waits 15 s so startup stays quiet), then
+    // keep polling so long-running instances still learn about a release
+    // published while they were open. Polling pauses once a download or
+    // install is in flight so the offered version cannot change mid-flow.
     Effect::new(move |_| {
         spawn_local(async move {
-            TimeoutFuture::new(5_000).await;
-            if let Ok(update) = bridge::check_update().await {
-                available_update.set(update);
+            TimeoutFuture::new(15_000).await;
+            loop {
+                if update_stage.get_untracked() == UpdateStage::None {
+                    match bridge::check_update().await {
+                        Ok(update) => available_update.set(update),
+                        Err(cause) => {
+                            leptos::logging::warn!("Update check failed: {cause}");
+                        }
+                    }
+                }
+                TimeoutFuture::new(UPDATE_POLL_INTERVAL_MS).await;
             }
         });
     });
 
-    let install_banner_update = Callback::new(move |_: ()| {
-        installing_update.set(true);
+    let start_update_download = Callback::new(move |_: ()| {
+        let Some(update) = available_update.get_untracked() else {
+            return;
+        };
+        if update_stage.get_untracked() != UpdateStage::None {
+            return;
+        }
+        update_stage.set(UpdateStage::Downloading);
         update_progress.set(None);
-        update_dialog_open.set(true);
         spawn_local(async move {
-            if let Err(cause) = bridge::install_update(move |downloaded, total| {
+            match bridge::download_update(&update.version, move |downloaded, total| {
                 update_progress.set(Some(UpdateProgress {
                     downloaded,
                     total,
@@ -1558,18 +1650,85 @@ pub fn App() -> impl IntoView {
             })
             .await
             {
-                installing_update.set(false);
-                show_error.run(cause);
+                Ok(()) => update_stage.set(UpdateStage::Ready),
+                Err(cause) => {
+                    update_stage.set(UpdateStage::None);
+                    // The feed may have moved on; refresh what the pill offers.
+                    if let Ok(update) = bridge::check_update().await {
+                        available_update.set(update);
+                    }
+                    show_error.run(cause);
+                }
             }
         });
     });
 
+    let restart_into_update = Callback::new(move |_: ()| {
+        let Some(update) = available_update.get_untracked() else {
+            return;
+        };
+        if update_stage.get_untracked() != UpdateStage::Ready {
+            return;
+        }
+        update_stage.set(UpdateStage::Installing);
+        spawn_local(async move {
+            match bridge::install_update(&update.version).await {
+                Ok(()) => {
+                    // The backend now restarts the app. If that never lands,
+                    // release the UI instead of spinning forever.
+                    TimeoutFuture::new(15_000).await;
+                    if update_stage.get_untracked() == UpdateStage::Installing {
+                        update_stage.set(UpdateStage::None);
+                        show_error
+                            .run("The update installed but Onyx could not restart itself. Quit and reopen Onyx to finish.".to_owned());
+                    }
+                }
+                Err(cause) => {
+                    // The staged payload was consumed or rejected; start over.
+                    update_stage.set(UpdateStage::None);
+                    show_error.run(cause);
+                }
+            }
+        });
+    });
+
+    // On macOS only ⌘ counts: Ctrl+K/Ctrl+N are readline edits inside text
+    // fields and must not open app chrome.
+    let is_mac = web_sys::window()
+        .map(|window| {
+            window
+                .navigator()
+                .platform()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .contains("mac")
+        })
+        .unwrap_or(false);
     let keyboard_callback = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
-        let modifier = event.meta_key() || event.ctrl_key();
+        let modifier = if is_mac {
+            event.meta_key()
+        } else {
+            event.ctrl_key()
+        };
+        if launcher_open.get() {
+            // The launcher input handles its own keys and stops propagation;
+            // anything reaching the window while the dialog is open is a
+            // fallback (focus escaped the input) and must not hit the app.
+            if event.key() == "Escape" || (modifier && event.key().eq_ignore_ascii_case("k")) {
+                event.prevent_default();
+                launcher_open.set(false);
+            }
+            return;
+        }
         if modifier && event.key() == "," {
             event.prevent_default();
             if !commit_open.get() {
                 settings_open.set(true);
+            }
+        } else if modifier && event.key().eq_ignore_ascii_case("k") {
+            event.prevent_default();
+            if !settings_open.get() && !commit_open.get() {
+                launcher_open.update(|open| *open = !*open);
             }
         } else if modifier && event.key().eq_ignore_ascii_case("n") {
             event.prevent_default();
@@ -1877,7 +2036,9 @@ pub fn App() -> impl IntoView {
                                                 current.get().is_some_and(|session| {
                                                     matches!(
                                                         session.provider,
-                                                        ProviderId::Claude | ProviderId::Codex,
+                                                        ProviderId::Claude
+                                                            | ProviderId::Codex
+                                                            | ProviderId::Opencode,
                                                     )
                                                 })
                                             })
@@ -2007,6 +2168,8 @@ pub fn App() -> impl IntoView {
                 on_home=Callback::new(move |_| page.set(Page::Home))
                 on_settings=Callback::new(move |_| settings_open.set(true))
                 update=Signal::derive(move || available_update.get())
+                update_stage=Signal::derive(move || update_stage.get())
+                update_progress=Signal::derive(move || update_progress.get())
                 on_update=Callback::new(move |_| update_dialog_open.set(true))
                 show_layout_controls=Signal::derive(move || false)
                 bottom_panel_open=Signal::derive(move || page.get() == Page::Session && active_ui.get().bottom_panel_open)
@@ -2036,21 +2199,36 @@ pub fn App() -> impl IntoView {
                 on_close=Callback::new(move |_| commit_open.set(false))
                 on_commit=commit_workspace
             />
+            <LauncherDialog
+                open=Signal::derive(move || launcher_open.get())
+                sessions=Signal::derive(move || sessions.get())
+                draft_workspace=Signal::derive(move || draft_workspace.get())
+                on_close=Callback::new(move |_| launcher_open.set(false))
+                on_action=Callback::new(move |target| match target {
+                    LauncherTarget::OpenSession(id) => open_session.run(id),
+                    LauncherTarget::NewSession(workspace) => open_draft.run(workspace),
+                    LauncherTarget::AddProject => choose_workspace.run(()),
+                    LauncherTarget::OpenSettings => settings_open.set(true),
+                    LauncherTarget::OpenVoiceHistory => page.set(Page::Voice),
+                })
+            />
             <UpdateDialog
                 open=Signal::derive(move || update_dialog_open.get())
                 update=Signal::derive(move || available_update.get())
-                installing=Signal::derive(move || installing_update.get())
+                stage=Signal::derive(move || update_stage.get())
                 progress=Signal::derive(move || update_progress.get())
                 on_close=Callback::new(move |_| {
                     update_dialog_open.set(false);
-                    if available_update.read().is_none() {
-                        storage::set(
-                            storage::RELEASE_NOTES_SEEN_KEY,
-                            env!("CARGO_PKG_VERSION"),
-                        );
-                    }
+                    // Always mark the notes as seen; a pending update stays
+                    // reachable from the titlebar button, so re-opening the
+                    // dialog on every launch would just nag.
+                    storage::set(
+                        storage::RELEASE_NOTES_SEEN_KEY,
+                        env!("CARGO_PKG_VERSION"),
+                    );
                 })
-                on_install=install_banner_update
+                on_download=start_update_download
+                on_install=restart_into_update
             />
 
             <Show when=move || notice.get().is_some()>

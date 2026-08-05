@@ -249,6 +249,23 @@
   color: var(--v2-state-fg-danger);
 }
 
+.t3-composer .zai-composer__favorite {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.t3-composer .zai-composer__favorite[data-active="true"] > svg {
+  color: #f5b83d;
+  fill: #f5b83d;
+  opacity: 1;
+}
+
+.t3-composer .zai-composer__favorite:disabled {
+  cursor: default;
+  opacity: .4;
+}
+
 .t3-composer .zai-composer__separator {
   width: 1px;
   height: 16px;
@@ -396,8 +413,31 @@
   animation: zai-spin 0.8s linear infinite;
 }
 
+/*
+ * The composer root is a column so the permission dock can order itself above
+ * the prompt frame while the draft stays visible and editable underneath —
+ * the banner-stack pattern T3 Code and OpenCode both use for approvals.
+ */
+.t3-composer.zai-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .t3-composer .zai-composer__frame--permission {
   border-radius: 22px;
+  order: -1;
+  animation: zai-dialog-in 160ms cubic-bezier(.2, .75, .2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t3-composer .zai-composer__frame--permission { animation: none; }
+}
+
+.t3-composer .zai-composer__permission-button--ghost {
+  border-color: transparent;
+  background: transparent;
+  opacity: .75;
 }
 
 .t3-composer .zai-composer__permission {

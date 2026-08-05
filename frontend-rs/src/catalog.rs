@@ -17,7 +17,7 @@ pub struct ProviderBrandMeta {
     pub model_prefix: Option<&'static str>,
 }
 
-pub const PROVIDER_BRANDS: [ProviderBrandMeta; 6] = [
+pub const PROVIDER_BRANDS: [ProviderBrandMeta; 7] = [
     ProviderBrandMeta {
         id: ProviderBrand::Openai,
         name: "OpenAI",
@@ -54,6 +54,13 @@ pub const PROVIDER_BRANDS: [ProviderBrandMeta; 6] = [
         model_prefix: None,
     },
     ProviderBrandMeta {
+        id: ProviderBrand::Opencode,
+        name: "OpenCode",
+        runtime: ProviderId::Opencode,
+        color: "#fab283",
+        model_prefix: None,
+    },
+    ProviderBrandMeta {
         id: ProviderBrand::Openrouter,
         name: "OpenRouter",
         runtime: ProviderId::Openrouter,
@@ -66,7 +73,7 @@ pub fn brand_meta(brand: ProviderBrand) -> ProviderBrandMeta {
     PROVIDER_BRANDS
         .into_iter()
         .find(|item| item.id == brand)
-        .unwrap_or(PROVIDER_BRANDS[5])
+        .unwrap_or(PROVIDER_BRANDS[6])
 }
 
 pub fn runtime_for_brand(brand: ProviderBrand) -> ProviderId {
@@ -84,6 +91,7 @@ fn named_model(
         name: name.to_owned(),
         description: None,
         is_default,
+        legacy: false,
         default_reasoning: reasoning
             .contains(&ReasoningEffort::Medium)
             .then_some(ReasoningEffort::Medium),
@@ -123,17 +131,16 @@ pub fn fallback_catalogs() -> ProviderCatalogs {
                 named_model("auto", "Auto · Gemini CLI", true, vec![]),
                 named_model("pro", "Pro · Gemini CLI", false, vec![]),
                 named_model("flash", "Flash · Gemini CLI", false, vec![]),
-                named_model(
-                    "flash-lite",
-                    "Flash Lite · Gemini CLI",
-                    false,
-                    vec![],
-                ),
+                named_model("flash-lite", "Flash Lite · Gemini CLI", false, vec![]),
             ],
         ),
         (
             ProviderId::Kimi,
             vec![configured_default_model("Kimi Code")],
+        ),
+        (
+            ProviderId::Opencode,
+            vec![configured_default_model("OpenCode")],
         ),
     ])
 }
@@ -157,6 +164,7 @@ pub fn models_for_brand(
                 name: model.name.clone(),
                 description: model.description.clone(),
                 is_default: index == 0,
+                legacy: false,
                 reasoning: Vec::new(),
                 default_reasoning: None,
                 speeds: vec![SpeedMode::Standard],

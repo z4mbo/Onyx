@@ -826,6 +826,7 @@ fn configured_default_model_option() -> ProviderModelOption {
             "Use the model and defaults from the active Codex configuration.".to_string(),
         ),
         is_default: true,
+        legacy: false,
         reasoning: Vec::new(),
         default_reasoning: None,
         speeds: vec![SpeedMode::Standard],
@@ -850,6 +851,27 @@ async fn connect_probe() -> Result<JsonProcess, String> {
         .send_json(&json!({ "method": "initialized" }))
         .await?;
     Ok(process)
+}
+
+/// Known-superseded Codex families fold behind "Legacy models"; anything
+/// unrecognized (including future families) stays at the top level.
+fn is_legacy_codex_model(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    [
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.3",
+        "gpt-5.2",
+        "gpt-5.1",
+        "gpt-5-",
+        "gpt-4",
+        "o3-",
+        "o4-mini",
+        "codex-mini",
+    ]
+    .iter()
+    .any(|token| id.contains(token))
+        || id == "o3"
 }
 
 pub async fn model_catalog() -> Result<Vec<ProviderModelOption>, String> {
@@ -915,6 +937,7 @@ pub async fn model_catalog() -> Result<Vec<ProviderModelOption>, String> {
                 // The explicit "configured default" entry is the only automatic
                 // selection. Advertised models remain available as explicit choices.
                 is_default: false,
+                legacy: is_legacy_codex_model(model_id),
                 reasoning,
                 default_reasoning,
                 speeds: if has_fast {

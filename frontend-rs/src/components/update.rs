@@ -1,4 +1,4 @@
-use icondata::{LuDownload, LuLoaderCircle, LuSparkles, LuX};
+use icondata::{LuDownload, LuLoaderCircle, LuRotateCw, LuSparkles, LuX};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -33,13 +33,24 @@ fn current_release_notes() -> String {
     }
 }
 
+/// Where the staged update flow currently is. Mirrors the T3 Code updater:
+/// a background download the user starts, then an explicit restart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateStage {
+    None,
+    Downloading,
+    Ready,
+    Installing,
+}
+
 #[component]
 pub fn UpdateDialog(
     open: Signal<bool>,
     update: Signal<Option<UpdateInfo>>,
-    installing: Signal<bool>,
+    stage: Signal<UpdateStage>,
     progress: Signal<Option<UpdateProgress>>,
     on_close: Callback<()>,
+    on_download: Callback<()>,
     on_install: Callback<()>,
 ) -> impl IntoView {
     let version = Signal::derive(move || {
@@ -110,7 +121,9 @@ pub fn UpdateDialog(
                         </div>
                         <button
                             type="button"
-                            disabled=move || installing.get()
+                            // Never lock the dialog: downloads keep running in
+                            // the background and the titlebar pill tracks them.
+                            disabled=move || stage.get() == UpdateStage::Installing
                             on:click=move |_| on_close.run(())
                             aria-label="Close update notes"
                         >
@@ -122,7 +135,7 @@ pub fn UpdateDialog(
                             class="zai-update-dialog__notes zai-message-markdown"
                             inner_html=move || rendered_notes.get()
                         />
-                        <Show when=move || installing.get()>
+                        <Show when=move || stage.get() == UpdateStage::Downloading>
                             <div class="zai-update-dialog__progress" role="status">
                                 <div>
                                     <Icon
@@ -156,14 +169,47 @@ pub fn UpdateDialog(
                             <button
                                 type="button"
                                 class="zai-update-dialog__primary"
-                                disabled=move || installing.get()
-                                on:click=move |_| on_install.run(())
+                                disabled=move || matches!(
+                                    stage.get(),
+                                    UpdateStage::Downloading | UpdateStage::Installing
+                                )
+                                on:click=move |_| match stage.get_untracked() {
+                                    UpdateStage::None => on_download.run(()),
+                                    UpdateStage::Ready => on_install.run(()),
+                                    UpdateStage::Downloading | UpdateStage::Installing => {}
+                                }
                             >
-                                <Icon icon=LuDownload width="14px" height="14px" />
-                                {move || if installing.get() {
-                                    "Installing…"
-                                } else {
-                                    "Update & restart"
+                                {move || match stage.get() {
+                                    UpdateStage::None => view! {
+                                        <Icon icon=LuDownload width="14px" height="14px" />
+                                        <span>"Download update"</span>
+                                    }
+                                    .into_any(),
+                                    UpdateStage::Downloading => view! {
+                                        <Icon
+                                            icon=LuLoaderCircle
+                                            width="14px"
+                                            height="14px"
+                                            attr:class="spin"
+                                        />
+                                        <span>"Downloading…"</span>
+                                    }
+                                    .into_any(),
+                                    UpdateStage::Ready => view! {
+                                        <Icon icon=LuRotateCw width="14px" height="14px" />
+                                        <span>"Restart to update"</span>
+                                    }
+                                    .into_any(),
+                                    UpdateStage::Installing => view! {
+                                        <Icon
+                                            icon=LuLoaderCircle
+                                            width="14px"
+                                            height="14px"
+                                            attr:class="spin"
+                                        />
+                                        <span>"Restarting…"</span>
+                                    }
+                                    .into_any(),
                                 }}
                             </button>
                         </Show>

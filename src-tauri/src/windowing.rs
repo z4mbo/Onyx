@@ -4,7 +4,7 @@ use crate::{AppState, model::OverlayPosition};
 
 pub fn position_saved_windows(app: &AppHandle) -> Result<(), String> {
     position_hud(app)?;
-    position_agent(app, 0)
+    position_agent(app, 0, None)
 }
 
 pub fn position_hud(app: &AppHandle) -> Result<(), String> {
@@ -14,7 +14,7 @@ pub fn position_hud(app: &AppHandle) -> Result<(), String> {
         (settings.overlay_position, settings.overlay_margin)
     };
     if let Some(window) = app.get_webview_window("hud") {
-        position_window(&window, position, margin)?;
+        position_window(&window, position, margin, None)?;
     }
     Ok(())
 }
@@ -23,7 +23,7 @@ pub fn position_hud(app: &AppHandle) -> Result<(), String> {
 pub fn show_hud(app: &AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("hud")
-        .ok_or_else(|| "Indicatore dettatura non disponibile.".to_string())?;
+        .ok_or_else(|| "The dictation indicator is not available.".to_string())?;
     position_hud(app)?;
     window
         .set_focusable(false)
@@ -38,19 +38,15 @@ pub fn show_hud(app: &AppHandle) -> Result<(), String> {
 pub fn show_agent(app: &AppHandle) -> Result<(), String> {
     set_agent_mode(app, "inactive")?;
     app.get_webview_window("agent")
-        .ok_or_else(|| "Overlay agente non disponibile.".to_string())?
+        .ok_or_else(|| "The agent overlay is not available.".to_string())?
         .show()
         .map_err(|error| error.to_string())
-}
-
-pub fn set_agent_expanded(app: &AppHandle, expanded: bool) -> Result<(), String> {
-    set_agent_mode(app, if expanded { "expanded" } else { "inactive" })
 }
 
 pub fn set_agent_mode(app: &AppHandle, mode: &str) -> Result<(), String> {
     let window = app
         .get_webview_window("agent")
-        .ok_or_else(|| "Overlay agente non disponibile.".to_string())?;
+        .ok_or_else(|| "The agent overlay is not available.".to_string())?;
     let (size, focusable, ignore_cursor) = match mode {
         "inactive" => (LogicalSize::new(180.0, 18.0), false, false),
         "listening" => (LogicalSize::new(260.0, 50.0), false, true),
@@ -64,12 +60,19 @@ pub fn set_agent_mode(app: &AppHandle, mode: &str) -> Result<(), String> {
     window
         .set_ignore_cursor_events(ignore_cursor)
         .map_err(|error| error.to_string())?;
-    position_agent(app, 0)
+    // Position with the size just requested: `outer_size()` can still report
+    // the pre-resize bounds here, which used to leave the overlay off-center
+    // after a mode change.
+    position_agent(app, 0, Some(size))
 }
 
-fn position_agent(app: &AppHandle, margin: u32) -> Result<(), String> {
+fn position_agent(
+    app: &AppHandle,
+    margin: u32,
+    pending_size: Option<LogicalSize<f64>>,
+) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("agent") {
-        position_window(&window, OverlayPosition::TopCenter, margin)?;
+        position_window(&window, OverlayPosition::TopCenter, margin, pending_size)?;
     }
     Ok(())
 }
@@ -77,7 +80,7 @@ fn position_agent(app: &AppHandle, margin: u32) -> Result<(), String> {
 pub fn show_main(app: &AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
-        .ok_or_else(|| "Finestra Onyx non disponibile.".to_string())?;
+        .ok_or_else(|| "The Onyx window is not available.".to_string())?;
     window.show().map_err(|error| error.to_string())?;
     window
         .set_focusable(true)
@@ -89,14 +92,21 @@ fn position_window(
     window: &WebviewWindow,
     position: OverlayPosition,
     logical_margin: u32,
+    pending_size: Option<LogicalSize<f64>>,
 ) -> Result<(), String> {
     let monitor = window
         .current_monitor()
         .map_err(|error| error.to_string())?
         .or_else(|| window.primary_monitor().ok().flatten())
-        .ok_or_else(|| "Nessun monitor disponibile.".to_string())?;
+        .ok_or_else(|| "No display is available.".to_string())?;
     let area = monitor.work_area();
-    let window_size = window.outer_size().map_err(|error| error.to_string())?;
+    let window_size = match pending_size {
+        Some(size) => tauri::PhysicalSize::new(
+            (size.width * monitor.scale_factor()).round() as u32,
+            (size.height * monitor.scale_factor()).round() as u32,
+        ),
+        None => window.outer_size().map_err(|error| error.to_string())?,
+    };
     let margin = (f64::from(logical_margin) * monitor.scale_factor()).round() as i32;
     let left = area.position.x;
     let top = area.position.y;

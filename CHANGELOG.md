@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0 — OpenCode provider, launcher, and updater polish
+
+- OpenCode joins Claude Code, Codex, Gemini, and Kimi as a native provider: Onyx spawns the official `opencode serve` HTTP server per session and speaks its event stream directly, with streaming text and reasoning, tool activity, permission approvals, provider questions, mid-turn steering, session resume, and live model lists from `opencode models`.
+- A new launcher opens with ⌘K (Ctrl+K on Windows): recent sessions and quick actions at rest, ranked search across sessions, projects, and actions as you type, with full keyboard navigation. `>` filters to actions only, ⌘1–⌘9 runs a row directly, projects that share a folder name stay distinct, and a just-added project is searchable before its first session exists.
+- Updates now follow a staged flow modeled on T3 Code: the titlebar pill moves through **Update available → Downloading (NN %) → Restart to update**, downloads run in the background without locking any dialog, and the install step applies exactly the version and bytes that were downloaded — never whatever the feed serves at that instant.
+- The update check waits fifteen seconds after launch, then repeats every few minutes; polling pauses while a download or install is in flight so the offered version cannot change mid-flow.
+- Model pickers gain T3 Code's structure: starred favorites surface in their own group, superseded models fold behind **Legacy models**, and each provider brand remembers the model you last chose and restores it for new drafts.
+- Session storage is forward-compatible: an entry written by a newer Onyx (unknown provider or fields) is preserved verbatim instead of invalidating the whole store.
+- Cancelling an OpenCode turn while a permission or question card is showing now aborts the turn on the server immediately instead of timing out and discarding the session.
+- The voice agent overlay is properly centered in every mode — positioning no longer races the window resize — and the dictation pill, agent panel, dialogs, and toasts share one entrance-motion vocabulary that respects Reduced Motion.
+- On macOS, global shortcuts respond to ⌘ only, so Ctrl+K and Ctrl+N inside text fields keep their standard line-editing behavior; while the launcher is open, other app shortcuts and the Escape-to-stop fallback are suspended.
+- Installing an update no longer reports a failure when a shutdown race occurs after the download, and a stuck restart releases the dialog with clear guidance instead of spinning forever.
+- Closing the release-notes dialog always remembers it was seen; a pending update stays reachable from the titlebar without re-opening the dialog on every launch.
+- Overlay and window errors that were still written in Italian now read in English, and two unreachable IPC commands were removed.
+
 ## 0.3.3 — Native session tabs and CLI control
 
 - Session deletion now removes persisted sessions from both Home and the tab context menu; closing a tab remains a non-destructive action.

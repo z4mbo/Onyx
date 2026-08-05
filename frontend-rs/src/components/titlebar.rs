@@ -5,9 +5,9 @@ use leptos::ev::{KeyboardEvent, MouseEvent, SubmitEvent};
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
-use crate::model::UpdateInfo;
+use crate::model::{UpdateInfo, UpdateProgress};
 
-use super::OnyxOrb;
+use super::{OnyxOrb, UpdateStage};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TitlebarTab {
@@ -43,6 +43,8 @@ pub fn Titlebar(
     on_home: Callback<()>,
     on_settings: Callback<()>,
     update: Signal<Option<UpdateInfo>>,
+    update_stage: Signal<UpdateStage>,
+    update_progress: Signal<Option<UpdateProgress>>,
     on_update: Callback<()>,
     show_layout_controls: Signal<bool>,
     bottom_panel_open: Signal<bool>,
@@ -406,22 +408,60 @@ pub fn Titlebar(
                 </Show>
 
                 <Show when=move || update.get().is_some()>
-                    <button
-                        type="button"
-                        class="zai-titlebar__update"
-                        on:click=move |_| on_update.run(())
-                        aria-label=move || update
-                            .get()
-                            .map(|update| format!("Update Onyx to {}", update.version))
-                            .unwrap_or_else(|| "Open update".to_owned())
-                        title=move || update
-                            .get()
-                            .map(|update| format!("Onyx {} is ready", update.version))
-                            .unwrap_or_else(|| "Open update".to_owned())
-                    >
-                        <Icon icon=LuDownload width="13px" height="13px" />
-                        <span>"Update"</span>
-                    </button>
+                    {
+                        // T3-style staged pill: Update available → Downloading
+                        // (NN%) → Restart to update.
+                        let percent = move || {
+                            update_progress.get().and_then(|progress| {
+                                progress.total.filter(|total| *total > 0).map(|total| {
+                                    progress.downloaded.saturating_mul(100) / total
+                                })
+                            })
+                        };
+                        let label = move || match update_stage.get() {
+                            UpdateStage::None => "Update".to_owned(),
+                            UpdateStage::Downloading => match percent() {
+                                Some(percent) => format!("Downloading {percent}%"),
+                                None => "Downloading…".to_owned(),
+                            },
+                            UpdateStage::Ready => "Restart to update".to_owned(),
+                            UpdateStage::Installing => "Restarting…".to_owned(),
+                        };
+                        let hint = move || {
+                            let version = update
+                                .get()
+                                .map(|update| update.version)
+                                .unwrap_or_default();
+                            match update_stage.get() {
+                                UpdateStage::None => format!("Onyx {version} is ready to download"),
+                                UpdateStage::Downloading => {
+                                    format!("Downloading Onyx {version}")
+                                }
+                                UpdateStage::Ready => {
+                                    format!("Onyx {version} downloaded. Click to restart and install.")
+                                }
+                                UpdateStage::Installing => format!("Installing Onyx {version}"),
+                            }
+                        };
+                        view! {
+                            <button
+                                type="button"
+                                class="zai-titlebar__update"
+                                data-stage=move || match update_stage.get() {
+                                    UpdateStage::None => "available",
+                                    UpdateStage::Downloading => "downloading",
+                                    UpdateStage::Ready => "ready",
+                                    UpdateStage::Installing => "installing",
+                                }
+                                on:click=move |_| on_update.run(())
+                                aria-label=hint
+                                title=hint
+                            >
+                                <Icon icon=LuDownload width="13px" height="13px" />
+                                <span>{label}</span>
+                            </button>
+                        }
+                    }
                 </Show>
 
                 <button

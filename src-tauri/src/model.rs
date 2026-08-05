@@ -10,6 +10,7 @@ pub enum ProviderId {
     Codex,
     Gemini,
     Kimi,
+    Opencode,
     Openrouter,
 }
 
@@ -21,6 +22,7 @@ pub enum ProviderBrand {
     Google,
     Xai,
     Moonshot,
+    Opencode,
     #[default]
     Openrouter,
 }
@@ -32,6 +34,7 @@ impl ProviderBrand {
             ProviderId::Codex => Self::Openai,
             ProviderId::Gemini => Self::Google,
             ProviderId::Kimi => Self::Moonshot,
+            ProviderId::Opencode => Self::Opencode,
             ProviderId::Openrouter => Self::Openrouter,
         }
     }
@@ -129,6 +132,7 @@ impl ProviderId {
             Self::Codex => Some("codex"),
             Self::Gemini => Some("gemini"),
             Self::Kimi => Some("kimi"),
+            Self::Opencode => Some("opencode"),
             Self::Openrouter => None,
         }
     }
@@ -139,6 +143,7 @@ impl ProviderId {
             Self::Codex => "Codex",
             Self::Gemini => "Gemini CLI",
             Self::Kimi => "Kimi Code",
+            Self::Opencode => "OpenCode",
             Self::Openrouter => "OpenRouter",
         }
     }
@@ -289,6 +294,10 @@ pub struct ProviderModelOption {
     pub name: String,
     pub description: Option<String>,
     pub is_default: bool,
+    /// Superseded but still usable; pickers fold these behind a "Legacy
+    /// models" group the way T3 Code does.
+    #[serde(default)]
+    pub legacy: bool,
     pub reasoning: Vec<ReasoningEffort>,
     pub default_reasoning: Option<ReasoningEffort>,
     pub speeds: Vec<SpeedMode>,

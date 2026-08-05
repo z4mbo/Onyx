@@ -9,6 +9,7 @@ mod commands;
 #[cfg(target_arch = "wasm32")]
 mod components;
 mod highlight;
+mod launcher;
 mod markdown;
 #[cfg(target_arch = "wasm32")]
 mod storage;

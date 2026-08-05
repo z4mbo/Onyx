@@ -59,12 +59,6 @@ export async function onyxTerminalMount(element, sessionId, onData, onResize, au
     autofocus,
   );
 }
-
-export function onyxCloudStart(callback) {
-  const fn = window.__ONYX_RUNTIME__?.startCloudAuth;
-  if (!fn) return false;
-  return fn(authenticated => callback(authenticated));
-}
 "#)]
 extern "C" {
     #[wasm_bindgen(catch, js_name = onyxInvoke)]
@@ -736,7 +730,9 @@ pub async fn terminal_runtime_forget(session_id: &str) -> Result<(), String> {
     runtime("forgetTerminal", &serde_json::json!([session_id])).await
 }
 
-pub async fn install_update<F>(mut on_progress: F) -> Result<(), String>
+/// Stage one of the update flow: download the payload for `version` while
+/// streaming progress. The backend holds the bytes until `install_update`.
+pub async fn download_update<F>(version: &str, mut on_progress: F) -> Result<(), String>
 where
     F: FnMut(u64, Option<u64>) + 'static,
 {
@@ -744,9 +740,18 @@ where
         on_progress(progress.downloaded, progress.total);
     })
     .await?;
-    let result = invoke("install_update", &serde_json::json!({})).await;
+    let result = invoke(
+        "download_update",
+        &serde_json::json!({ "version": version }),
+    )
+    .await;
     drop(listener);
     result
+}
+
+/// Stage two: install the payload previously staged for `version` and restart.
+pub async fn install_update(version: &str) -> Result<(), String> {
+    invoke("install_update", &serde_json::json!({ "version": version })).await
 }
 
 pub struct EventListener {

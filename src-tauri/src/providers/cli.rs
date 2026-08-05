@@ -48,6 +48,7 @@ pub fn gemini_model_catalog() -> Vec<ProviderModelOption> {
         name: name.to_owned(),
         description: Some(description.to_owned()),
         is_default,
+        legacy: false,
         reasoning: Vec::new(),
         default_reasoning: None,
         speeds: vec![SpeedMode::Standard],
@@ -79,6 +80,11 @@ pub async fn probe_providers(openrouter_connected: bool) -> Vec<ProviderStatus> 
             "https://moonshotai.github.io/kimi-code/",
             "bounded stream-json",
         ),
+        (
+            ProviderId::Opencode,
+            "https://opencode.ai/docs/",
+            "local HTTP server + SSE",
+        ),
     ];
     let mut providers = Vec::new();
     for (id, install_url, transport) in definitions {
@@ -87,10 +93,13 @@ pub async fn probe_providers(openrouter_connected: bool) -> Vec<ProviderStatus> 
             Some(path) => probe_version(path).await,
             None => None,
         };
+        let available = executable.is_some()
+            && (id != ProviderId::Opencode
+                || super::opencode::version_supported(version.as_deref()));
         providers.push(ProviderStatus {
             id,
             name: id.display_name().to_string(),
-            available: executable.is_some(),
+            available,
             executable_path: executable.map(|path| path.to_string_lossy().into_owned()),
             version,
             install_url: install_url.to_string(),
@@ -293,6 +302,15 @@ async fn run_one_shot(
 }
 
 fn validate_one_shot_config(config: &ProviderSessionConfig) -> Result<(), String> {
+    if config.provider == ProviderId::Opencode {
+        // Spawning `opencode` with one-shot flags would open the interactive
+        // TUI; the only supported transport is the native HTTP server driver.
+        return Err(
+            "OpenCode has no non-interactive compatibility transport; the native \
+             HTTP server transport is required"
+                .to_string(),
+        );
+    }
     if config.provider != ProviderId::Kimi {
         return Ok(());
     }
@@ -551,7 +569,8 @@ fn build_args(
             }
             args
         }
-        ProviderId::Openrouter => Vec::new(),
+        // Guarded off in validate_one_shot_config / the HTTPS transport.
+        ProviderId::Opencode | ProviderId::Openrouter => Vec::new(),
     }
 }
 
@@ -679,6 +698,17 @@ mod tests {
                 .expect_err("auto should fail before spawning Kimi")
                 .contains("--auto with --prompt")
         );
+    }
+
+    #[test]
+    fn opencode_has_no_one_shot_compatibility_transport() {
+        let selected = config(ProviderId::Opencode);
+        assert!(
+            validate_one_shot_config(&selected)
+                .expect_err("opencode must not spawn a one-shot CLI")
+                .contains("native HTTP server transport")
+        );
+        assert!(build_args(&selected, None, "hello").is_empty());
     }
 
     #[test]

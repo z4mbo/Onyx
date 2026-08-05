@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use icondata::{
     LuBot, LuBrainCircuit, LuCheck, LuChevronDown, LuCornerDownLeft, LuListPlus, LuLoaderCircle,
-    LuLock, LuLockOpen, LuPenLine, LuPencilRuler, LuPlus, LuShieldAlert, LuTrash2, LuZap,
+    LuLock, LuLockOpen, LuPenLine, LuPencilRuler, LuPlus, LuShieldAlert, LuStar, LuTrash2, LuZap,
 };
 use leptos::ev::{KeyboardEvent, SubmitEvent};
 use leptos::prelude::*;
@@ -14,6 +16,7 @@ use crate::{
         AccessMode, ApprovalRequest, InteractionMode, ProviderBrand, ProviderId,
         ProviderModelOption, ProviderStatus, ReasoningEffort, SpeedMode,
     },
+    storage,
 };
 
 use super::ProviderBadge;
@@ -103,6 +106,72 @@ pub fn Composer(
             .or_else(|| options.first())
             .cloned()
     });
+
+    // T3-style picker structure over a native select: starred models surface
+    // in a Favorites group, superseded models fold behind Legacy models.
+    let favorites = RwSignal::new(storage::read_json::<HashMap<ProviderBrand, Vec<String>>>(
+        storage::FAVORITE_MODELS_KEY,
+        HashMap::new(),
+    ));
+    let brand_favorites = Signal::derive(move || {
+        favorites
+            .get()
+            .get(&brand.get())
+            .cloned()
+            .unwrap_or_default()
+    });
+    let favorite_models = Signal::derive(move || {
+        let ids = brand_favorites.get();
+        models
+            .get()
+            .into_iter()
+            .filter(|item| ids.contains(&item.id))
+            .collect::<Vec<_>>()
+    });
+    let primary_models = Signal::derive(move || {
+        models
+            .get()
+            .into_iter()
+            .filter(|item| !item.legacy)
+            .collect::<Vec<_>>()
+    });
+    let legacy_models = Signal::derive(move || {
+        models
+            .get()
+            .into_iter()
+            .filter(|item| item.legacy)
+            .collect::<Vec<_>>()
+    });
+    let is_favorite = Signal::derive(move || {
+        selected_model
+            .get()
+            .is_some_and(|item| brand_favorites.get().contains(&item.id))
+    });
+    // Un-starring removes the Favorites <option> the browser had selected,
+    // which silently moves selection without firing change; re-assert the
+    // real value whenever the option set shifts.
+    let model_select = NodeRef::<leptos::html::Select>::new();
+    Effect::new(move |_| {
+        favorites.track();
+        let value = model.get().unwrap_or_default();
+        if let Some(select) = model_select.get_untracked() {
+            select.set_value(&value);
+        }
+    });
+    let toggle_favorite = move |_| {
+        let Some(selected) = selected_model.get_untracked() else {
+            return;
+        };
+        favorites.update(|map| {
+            let list = map.entry(brand.get_untracked()).or_default();
+            if let Some(position) = list.iter().position(|id| *id == selected.id) {
+                list.remove(position);
+            } else {
+                list.push(selected.id);
+            }
+        });
+        storage::write_json(storage::FAVORITE_MODELS_KEY, &favorites.get_untracked());
+    };
     let can_steer =
         Signal::derive(move || running.get() && steerable.get() && approval.get().is_none());
     let next_queued = Signal::derive(move || {
@@ -466,9 +535,6 @@ pub fn Composer(
                     </button>
                 </div>
             </Show>
-            <Show
-                when=move || approval.get().is_some()
-                fallback=move || view! {
                     <form
                         class="zai-composer__frame"
                         data-component="prompt-input-v2"
@@ -610,21 +676,60 @@ pub fn Composer(
                                         </span>
                                         <Icon icon=LuChevronDown width="12px" height="12px" />
                                         <select
+                                            node_ref=model_select
                                             class="zai-composer__native-select"
                                             aria-label="Model"
                                             prop:value=move || model.get().unwrap_or_default()
                                             disabled=move || locked.get() || models.read().is_empty()
                                             on:change=move |event| on_model.run(event_target_value(&event))
                                         >
+                                            <Show when=move || !favorite_models.read().is_empty()>
+                                                <optgroup label="Favorites">
+                                                    <For
+                                                        each=move || favorite_models.get()
+                                                        key=|item| item.id.clone()
+                                                        children=|item| view! {
+                                                            <option value=item.id>{item.name}</option>
+                                                        }
+                                                    />
+                                                </optgroup>
+                                            </Show>
                                             <For
-                                                each=move || models.get()
+                                                each=move || primary_models.get()
                                                 key=|item| item.id.clone()
                                                 children=|item| view! {
                                                     <option value=item.id>{item.name}</option>
                                                 }
                                             />
+                                            <Show when=move || !legacy_models.read().is_empty()>
+                                                <optgroup label="Legacy models">
+                                                    <For
+                                                        each=move || legacy_models.get()
+                                                        key=|item| item.id.clone()
+                                                        children=|item| view! {
+                                                            <option value=item.id>{item.name}</option>
+                                                        }
+                                                    />
+                                                </optgroup>
+                                            </Show>
                                         </select>
                                     </label>
+
+                                    <button
+                                        type="button"
+                                        class="zai-composer__control zai-composer__control--icon zai-composer__favorite"
+                                        data-active=move || if is_favorite.get() { "true" } else { "false" }
+                                        title=move || if is_favorite.get() {
+                                            "Remove this model from favorites"
+                                        } else {
+                                            "Add this model to favorites"
+                                        }
+                                        aria-pressed=move || is_favorite.get()
+                                        disabled=move || locked.get() || selected_model.get().is_none()
+                                        on:click=toggle_favorite
+                                    >
+                                        <Icon icon=LuStar width="14px" height="14px" />
+                                    </button>
 
                                     <Show when=move || selected_model.get().is_some_and(|item| !item.reasoning.is_empty())>
                                         <label
@@ -815,8 +920,9 @@ pub fn Composer(
                             </div>
                         </div>
                     </form>
-                }
-            >
+                // The approval dock stacks above the composer (flex `order`)
+                // instead of replacing it, so the draft and controls stay
+                // visible and editable while a decision is pending.
                 {move || approval.get().map(|request: ApprovalRequest| {
                     let id = request.id.clone();
                     view! {
@@ -842,6 +948,15 @@ pub fn Composer(
                                 <div class="zai-composer__permission-tray">
                                     <span class="zai-composer__permission-risk">{request.risk}</span>
                                     <div class="zai-composer__permission-actions">
+                                        <button
+                                            type="button"
+                                            class="zai-composer__permission-button zai-composer__permission-button--ghost"
+                                            disabled=move || approval_busy.get() || responding_approval.get()
+                                            title="Stop the running turn entirely"
+                                            on:click=move |_| on_cancel.run(())
+                                        >
+                                            "Cancel turn"
+                                        </button>
                                         <button
                                             type="button"
                                             class="zai-composer__permission-button"
@@ -895,7 +1010,6 @@ pub fn Composer(
                         </div>
                     }
                 })}
-            </Show>
         </div>
     }
 }

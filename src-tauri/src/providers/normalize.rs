@@ -35,7 +35,9 @@ impl StreamNormalizer {
             ProviderId::Codex => self.parse_codex(&value),
             ProviderId::Gemini => self.parse_acp_fallback(&value),
             ProviderId::Kimi => self.parse_kimi(&value),
-            ProviderId::Openrouter => Vec::new(),
+            // OpenCode has no one-shot stream transport; the native HTTP
+            // driver is the only path.
+            ProviderId::Opencode | ProviderId::Openrouter => Vec::new(),
         }
     }
 

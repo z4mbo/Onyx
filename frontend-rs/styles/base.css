@@ -812,3 +812,51 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   .zai-workspace-header__slash,
   .zai-workspace-header__branch { display: none; }
 }
+
+/*
+ * Shared surface motion: dialogs pop in from a slight offset, scrims fade,
+ * toasts rise from the bottom edge. One vocabulary across every overlay.
+ */
+@keyframes zai-fade-in {
+  from { opacity: 0; }
+}
+
+@keyframes zai-dialog-in {
+  from { opacity: 0; transform: translateY(8px) scale(.985); }
+}
+
+@keyframes zai-toast-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+}
+
+.zai-modal-scrim,
+.zai-git-dialog-scrim,
+.zai-update-dialog-scrim,
+.zai-provider-terminal-scrim,
+.zai-launcher-scrim { animation: zai-fade-in 120ms ease-out; }
+
+.zai-modal-scrim > *,
+.zai-git-dialog-scrim > *,
+.zai-update-dialog-scrim > *,
+.zai-provider-terminal-scrim > *,
+.zai-launcher { animation: zai-dialog-in 160ms cubic-bezier(.2, .75, .2, 1); }
+
+.zai-toast { animation: zai-toast-in 180ms cubic-bezier(.2, .75, .2, 1); }
+
+.zai-launcher-item,
+.zai-titlebar__update,
+.zai-composer__favorite svg { transition: background-color 100ms ease, color 100ms ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  .zai-modal-scrim,
+  .zai-git-dialog-scrim,
+  .zai-update-dialog-scrim,
+  .zai-provider-terminal-scrim,
+  .zai-launcher-scrim,
+  .zai-modal-scrim > *,
+  .zai-git-dialog-scrim > *,
+  .zai-update-dialog-scrim > *,
+  .zai-provider-terminal-scrim > *,
+  .zai-launcher,
+  .zai-toast { animation: none; }
+}

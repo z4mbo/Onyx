@@ -8,6 +8,11 @@ pub const DESKTOP_PREFERENCES_KEY: &str = "onyx.desktop-preferences.v1";
 pub const COLOR_SCHEME_KEY: &str = "onyx.color-scheme";
 pub const VOICE_HISTORY_KEY: &str = "onyx.voice-history.v1";
 pub const RELEASE_NOTES_SEEN_KEY: &str = "onyx.release-notes.seen";
+/// Last model chosen per provider brand, restored for new drafts (T3-style
+/// sticky selection).
+pub const MODEL_SELECTION_KEY: &str = "onyx.model-selection.v1";
+/// Starred model ids per provider brand, surfaced first in pickers.
+pub const FAVORITE_MODELS_KEY: &str = "onyx.favorite-models.v1";
 
 fn local_storage() -> Option<web_sys::Storage> {
     web_sys::window()

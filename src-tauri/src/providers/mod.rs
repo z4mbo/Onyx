@@ -4,6 +4,7 @@ pub(crate) mod codex;
 mod driver;
 pub(crate) mod kimi;
 mod normalize;
+pub(crate) mod opencode;
 pub(crate) mod process;
 mod runtime;
 

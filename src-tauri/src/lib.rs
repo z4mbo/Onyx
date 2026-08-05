@@ -61,6 +61,12 @@ struct AppState {
 
 const VOICE_SETTINGS_MAX_BYTES: u64 = 64 * 1024;
 static UPDATE_INSTALLING: AtomicBool = AtomicBool::new(false);
+static UPDATE_DOWNLOADING: AtomicBool = AtomicBool::new(false);
+/// Payload staged by `download_update`, consumed by `install_update`. Held so
+/// the install step applies exactly the bytes the user approved instead of
+/// whatever the feed happens to serve at install time.
+static PENDING_UPDATE: std::sync::Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>> =
+    std::sync::Mutex::new(None);
 const SHUTDOWN_TURN_GRACE: Duration = Duration::from_secs(5);
 
 struct UpdateInstallGuard;
@@ -68,6 +74,14 @@ struct UpdateInstallGuard;
 impl Drop for UpdateInstallGuard {
     fn drop(&mut self) {
         UPDATE_INSTALLING.store(false, Ordering::Release);
+    }
+}
+
+struct UpdateDownloadGuard;
+
+impl Drop for UpdateDownloadGuard {
+    fn drop(&mut self) {
+        UPDATE_DOWNLOADING.store(false, Ordering::Release);
     }
 }
 
@@ -138,6 +152,7 @@ async fn list_provider_models(provider: ProviderId) -> Result<Vec<ProviderModelO
         ProviderId::Codex => providers::codex::model_catalog().await,
         ProviderId::Gemini => Ok(providers::cli::gemini_model_catalog()),
         ProviderId::Kimi => providers::kimi::model_catalog().await,
+        ProviderId::Opencode => providers::opencode::model_catalog().await,
         _ => Ok(Vec::new()),
     }
 }
@@ -680,11 +695,6 @@ fn active_app_context() -> ActiveAppContext {
 }
 
 #[tauri::command]
-fn set_agent_expanded(app: AppHandle, expanded: bool) -> Result<(), String> {
-    windowing::set_agent_expanded(&app, expanded)
-}
-
-#[tauri::command]
 fn set_agent_overlay_mode(app: AppHandle, mode: String) -> Result<(), String> {
     windowing::set_agent_mode(&app, &mode)
 }
@@ -698,11 +708,6 @@ fn hide_window(app: AppHandle, label: String) -> Result<(), String> {
         .ok_or_else(|| "Onyx window is unavailable".to_string())?
         .hide()
         .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn show_main_window(app: AppHandle) -> Result<(), String> {
-    windowing::show_main(&app)
 }
 
 #[tauri::command]
@@ -905,6 +910,8 @@ fn provider_terminal_command(
         (ProviderId::Gemini, ProviderTerminalAction::Update) => "gemini update",
         (ProviderId::Kimi, ProviderTerminalAction::Interactive) => "kimi",
         (ProviderId::Kimi, ProviderTerminalAction::Update) => "kimi update",
+        (ProviderId::Opencode, ProviderTerminalAction::Interactive) => "opencode",
+        (ProviderId::Opencode, ProviderTerminalAction::Update) => "opencode upgrade",
         (ProviderId::Openrouter, _) => {
             return Err("OpenRouter does not provide a local CLI runtime".to_string());
         }
@@ -927,6 +934,9 @@ fn provider_terminal_command(
             format!("{base_command} --resume {id}")
         }
         (ProviderTerminalAction::Interactive, ProviderId::Kimi, Some(id)) => {
+            format!("{base_command} --session {id}")
+        }
+        (ProviderTerminalAction::Interactive, ProviderId::Opencode, Some(id)) => {
             format!("{base_command} --session {id}")
         }
         _ => base_command.to_string(),
@@ -1093,30 +1103,41 @@ async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
     }))
 }
 
+/// Stage one of the update flow: fetch the payload for exactly the version the
+/// user approved and hold it for a later explicit install.
 #[tauri::command]
-async fn install_update(app: AppHandle) -> Result<(), String> {
-    if UPDATE_INSTALLING
+async fn download_update(app: AppHandle, version: String) -> Result<(), String> {
+    if UPDATE_INSTALLING.load(Ordering::Acquire) {
+        return Err("An update is already being installed".to_owned());
+    }
+    if UPDATE_DOWNLOADING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        return Err("An update is already being installed".to_owned());
+        return Err("An update is already downloading".to_owned());
     }
-    let _install_guard = UpdateInstallGuard;
+    let _download_guard = UpdateDownloadGuard;
     let update = app
         .updater()
         .map_err(|error| format!("Updater is unavailable: {error}"))?
         .check()
         .await
         .map_err(|error| format!("Unable to check for updates: {error}"))?
-        .ok_or_else(|| "No update is ready to install".to_string())?;
+        .ok_or_else(|| "The update is no longer available".to_string())?;
+    if update.version != version {
+        return Err(format!(
+            "The update feed now offers {} instead of {}. Check for updates again.",
+            update.version, version
+        ));
+    }
 
     let progress_app = app.clone();
     let finished_app = app.clone();
     let downloaded = Arc::new(AtomicU64::new(0));
     let progress_downloaded = downloaded.clone();
     let finished_downloaded = downloaded;
-    update
-        .download_and_install(
+    let bytes = update
+        .download(
             move |chunk, total| {
                 let downloaded =
                     progress_downloaded.fetch_add(chunk as u64, Ordering::Relaxed) + chunk as u64;
@@ -1142,18 +1163,51 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
             },
         )
         .await
+        .map_err(|error| format!("Unable to download the update: {error}"))?;
+    *PENDING_UPDATE.lock().expect("pending update lock") = Some((update, bytes));
+    Ok(())
+}
+
+/// Stage two: install the previously downloaded payload and restart.
+#[tauri::command]
+async fn install_update(app: AppHandle, version: String) -> Result<(), String> {
+    if UPDATE_INSTALLING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err("An update is already being installed".to_owned());
+    }
+    let _install_guard = UpdateInstallGuard;
+    let (update, bytes) = PENDING_UPDATE
+        .lock()
+        .expect("pending update lock")
+        .take()
+        .ok_or_else(|| "No update has been downloaded yet".to_string())?;
+    if update.version != version {
+        return Err(format!(
+            "The downloaded update is {}, not {}. Download the update again.",
+            update.version, version
+        ));
+    }
+    update
+        .install(bytes)
         .map_err(|error| format!("Unable to install the update: {error}"))?;
 
     if let Some(state) = app.try_state::<AppState>() {
-        state
+        // The update is already installed here; losing the exit flag to a
+        // concurrent shutdown means the runtime is being torn down anyway, so
+        // it must not surface as an install failure.
+        if state
             .exiting
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .map_err(|_| "Onyx is already shutting down".to_owned())?;
-        let running = state.running.clone();
-        let approvals = state.approvals.clone();
-        let providers = state.providers.clone();
-        let terminals = state.terminals.clone();
-        shutdown_runtime(running, approvals, providers, terminals).await;
+            .is_ok()
+        {
+            let running = state.running.clone();
+            let approvals = state.approvals.clone();
+            let providers = state.providers.clone();
+            let terminals = state.terminals.clone();
+            shutdown_runtime(running, approvals, providers, terminals).await;
+        }
     }
     app.request_restart();
     Ok(())
@@ -1193,10 +1247,8 @@ pub fn run() {
             speak_text,
             inject_text,
             active_app_context,
-            set_agent_expanded,
             set_agent_overlay_mode,
             hide_window,
-            show_main_window,
             platform,
             chat_send,
             respond_approval,
@@ -1229,6 +1281,7 @@ pub fn run() {
             internal_browser::internal_browser_set_bounds,
             internal_browser::internal_browser_close,
             check_update,
+            download_update,
             install_update,
         ])
         .setup(|app| {

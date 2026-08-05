@@ -4,7 +4,7 @@ use crate::model::{
 };
 use chrono::Utc;
 use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{
     cmp::Reverse,
     fs,
@@ -40,26 +40,71 @@ pub fn session_title_or_default(value: &str) -> Result<String, String> {
     normalized_session_title(value)
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Default)]
 struct PersistedState {
     version: u32,
     sessions: Vec<AgentSession>,
+    /// Session entries this build cannot decode (typically written by a newer
+    /// Onyx). Preserved verbatim so a downgrade never destroys them.
+    orphan_sessions: Vec<serde_json::Value>,
 }
 
+impl Serialize for PersistedState {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut sessions = Vec::with_capacity(self.sessions.len() + self.orphan_sessions.len());
+        for session in &self.sessions {
+            sessions.push(serde_json::to_value(session).map_err(serde::ser::Error::custom)?);
+        }
+        sessions.extend(self.orphan_sessions.iter().cloned());
+        let mut state = serializer.serialize_struct("PersistedState", 2)?;
+        state.serialize_field("version", &self.version)?;
+        state.serialize_field("sessions", &sessions)?;
+        state.end()
+    }
+}
+
+/// Decodes per entry instead of failing the whole file, so one session written
+/// by a newer Onyx (unknown provider, new fields) cannot wipe the store. A
+/// structurally wrong file (non-object root, missing version or sessions)
+/// still errors so `load()` preserves it as a corrupt backup instead of
+/// silently overwriting it with an empty store.
 fn deserialize_state(value: &str) -> Result<PersistedState, serde_json::Error> {
+    use serde::de::Error;
     let mut value = serde_json::from_str::<serde_json::Value>(value)?;
-    if let Some(sessions) = value
+    if !value.is_object() {
+        return Err(serde_json::Error::custom(
+            "session store root is not an object",
+        ));
+    }
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| serde_json::Error::custom("session store version is missing"))?
+        as u32;
+    let entries = value
         .get_mut("sessions")
         .and_then(|value| value.as_array_mut())
-    {
-        for session in sessions {
-            if session.get("reasoning").and_then(|value| value.as_str()) == Some("ultracode") {
-                session["reasoning"] = serde_json::Value::String("xhigh".to_string());
+        .ok_or_else(|| serde_json::Error::custom("session store has no sessions array"))?;
+    let mut sessions = Vec::new();
+    let mut orphan_sessions = Vec::new();
+    for mut entry in entries.drain(..) {
+        if entry.get("reasoning").and_then(|value| value.as_str()) == Some("ultracode") {
+            entry["reasoning"] = serde_json::Value::String("xhigh".to_string());
+        }
+        match serde_json::from_value::<AgentSession>(entry.clone()) {
+            Ok(session) => sessions.push(session),
+            Err(error) => {
+                eprintln!("Preserving session entry this build cannot decode: {error}");
+                orphan_sessions.push(entry);
             }
         }
     }
-    serde_json::from_value(value)
+    Ok(PersistedState {
+        version,
+        sessions,
+        orphan_sessions,
+    })
 }
 
 pub struct SessionStore {
@@ -356,12 +401,57 @@ mod tests {
         let mut value = serde_json::to_value(PersistedState {
             version: 2,
             sessions: vec![test_session("legacy".to_string())],
+            orphan_sessions: Vec::new(),
         })
         .expect("state should serialize");
         value["sessions"][0]["reasoning"] = serde_json::Value::String("ultracode".to_string());
 
         let state = deserialize_state(&value.to_string()).expect("legacy state should migrate");
         assert_eq!(state.sessions[0].reasoning, Some(ReasoningEffort::Xhigh));
+    }
+
+    #[test]
+    fn unknown_session_entries_are_preserved_not_fatal() {
+        let mut value = serde_json::to_value(PersistedState {
+            version: 3,
+            sessions: vec![test_session("known".to_string())],
+            orphan_sessions: Vec::new(),
+        })
+        .expect("state should serialize");
+        // A session from a future Onyx with a provider this build lacks.
+        let future = serde_json::json!({
+            "id": "future",
+            "provider": "quantum_cli",
+            "title": "From the future"
+        });
+        value["sessions"]
+            .as_array_mut()
+            .expect("sessions array")
+            .push(future.clone());
+
+        let state = deserialize_state(&value.to_string()).expect("decode stays whole-file safe");
+        assert_eq!(state.sessions.len(), 1);
+        assert_eq!(state.sessions[0].id, "known");
+        assert_eq!(state.orphan_sessions, vec![future]);
+
+        // Round trip: the orphan is written back verbatim.
+        let rewritten = serde_json::to_value(&state).expect("state should serialize");
+        let ids: Vec<_> = rewritten["sessions"]
+            .as_array()
+            .expect("sessions array")
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        assert!(ids.contains(&"future".to_owned()));
+    }
+
+    #[test]
+    fn structurally_invalid_store_errors_so_load_backs_it_up() {
+        assert!(deserialize_state("[]").is_err());
+        assert!(deserialize_state("{\"sessions\": []}").is_err());
+        assert!(deserialize_state("{\"version\": 3}").is_err());
+        assert!(deserialize_state("{\"version\": 3, \"sessions\": {}}").is_err());
+        assert!(deserialize_state("{\"version\": 3, \"sessions\": []}").is_ok());
     }
 
     #[test]
@@ -394,6 +484,7 @@ mod tests {
             path: unavailable_parent.join("sessions.json"),
             state: RwLock::new(PersistedState {
                 version: 2,
+                orphan_sessions: Vec::new(),
                 sessions: vec![AgentSession {
                     id: id.clone(),
                     title: "Test".to_string(),

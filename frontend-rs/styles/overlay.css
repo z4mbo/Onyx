@@ -34,6 +34,13 @@ html[data-window="agent"] #root {
     0 1px 4px color-mix(in srgb, #000 22%, transparent);
   font: 11px/1.2 "Inter", system-ui, sans-serif;
   backdrop-filter: blur(22px);
+  animation: onyx-overlay-in 160ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onyx-hud {
+    animation: none;
+  }
 }
 
 .onyx-hud__app {
@@ -74,6 +81,11 @@ html[data-window="agent"] #root {
   box-sizing: border-box;
   width: 100%;
   height: 100%;
+  /* Center every mode's surface horizontally regardless of its natural
+     width, so no state can sit off-center inside the overlay window. */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   color: var(--v2-text-text-base);
   font: 12px/1.5 "Inter", system-ui, sans-serif;
 }
@@ -105,6 +117,7 @@ html[data-window="agent"] #root {
   box-sizing: border-box;
   height: 42px;
   margin: 4px;
+  animation: onyx-overlay-in 160ms ease-out;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -153,6 +166,8 @@ html[data-window="agent"] #root {
   width: calc(100% - 16px);
   height: calc(100% - 16px);
   margin: 8px;
+  animation: onyx-overlay-in 180ms ease-out;
+  transform-origin: top center;
   display: flex;
   overflow: hidden;
   flex-direction: column;
@@ -357,6 +372,20 @@ html[data-window="agent"] #root {
 
 .onyx-agent__send:disabled {
   opacity: .3;
+}
+
+@keyframes onyx-overlay-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(.97);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onyx-agent__listening,
+  .onyx-agent__panel {
+    animation: none;
+  }
 }
 
 @keyframes onyx-orb-breathe {

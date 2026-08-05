@@ -791,9 +791,7 @@ pub fn RightWorkspacePanel(
     });
     let drag = RwSignal::new(None::<(f64, f64)>);
     let apply_width = move |width: f64| {
-        let max = (viewport(false) * 0.78)
-            .min(MAX_PANEL_WIDTH)
-            .max(MIN_PANEL_WIDTH);
+        let max = (viewport(false) * 0.78).clamp(MIN_PANEL_WIDTH, MAX_PANEL_WIDTH);
         on_resize.run(width.clamp(MIN_PANEL_WIDTH, max).round() as u32);
     };
 

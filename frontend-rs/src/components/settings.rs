@@ -1,3 +1,4 @@
+use gloo_timers::future::TimeoutFuture;
 use icondata::{
     LuCheck, LuChevronDown, LuCpu, LuExternalLink, LuKeyRound, LuKeyboard, LuLoaderCircle, LuMic,
     LuRefreshCw, LuSlidersHorizontal, LuSparkles, LuX,
@@ -150,6 +151,9 @@ fn agent_choices(
     current_model: &str,
 ) -> Vec<VoiceChoice> {
     let mut choices = Vec::new();
+    // OpenCode is intentionally absent: these choices feed the voice overlay's
+    // chat_send/chat_once path, which needs a one-shot CLI transport that
+    // OpenCode does not provide.
     for provider in [
         ProviderId::Claude,
         ProviderId::Codex,
@@ -330,6 +334,7 @@ pub fn SettingsDialog(
     let update_state = RwSignal::new("idle".to_owned());
     let update_message = RwSignal::new(String::new());
     let update_progress = RwSignal::new(None::<UpdateProgress>);
+    let update_version = RwSignal::new(None::<String>);
     let dictation_models = Signal::derive(move || {
         let current = voice.get().unwrap_or_default();
         dictation_choices(
@@ -541,10 +546,12 @@ pub fn SettingsDialog(
                 Ok(Some(update)) => {
                     update_state.set("available".to_owned());
                     update_message.set(format!("Onyx {} is ready to install.", update.version));
+                    update_version.set(Some(update.version));
                 }
                 Ok(None) => {
                     update_state.set("current".to_owned());
                     update_message.set("You are on the latest version.".to_owned());
+                    update_version.set(None);
                 }
                 Err(cause) => {
                     update_state.set("failed".to_owned());
@@ -554,21 +561,46 @@ pub fn SettingsDialog(
         });
     });
     let install_update = Callback::new(move |_: ()| {
+        let Some(version) = update_version.get_untracked() else {
+            return;
+        };
         update_state.set("installing".to_owned());
         update_message.set("Downloading update…".to_owned());
         spawn_local(async move {
-            if let Err(cause) = bridge::install_update(move |downloaded, total| {
+            let downloaded = bridge::download_update(&version, move |downloaded, total| {
                 update_progress.set(Some(UpdateProgress {
                     downloaded,
                     total,
                     finished: false,
                 }));
             })
-            .await
-            {
-                update_state.set("failed".to_owned());
-                update_message.set(cause);
-                update_progress.set(None);
+            .await;
+            let result = match downloaded {
+                Ok(()) => {
+                    update_message.set("Restarting to finish the update…".to_owned());
+                    bridge::install_update(&version).await
+                }
+                Err(cause) => Err(cause),
+            };
+            match result {
+                Ok(()) => {
+                    // The backend restarts the app; if that never lands,
+                    // release the panel instead of spinning forever.
+                    TimeoutFuture::new(15_000).await;
+                    if update_state.get_untracked() == "installing" {
+                        update_state.set("failed".to_owned());
+                        update_message.set(
+                            "The update installed but Onyx could not restart itself. Quit and reopen Onyx to finish."
+                                .to_owned(),
+                        );
+                        update_progress.set(None);
+                    }
+                }
+                Err(cause) => {
+                    update_state.set("failed".to_owned());
+                    update_message.set(cause);
+                    update_progress.set(None);
+                }
             }
         });
     });

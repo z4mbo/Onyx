@@ -8,6 +8,7 @@ use super::{
         ProviderUserInputPrompt, ProviderUserInputResponse, TURN_CANCELLED_ERROR,
     },
     kimi::KimiDriver,
+    opencode::OpencodeDriver,
 };
 use crate::{
     model::{
@@ -101,6 +102,7 @@ impl ProviderRuntime {
             Arc::new(CliDriver::new(ProviderId::Gemini)),
         );
         drivers.insert(ProviderId::Kimi, Arc::new(KimiDriver));
+        drivers.insert(ProviderId::Opencode, Arc::new(OpencodeDriver));
         debug_assert!(
             drivers
                 .iter()

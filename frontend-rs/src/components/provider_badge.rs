@@ -11,6 +11,7 @@ fn icon_slugs(brand: ProviderBrand) -> (&'static str, &'static str) {
         ProviderBrand::Google => ("google-gemini", "google-gemini"),
         ProviderBrand::Xai => ("grok", "grok-dark"),
         ProviderBrand::Moonshot => ("kimi-ai", "kimi-ai"),
+        ProviderBrand::Opencode => ("opencode", "opencode"),
         ProviderBrand::Openrouter => ("open-router", "open-router-dark"),
     }
 }
