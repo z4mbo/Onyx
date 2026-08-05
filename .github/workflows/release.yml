@@ -169,6 +169,7 @@ jobs:
             (git rev-parse HEAD).Trim() -ne $env:SOURCE_COMMIT -or
             $unexpectedChanges.Count -ne 0
           ) {
+            git diff | Select-Object -First 80 | ForEach-Object { Write-Host $_ }
             throw "The build changed the tagged source checkout: $($unexpectedChanges -join '; ')"
           }
           $paths = @($env:ARTIFACT_PATHS_JSON | ConvertFrom-Json)
